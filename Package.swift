@@ -43,11 +43,16 @@ let package = Package(
   dependencies: [
     .package(url: "https://github.com/scinfu/SwiftSoup.git", from: "2.6.0"),
     .package(url: "https://github.com/apple/swift-markdown.git", branch: "main"),
+    // Loro CRDT library
+    .package(url: "https://github.com/loro-dev/loro-swift.git", from: "1.5.5"),
   ],
   targets: [
     .target(
       name: "Lexical",
-      dependencies: [],
+      dependencies: [
+        // Bring in the Loro module for CRDT-backed editor state
+        .product(name: "Loro", package: "loro-swift")
+      ],
       path: "./Lexical"),
     .testTarget(
       name: "LexicalTests",
@@ -114,7 +119,7 @@ let package = Package(
         "Lexical",
         "LexicalLinkPlugin",
         "LexicalListPlugin",
-        .product(name: "Markdown", package: "swift-markdown")
+        .product(name: "Markdown", package: "swift-markdown"),
       ],
       path: "./Plugins/LexicalMarkdown/LexicalMarkdown"),
     .testTarget(

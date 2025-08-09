@@ -1,6 +1,15 @@
 {
   "pins" : [
     {
+      "identity" : "loro-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/loro-dev/loro-swift.git",
+      "state" : {
+        "revision" : "25996d2b0949737be228ce04d5220c30d0cdf584",
+        "version" : "1.5.5"
+      }
+    },
+    {
       "identity" : "swift-cmark",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-cmark.git",
