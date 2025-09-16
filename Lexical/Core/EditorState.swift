@@ -6,6 +6,7 @@
  */
 
 import Foundation
+import Loro
 
 internal let kRootNodeKey = "root"
 
@@ -33,9 +34,22 @@ public class EditorState: NSObject {
   public var selection: BaseSelection?
   public var version: Int = 1
 
+  // Loro integration - this is the source of truth
+  internal let loroBridge: LoroBridge
+
   override init() {
     let rootNode = RootNode()
     nodeMap[kRootNodeKey] = rootNode
+    loroBridge = LoroBridge()
+    super.init()
+
+    // Initialize Loro tree with root node
+    do {
+      try loroBridge.buildLoroTreeFromEditorState(self)
+    } catch {
+      // Log error but don't fail initialization
+      print("Failed to initialize Loro tree: \(error)")
+    }
   }
 
   convenience init(version: Int = 1) {
@@ -46,6 +60,7 @@ public class EditorState: NSObject {
   init(_ editorState: EditorState) {
     nodeMap = editorState.nodeMap
     version = editorState.version
+    loroBridge = editorState.loroBridge
   }
 
   /// Returns the root node for this EditorState, if one is set.
@@ -136,6 +151,8 @@ public class EditorState: NSObject {
    The JSON string is designed to be interoperable with Lexical JavaScript (subject to the individual node classes using matching keys).
    */
   public func toJSON(outputFormatting: JSONEncoder.OutputFormatting = []) throws -> String {
+    // For now, use the existing implementation until Loro export is ready
+    // TODO: Phase 1.3 - Replace with loroBridge.exportToJSON()
     let string: String? = try read {
       guard let rootNode = getRootNode() else {
         throw LexicalError.invariantViolation("Could not get RootNode")
