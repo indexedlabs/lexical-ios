@@ -184,3 +184,7 @@ This repo contains Lexical iOS — a Swift Package with a modular plugin archite
 - Minimum iOS is 16 (Playground commonly targets iOS 26.0 on simulator).
 - Do not commit secrets or proprietary assets. Feature flags live under `Lexical/Core/FeatureFlags*` — default them safely.
 - Prefer testing on the iPhone 17 Pro simulator (iOS 26.0) for consistency with CI scripts.
+
+## Issue Tracking
+
+We use `bd` for issue tracking, refer to .beads/BD_GUIDE.md for context.
