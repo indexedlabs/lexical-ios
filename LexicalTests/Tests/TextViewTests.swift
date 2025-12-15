@@ -13,6 +13,15 @@ import XCTest
 
 class TextViewTests: XCTestCase {
 
+  private func makeUniquePasteboard() -> (pasteboard: UIPasteboard, name: UIPasteboard.Name)? {
+    let name = UIPasteboard.Name("lexical-tests-\(UUID().uuidString)")
+    guard let pasteboard = UIPasteboard(name: name, create: true) else {
+      return nil
+    }
+    pasteboard.items = []
+    return (pasteboard, name)
+  }
+
   func testInitialise() throws {
     let view = LexicalView(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: FeatureFlags())
     let textView = view.textView
@@ -205,6 +214,143 @@ class TextViewTests: XCTestCase {
   //      }
   //    }
   //  }
+
+  func testCopy_WritesLexicalNodesToCustomPasteboard() throws {
+    let view = LexicalView(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: FeatureFlags())
+    let textView = view.textView
+    let editor = view.editor
+
+    guard let (pasteboard, pasteboardName) = makeUniquePasteboard() else {
+      XCTFail("Could not create a unique pasteboard")
+      return
+    }
+    defer { UIPasteboard.remove(withName: pasteboardName) }
+
+    textView.insertText("Hello world")
+
+    let full = textView.textStorage.string as NSString
+    let worldRange = full.range(of: "world")
+    XCTAssertNotEqual(worldRange.location, NSNotFound, "Should find 'world' in text storage")
+
+    textView.selectedRange = worldRange
+
+    try editor.update {
+      guard let selection = try getSelection() as? RangeSelection else {
+        XCTFail("Expected RangeSelection")
+        return
+      }
+      try selection.applySelectionRange(worldRange, affinity: .forward)
+      try onCopyFromUITextView(editor: editor, pasteboard: pasteboard)
+
+      guard let itemSet = pasteboard.itemSet(withPasteboardTypes: [LexicalConstants.pasteboardIdentifier]),
+            let data = pasteboard.data(
+              forPasteboardType: LexicalConstants.pasteboardIdentifier,
+              inItemSet: itemSet
+            )?.last
+      else {
+        XCTFail("No lexical data on pasteboard")
+        return
+      }
+
+      let json = try JSONDecoder().decode(SerializedNodeArray.self, from: data)
+      let copiedText = json.nodeArray.compactMap { ($0 as? TextNode)?.getText_dangerousPropertyAccess() }.joined()
+      XCTAssertEqual(copiedText, "world")
+    }
+  }
+
+  func testCut_WritesLexicalNodesToCustomPasteboardAndDeletesSelection() throws {
+    let view = LexicalView(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: FeatureFlags())
+    let textView = view.textView
+    let editor = view.editor
+
+    guard let (pasteboard, pasteboardName) = makeUniquePasteboard() else {
+      XCTFail("Could not create a unique pasteboard")
+      return
+    }
+    defer { UIPasteboard.remove(withName: pasteboardName) }
+
+    textView.insertText("Hello world")
+
+    let full = textView.textStorage.string as NSString
+    let worldRange = full.range(of: "world")
+    XCTAssertNotEqual(worldRange.location, NSNotFound, "Should find 'world' in text storage")
+
+    textView.selectedRange = worldRange
+
+    try editor.update {
+      guard let selection = try getSelection() as? RangeSelection else {
+        XCTFail("Expected RangeSelection")
+        return
+      }
+      try selection.applySelectionRange(worldRange, affinity: .forward)
+      try onCutFromUITextView(editor: editor, pasteboard: pasteboard)
+
+      guard let itemSet = pasteboard.itemSet(withPasteboardTypes: [LexicalConstants.pasteboardIdentifier]),
+            let data = pasteboard.data(
+              forPasteboardType: LexicalConstants.pasteboardIdentifier,
+              inItemSet: itemSet
+            )?.last
+      else {
+        XCTFail("No lexical data on pasteboard")
+        return
+      }
+
+      let json = try JSONDecoder().decode(SerializedNodeArray.self, from: data)
+      let cutText = json.nodeArray.compactMap { ($0 as? TextNode)?.getText_dangerousPropertyAccess() }.joined()
+      XCTAssertEqual(cutText, "world")
+    }
+
+    var out = ""
+    try editor.read { out = getRoot()?.getTextContent() ?? "" }
+    XCTAssertEqual(out, "Hello ", "Cut should remove the selected text from the editor")
+  }
+
+  func testPaste_InsertsLexicalNodesFromCustomPasteboard() throws {
+    guard let (pasteboard, pasteboardName) = makeUniquePasteboard() else {
+      XCTFail("Could not create a unique pasteboard")
+      return
+    }
+    defer { UIPasteboard.remove(withName: pasteboardName) }
+
+    // Copy "world" to the custom pasteboard from a source editor
+    do {
+      let source = LexicalView(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: FeatureFlags())
+      let sourceTextView = source.textView
+      let sourceEditor = source.editor
+
+      sourceTextView.insertText("Hello world")
+
+      let full = sourceTextView.textStorage.string as NSString
+      let worldRange = full.range(of: "world")
+      XCTAssertNotEqual(worldRange.location, NSNotFound, "Should find 'world' in source text storage")
+
+      sourceTextView.selectedRange = worldRange
+
+      try sourceEditor.update {
+        guard let selection = try getSelection() as? RangeSelection else {
+          XCTFail("Expected RangeSelection")
+          return
+        }
+        try selection.applySelectionRange(worldRange, affinity: .forward)
+        try onCopyFromUITextView(editor: sourceEditor, pasteboard: pasteboard)
+      }
+    }
+
+    // Paste into a destination editor
+    let dest = LexicalView(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: FeatureFlags())
+    let destTextView = dest.textView
+    let destEditor = dest.editor
+
+    destTextView.insertText("Hello ")
+
+    try destEditor.update {
+      try onPasteFromUITextView(editor: destEditor, pasteboard: pasteboard)
+    }
+
+    var out = ""
+    try destEditor.read { out = getRoot()?.getTextContent() ?? "" }
+    XCTAssertEqual(out, "Hello world")
+  }
 
   func testInsertPlainText() throws {
     let view = LexicalView(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: FeatureFlags())

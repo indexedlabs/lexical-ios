@@ -111,15 +111,15 @@ extension TextViewAppKit {
 
   /// Insert tab.
   public override func insertTab(_ sender: Any?) {
-    // Dispatch indent command or insert tab character
-    editor.dispatchCommand(type: .keyTab, payload: nil)
+    // Dispatch indent command (handlers decide whether to indent/outdent or insert a tab character)
+    editor.dispatchCommand(type: .indentContent, payload: nil)
     updatePlaceholderVisibility()
   }
 
   /// Insert back tab (Shift+Tab).
   public override func insertBacktab(_ sender: Any?) {
     // Dispatch outdent command
-    editor.dispatchCommand(type: .keyTab, payload: true) // payload=true for shift+tab
+    editor.dispatchCommand(type: .outdentContent, payload: nil)
     updatePlaceholderVisibility()
   }
 

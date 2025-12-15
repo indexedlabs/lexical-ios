@@ -5,6 +5,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#if os(macOS) && !targetEnvironment(macCatalyst)
+
 import AppKit
 import Lexical
 import LexicalAppKit
@@ -639,3 +641,5 @@ final class ViewController: NSViewController, NSSplitViewDelegate {
         selectionLabel.stringValue = "Selection: --"
     }
 }
+
+#endif // os(macOS) && !targetEnvironment(macCatalyst)

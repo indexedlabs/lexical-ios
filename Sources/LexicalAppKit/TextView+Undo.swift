@@ -16,6 +16,30 @@ import Lexical
 /// NSTextView provides built-in undo support. This extension ensures proper
 /// integration with Lexical's history plugin.
 extension TextViewAppKit {
+  private static let undoCommand = CommandType(rawValue: "undo")
+  private static let redoCommand = CommandType(rawValue: "redo")
+  private static let canUndoCommand = CommandType(rawValue: "canUndo")
+  private static let canRedoCommand = CommandType(rawValue: "canRedo")
+
+  internal func setUpLexicalUndoRedoIntegration() {
+    _ = editor.registerCommand(
+      type: Self.canUndoCommand,
+      listener: { [weak self] payload in
+        self?.lexicalCanUndo = (payload as? Bool) ?? false
+        return false
+      },
+      shouldWrapInUpdateBlock: false
+    )
+
+    _ = editor.registerCommand(
+      type: Self.canRedoCommand,
+      listener: { [weak self] payload in
+        self?.lexicalCanRedo = (payload as? Bool) ?? false
+        return false
+      },
+      shouldWrapInUpdateBlock: false
+    )
+  }
 
   // MARK: - Undo Manager
 
@@ -36,25 +60,35 @@ extension TextViewAppKit {
 
   /// Perform undo.
   @objc public func performUndo(_ sender: Any?) {
-    guard allowsUndo else { return }
-    undoManager?.undo()
+    undo(sender)
   }
 
   /// Perform redo.
   @objc public func performRedo(_ sender: Any?) {
+    redo(sender)
+  }
+
+  /// Perform undo (standard AppKit action).
+  public override func undo(_ sender: Any?) {
     guard allowsUndo else { return }
-    undoManager?.redo()
+    editor.dispatchCommand(type: Self.undoCommand)
+  }
+
+  /// Perform redo (standard AppKit action).
+  public override func redo(_ sender: Any?) {
+    guard allowsUndo else { return }
+    editor.dispatchCommand(type: Self.redoCommand)
   }
 
   // MARK: - Menu Validation
 
   /// Validate undo/redo menu items.
   public override func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-    if menuItem.action == #selector(performUndo(_:)) {
-      return undoManager?.canUndo ?? false
+    if menuItem.action == #selector(undo(_:)) || menuItem.action == #selector(performUndo(_:)) {
+      return allowsUndo && lexicalCanUndo
     }
-    if menuItem.action == #selector(performRedo(_:)) {
-      return undoManager?.canRedo ?? false
+    if menuItem.action == #selector(redo(_:)) || menuItem.action == #selector(performRedo(_:)) {
+      return allowsUndo && lexicalCanRedo
     }
     return super.validateMenuItem(menuItem)
   }

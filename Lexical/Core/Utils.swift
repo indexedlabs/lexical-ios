@@ -648,21 +648,25 @@ public func maybeMoveChildrenSelectionToParent(
   return selection
 }
 
-#if canImport(UIKit)
 @MainActor
 public func getAttributedStringFromFrontend() throws -> NSAttributedString {
-  // @alexmattice - replace this with a version driven off a depth first search
   guard let editor = getActiveEditor() else { return NSAttributedString(string: "") }
+  // @alexmattice - replace this with a version driven off a depth first search
 
+  #if canImport(UIKit)
   let selection = editor.getNativeSelection()
-
   if let range = selection.range, let textStorage = editor.textStorage {
     return textStorage.attributedSubstring(from: range)
-  } else {
-    return NSAttributedString(string: "")
   }
+  #elseif canImport(AppKit) && !targetEnvironment(macCatalyst)
+  if let frontend = editor.frontendAppKit {
+    let range = frontend.nativeSelectionRange
+    return frontend.textStorage.attributedSubstring(from: range)
+  }
+  #endif
+
+  return NSAttributedString(string: "")
 }
-#endif
 
 @MainActor
 public func removeFromParent(node: Node) throws {

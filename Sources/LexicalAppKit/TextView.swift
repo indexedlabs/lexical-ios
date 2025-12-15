@@ -52,6 +52,10 @@ public class TextViewAppKit: NSTextView {
   /// Range to intercept next selection change with.
   internal var interceptNextSelectionChangeAndReplaceWithRange: NSRange?
 
+  /// Cached undo availability from Lexical's history plugin (via `canUndo`/`canRedo` commands).
+  internal var lexicalCanUndo: Bool = false
+  internal var lexicalCanRedo: Bool = false
+
   /// Internal delegate for forwarding events.
   weak var lexicalDelegate: TextViewAppKitDelegate?
 
@@ -99,6 +103,9 @@ public class TextViewAppKit: NSTextView {
 
     // Configure the text view
     configureTextView()
+
+    // Wire Lexical undo/redo state into AppKit menu validation.
+    setUpLexicalUndoRedoIntegration()
 
     // Set up placeholder
     setupPlaceholder()

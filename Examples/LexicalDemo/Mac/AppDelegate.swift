@@ -5,6 +5,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#if os(macOS) && !targetEnvironment(macCatalyst)
+
 import AppKit
 
 class AppDelegate: NSObject, NSApplicationDelegate {
@@ -57,3 +59,15 @@ struct LexicalDemoMacApp {
         app.run()
     }
 }
+
+#else
+
+import Foundation
+
+// Stub entry point so this SPM executable target can be built on non-macOS platforms.
+@main
+struct LexicalDemoMacApp {
+    static func main() {}
+}
+
+#endif

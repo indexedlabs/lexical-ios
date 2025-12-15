@@ -70,6 +70,48 @@ class DecoratorNodeTests: XCTestCase {
     }
   }
 
+  func testDecoratorNodeGetAttributedStringAttributes() throws {
+    let view = createLexicalView()
+    let editor = view.editor
+
+    try editor.registerNode(nodeType: NodeType.testNode, class: TestDecoratorNode.self)
+
+    var nodeKey: NodeKey?
+
+    try editor.update {
+      guard let rootNode = getActiveEditorState()?.getRootNode() else {
+        XCTFail("No root node")
+        return
+      }
+
+      let paragraphNode = ParagraphNode()
+      let decoratorNode = TestDecoratorNode()
+      try paragraphNode.append([decoratorNode])
+      nodeKey = decoratorNode.getKey()
+
+      try rootNode.append([paragraphNode])
+    }
+
+    try editor.read {
+      guard let nodeKey, let decoratorNode = getNodeByKey(key: nodeKey) as? TestDecoratorNode else {
+        XCTFail("Could not get decorator node")
+        return
+      }
+
+      let theme = Theme()
+      let attributes = decoratorNode.getAttributedStringAttributes(theme: theme)
+
+      XCTAssertNotNil(attributes[.attachment], "Decorator node should have attachment attribute")
+      XCTAssert(attributes[.attachment] is TextAttachment, "Attachment should be TextAttachment")
+
+      if let attachment = attributes[.attachment] as? TextAttachment {
+        XCTAssertEqual(attachment.key, nodeKey, "Attachment should have the correct node key")
+        XCTAssertNotNil(attachment.editor, "Attachment should have editor reference")
+        XCTAssertTrue(attachment.editor === editor, "Attachment should reference the active editor")
+      }
+    }
+  }
+
   func testDecoratorNodeAddsSubViewOnceOnNodeCreation() throws {
     let view = createLexicalView()
     let editor = view.editor

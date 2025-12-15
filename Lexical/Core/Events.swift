@@ -540,28 +540,46 @@ public func onRemoveTextFromTextView(editor: Editor) throws {
 /// Delete backwards (backspace) from AppKit.
 @MainActor
 public func onDeleteBackwardsFromTextView(editor: Editor) throws {
+  try onDeleteCharacterFromTextView(editor: editor, isBackwards: true)
+}
+
+/// Delete a character from AppKit.
+@MainActor
+public func onDeleteCharacterFromTextView(editor: Editor, isBackwards: Bool) throws {
   guard getActiveEditor() != nil, let selection = try getSelection() else {
     throw LexicalError.invariantViolation("No editor or selection")
   }
-  try selection.deleteCharacter(isBackwards: true)
+  try selection.deleteCharacter(isBackwards: isBackwards)
 }
 
 /// Delete word from AppKit.
 @MainActor
 public func onDeleteWordFromTextView(editor: Editor) throws {
+  try onDeleteWordFromTextView(editor: editor, isBackwards: true)
+}
+
+/// Delete a word from AppKit.
+@MainActor
+public func onDeleteWordFromTextView(editor: Editor, isBackwards: Bool) throws {
   guard getActiveEditor() != nil, let selection = try getSelection() as? RangeSelection else {
     throw LexicalError.invariantViolation("No editor or selection")
   }
-  try selection.deleteWord(isBackwards: true)
+  try selection.deleteWord(isBackwards: isBackwards)
 }
 
 /// Delete line from AppKit.
 @MainActor
 public func onDeleteLineFromTextView(editor: Editor) throws {
+  try onDeleteLineFromTextView(editor: editor, isBackwards: true)
+}
+
+/// Delete a line from AppKit.
+@MainActor
+public func onDeleteLineFromTextView(editor: Editor, isBackwards: Bool) throws {
   guard getActiveEditor() != nil, let selection = try getSelection() as? RangeSelection else {
     throw LexicalError.invariantViolation("No editor or selection")
   }
-  try selection.deleteLine(isBackwards: true)
+  try selection.deleteLine(isBackwards: isBackwards)
 }
 
 /// Format text from AppKit.
@@ -619,7 +637,8 @@ public func registerRichTextAppKit(editor: Editor) {
     listener: { [weak editor] payload in
       guard let editor else { return false }
       do {
-        try onDeleteBackwardsFromTextView(editor: editor)
+        let isBackwards = (payload as? Bool) ?? true
+        try onDeleteCharacterFromTextView(editor: editor, isBackwards: isBackwards)
         return true
       } catch {
         print("\(error)")
@@ -632,7 +651,8 @@ public func registerRichTextAppKit(editor: Editor) {
     listener: { [weak editor] payload in
       guard let editor else { return false }
       do {
-        try onDeleteWordFromTextView(editor: editor)
+        let isBackwards = (payload as? Bool) ?? true
+        try onDeleteWordFromTextView(editor: editor, isBackwards: isBackwards)
         return true
       } catch {
         print("\(error)")
@@ -645,7 +665,8 @@ public func registerRichTextAppKit(editor: Editor) {
     listener: { [weak editor] payload in
       guard let editor else { return false }
       do {
-        try onDeleteLineFromTextView(editor: editor)
+        let isBackwards = (payload as? Bool) ?? true
+        try onDeleteLineFromTextView(editor: editor, isBackwards: isBackwards)
         return true
       } catch {
         print("\(error)")
@@ -806,27 +827,147 @@ public func registerRichTextAppKit(editor: Editor) {
 
 // MARK: - AppKit Pasteboard Helpers
 
+private let lexicalNodesPasteboardTypesAppKit: [NSPasteboard.PasteboardType] = [
+  NSPasteboard.PasteboardType(LexicalConstants.pasteboardIdentifier),
+  NSPasteboard.PasteboardType("com.meta.lexical.nodes"),
+]
+
 /// Set the pasteboard content for AppKit.
 @MainActor
 func setPasteboardAppKit(selection: BaseSelection, pasteboard: NSPasteboard) throws {
-  // Get the selected text content
-  let nodes = try selection.getNodes()
-  var textContent = ""
-  for node in nodes {
-    textContent += node.getTextContent()
+  guard let editor = getActiveEditor() else {
+    throw LexicalError.invariantViolation("Could not get editor")
+  }
+
+  let nodes = try generateArrayFromSelectedNodes(editor: editor, selection: selection).nodes
+  let text = try selection.getTextContent()
+  let encodedData = try JSONEncoder().encode(nodes)
+
+  var rtfData: Data?
+  do {
+    let attributedSelection = try getAttributedStringFromFrontend()
+    rtfData = try attributedSelection.data(
+      from: NSRange(location: 0, length: attributedSelection.length),
+      documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
+    )
+  } catch {
+    // Best-effort: plain text + Lexical nodes are still useful.
+    rtfData = nil
   }
 
   pasteboard.clearContents()
-  pasteboard.setString(textContent, forType: .string)
+  pasteboard.declareTypes(
+    lexicalNodesPasteboardTypesAppKit + [.rtf, .string],
+    owner: nil
+  )
+
+  // Always provide a plain-text fallback
+  pasteboard.setString(text, forType: .string)
+
+  // Provide RTF for rich-text pastes into non-Lexical targets (optional)
+  if let rtfData {
+    pasteboard.setData(rtfData, forType: .rtf)
+  }
+
+  // Provide Lexical node serialization for pasting within Lexical editors
+  for type in lexicalNodesPasteboardTypesAppKit {
+    pasteboard.setData(encodedData, forType: type)
+  }
 }
 
 /// Insert data from pasteboard for rich text in AppKit.
 @MainActor
 func insertDataTransferForRichTextAppKit(selection: RangeSelection, pasteboard: NSPasteboard) throws
 {
-  // Try to get string content
-  if let string = pasteboard.string(forType: .string) {
-    try selection.insertRawText(string)
+  // Prefer Lexical node data when available
+  for type in lexicalNodesPasteboardTypesAppKit {
+    if let pasteboardData = pasteboard.data(forType: type) {
+      let deserializedNodes = try JSONDecoder().decode(SerializedNodeArray.self, from: pasteboardData)
+
+      guard let editor = getActiveEditor() else { return }
+
+      _ = try insertGeneratedNodes(
+        editor: editor,
+        nodes: deserializedNodes.nodeArray,
+        selection: selection
+      )
+      return
+    }
   }
+
+  // Fall back to RTF (best-effort) for pastes from other apps
+  if let pasteboardRTFData = pasteboard.data(forType: .rtf) {
+    let attributedString = try NSAttributedString(
+      data: pasteboardRTFData,
+      options: [.documentType: NSAttributedString.DocumentType.rtf],
+      documentAttributes: nil
+    )
+    try insertRTFAppKit(selection: selection, attributedString: attributedString)
+    return
+  }
+  if let pasteboardRTFDData = pasteboard.data(forType: .rtfd) {
+    let attributedString = try NSAttributedString(
+      data: pasteboardRTFDData,
+      options: [.documentType: NSAttributedString.DocumentType.rtfd],
+      documentAttributes: nil
+    )
+    try insertRTFAppKit(selection: selection, attributedString: attributedString)
+    return
+  }
+
+  // Finally, plain text
+  if let string = pasteboard.string(forType: .string) {
+    try insertPlainText(selection: selection, text: string)
+  }
+}
+
+@MainActor
+private func insertRTFAppKit(selection: RangeSelection, attributedString: NSAttributedString) throws {
+  let paragraphs = attributedString.splitByNewlines()
+
+  var nodes: [Node] = []
+  for (index, paragraph) in paragraphs.enumerated() {
+    var extractedAttributes = [(attributes: [NSAttributedString.Key: Any], range: NSRange)]()
+    paragraph.enumerateAttributes(in: NSRange(location: 0, length: paragraph.length)) {
+      (dict, range, _) in
+      extractedAttributes.append((attributes: dict, range: range))
+    }
+
+    var nodeArray: [Node] = []
+    for attribute in extractedAttributes {
+      let text = paragraph.attributedSubstring(from: attribute.range).string
+      let textNode = createTextNode(text: text)
+
+      if let font = attribute.attributes[.font] as? NSFont {
+        let traits = font.fontDescriptor.symbolicTraits
+        if traits.contains(.bold) { textNode.format.bold = true }
+        if traits.contains(.italic) { textNode.format.italic = true }
+      }
+
+      if let underlineAttribute = attribute.attributes[.underlineStyle] as? NSNumber,
+         underlineAttribute.intValue != 0
+      {
+        textNode.format.underline = true
+      }
+
+      if let strikethroughAttribute = attribute.attributes[.strikethroughStyle] as? NSNumber,
+         strikethroughAttribute.intValue != 0
+      {
+        textNode.format.strikethrough = true
+      }
+
+      nodeArray.append(textNode)
+    }
+
+    if index != 0 {
+      let paragraphNode = createParagraphNode()
+      try paragraphNode.append(nodeArray)
+      nodes.append(paragraphNode)
+    } else {
+      nodes.append(contentsOf: nodeArray)
+    }
+  }
+
+  _ = try selection.insertNodes(nodes: nodes, selectStart: false)
 }
 #endif
