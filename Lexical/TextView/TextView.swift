@@ -30,7 +30,7 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
 @objc public class TextView: UITextView {
   let editor: Editor
 
-  internal let pasteboard = UIPasteboard.general
+  internal var pasteboard: UIPasteboard
   internal let pasteboardIdentifier = "x-lexical-nodes"
   internal var isUpdatingNativeSelection = false
   internal var layoutManagerDelegate: LayoutManagerDelegate
@@ -56,7 +56,8 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
 
   // MARK: - Init
 
-  init(editorConfig: EditorConfig, featureFlags: FeatureFlags) {
+  init(editorConfig: EditorConfig, featureFlags: FeatureFlags, pasteboard: UIPasteboard = .general) {
+    self.pasteboard = pasteboard
     let textStorage = TextStorage()
     let layoutManager = LayoutManager()
     layoutManager.allowsNonContiguousLayout = true
@@ -132,7 +133,7 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
 
   /// This init method is used for unit tests
   convenience init() {
-    self.init(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: FeatureFlags())
+    self.init(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: FeatureFlags(), pasteboard: .general)
   }
 
   @available(*, unavailable)
@@ -205,9 +206,6 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
 
     // Fallback: if nothing changed (text and selection), delegate to UIKit's default handling
     if text == previousText && selectedRange == previousSelectedRange {
-      if editor.featureFlags.verboseLogging {
-        print("🔥 TEXTVIEW: deleteBackward fallback → UIKit (no-op detected)")
-      }
       super.deleteBackward()
       resetTypingAttributes(for: selectedRange)
       return
@@ -245,7 +243,7 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
         resetTypingAttributes(for: node)
       }
     } catch {
-      print("Failed resetting typing attributes: \(error)")
+      editor.log(.UITextView, .error, "Failed resetting typing attributes; \(String(describing: error))")
     }
   }
 
@@ -267,14 +265,20 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
         ?? true)
       {
         return true
-      } else if #available(iOS 14.0, *) {
-        if !(pasteboard.data(forPasteboardType: (UTType.utf8PlainText.identifier))?.isEmpty ?? true)
-        {
+      }
+
+      if #available(iOS 14.0, *) {
+        if !(pasteboard.data(forPasteboardType: UTType.rtf.identifier)?.isEmpty ?? true) {
+          return true
+        }
+        if !(pasteboard.data(forPasteboardType: UTType.utf8PlainText.identifier)?.isEmpty ?? true) {
           return true
         }
       } else {
-        if !(pasteboard.data(forPasteboardType: (kUTTypeUTF8PlainText as String))?.isEmpty ?? true)
-        {
+        if !(pasteboard.data(forPasteboardType: (kUTTypeRTF as String))?.isEmpty ?? true) {
+          return true
+        }
+        if !(pasteboard.data(forPasteboardType: (kUTTypeUTF8PlainText as String))?.isEmpty ?? true) {
           return true
         }
       }
@@ -554,16 +558,6 @@ private class TextViewDelegate: NSObject, UITextViewDelegate {
 
   public func textViewDidChangeSelection(_ textView: UITextView) {
     guard let textView = textView as? TextView else { return }
-    if editor.featureFlags.verboseLogging {
-      let range = textView.selectedRange
-      let marked = textView.markedTextRange
-      let mr = marked.map { (r: UITextRange) -> String in
-        let start = textView.offset(from: textView.beginningOfDocument, to: r.start)
-        let end = textView.offset(from: textView.beginningOfDocument, to: r.end)
-        return "{\(start), \(end-start)}"
-      } ?? "nil"
-      print("🔥 NATIVE-SEL: didChangeSelection selected=\(NSStringFromRange(range)) marked=\(mr) updating=\(textView.isUpdatingNativeSelection)")
-    }
     if textView.isUpdatingNativeSelection {
       return
     }

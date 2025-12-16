@@ -195,6 +195,53 @@ public func registerTestDecoratorNode(on editor: Editor) throws {
 
 // MARK: - Cross-Platform Decorator Block Node for Tests
 
+// MARK: - Cross-Platform *Serializable* Decorator Node for Clipboard Tests
+
+public extension NodeType {
+  static let testSerializableDecoratorCrossplatform = NodeType(rawValue: "testSerializableDecoratorCrossplatform")
+}
+
+/// A cross-platform decorator node fixture that is Codable and safe for copy/paste round-trip tests.
+///
+/// Unlike `TestDecoratorNodeCrossplatform`, this node supports decoding (it does not fatalError in `init(from:)`),
+/// so it can be used in pasteboard serialization tests.
+public final class TestSerializableDecoratorNodeCrossplatform: DecoratorNode {
+
+  public override class func getType() -> NodeType {
+    .testSerializableDecoratorCrossplatform
+  }
+
+  public override func clone() -> Self {
+    Self(getKey())
+  }
+
+  #if os(macOS) && !targetEnvironment(macCatalyst)
+  public override func createView() -> NSView {
+    NSView()
+  }
+
+  public override func decorate(view: NSView) {}
+  #else
+  public override func createView() -> UIView {
+    UIView()
+  }
+
+  public override func decorate(view: UIView) {}
+  #endif
+
+  public override func sizeForDecoratorView(textViewWidth: CGFloat, attributes: [NSAttributedString.Key: Any]) -> CGSize {
+    CGSize(width: 12, height: 12)
+  }
+}
+
+@MainActor
+public func registerTestSerializableDecoratorNode(on editor: Editor) throws {
+  try editor.registerNode(
+    nodeType: NodeType.testSerializableDecoratorCrossplatform,
+    class: TestSerializableDecoratorNodeCrossplatform.self
+  )
+}
+
 public extension NodeType {
   static let testDecoratorBlockCrossplatform = NodeType(rawValue: "testDecoratorBlockCrossplatform")
 }

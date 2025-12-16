@@ -10,6 +10,7 @@
 
 @testable import Lexical
 import XCTest
+import UniformTypeIdentifiers
 
 class TextViewTests: XCTestCase {
 
@@ -350,6 +351,165 @@ class TextViewTests: XCTestCase {
     var out = ""
     try destEditor.read { out = getRoot()?.getTextContent() ?? "" }
     XCTAssertEqual(out, "Hello world")
+  }
+
+  func testPaste_PrefersLexicalNodesOverRTF_WhenBothPresent_PreservesDecoratorNode() throws {
+    guard let (pasteboard, pasteboardName) = makeUniquePasteboard() else {
+      XCTFail("Could not create a unique pasteboard")
+      return
+    }
+    defer { UIPasteboard.remove(withName: pasteboardName) }
+
+    // Copy a decorator node into the pasteboard (writes both RTF and Lexical node JSON)
+    do {
+      let source = LexicalView(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: FeatureFlags())
+      let sourceEditor = source.editor
+      try registerTestSerializableDecoratorNode(on: sourceEditor)
+
+      var decoratorKey: NodeKey?
+      try sourceEditor.update {
+        guard let root = getRoot() else { return }
+        for child in root.getChildren() { try child.remove() }
+        let paragraph = createParagraphNode()
+        let left = createTextNode(text: "A")
+        let decorator = TestSerializableDecoratorNodeCrossplatform()
+        let right = createTextNode(text: "B")
+        try paragraph.append([left, decorator, right])
+        decoratorKey = decorator.getKey()
+        try root.append([paragraph])
+
+        guard let decoratorKey else { return }
+        try setSelection(NodeSelection(nodes: [decoratorKey]))
+      }
+
+      try sourceEditor.update {
+        try onCopyFromUITextView(editor: sourceEditor, pasteboard: pasteboard)
+      }
+    }
+
+    func containsDecoratorNode(_ editor: Editor) throws -> Bool {
+      var found = false
+      try editor.read {
+        found = editor.getEditorState().nodeMap.values.contains(where: { $0 is TestSerializableDecoratorNodeCrossplatform })
+      }
+      return found
+    }
+
+    // Paste with Lexical nodes present → decorator should round-trip
+    do {
+      let dest = LexicalView(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: FeatureFlags())
+      let destEditor = dest.editor
+      try registerTestSerializableDecoratorNode(on: destEditor)
+
+      try destEditor.update {
+        guard let root = getRoot() else { return }
+        for child in root.getChildren() { try child.remove() }
+        let paragraph = createParagraphNode()
+        try root.append([paragraph])
+        try paragraph.selectStart()
+      }
+
+      try destEditor.update {
+        try onPasteFromUITextView(editor: destEditor, pasteboard: pasteboard)
+      }
+
+      XCTAssertTrue(try containsDecoratorNode(destEditor))
+    }
+
+    // Remove Lexical nodes item, keep only RTF → decorator should NOT be recreated
+    if let rtfItem = pasteboard.items.first(where: { $0[UTType.rtf.identifier] != nil }) {
+      pasteboard.items = [rtfItem]
+    } else {
+      XCTFail("Expected RTF item on pasteboard")
+      return
+    }
+
+    do {
+      let dest = LexicalView(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: FeatureFlags())
+      let destEditor = dest.editor
+      try registerTestSerializableDecoratorNode(on: destEditor)
+
+      try destEditor.update {
+        guard let root = getRoot() else { return }
+        for child in root.getChildren() { try child.remove() }
+        let paragraph = createParagraphNode()
+        try root.append([paragraph])
+        try paragraph.selectStart()
+      }
+
+      try destEditor.update {
+        try onPasteFromUITextView(editor: destEditor, pasteboard: pasteboard)
+      }
+
+      XCTAssertFalse(try containsDecoratorNode(destEditor))
+    }
+  }
+
+  func testCanPerformActionPaste_ReturnsFalse_WhenPasteboardEmpty() {
+    let view = LexicalView(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: FeatureFlags())
+    let textView = view.textView
+
+    guard let (pasteboard, pasteboardName) = makeUniquePasteboard() else {
+      XCTFail("Could not create a unique pasteboard")
+      return
+    }
+    defer { UIPasteboard.remove(withName: pasteboardName) }
+    textView.pasteboard = pasteboard
+
+    XCTAssertFalse(textView.canPerformAction(#selector(UIResponderStandardEditActions.paste(_:)), withSender: nil))
+  }
+
+  func testCanPerformActionPaste_ReturnsTrue_WhenLexicalNodesPresent() {
+    let view = LexicalView(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: FeatureFlags())
+    let textView = view.textView
+
+    guard let (pasteboard, pasteboardName) = makeUniquePasteboard() else {
+      XCTFail("Could not create a unique pasteboard")
+      return
+    }
+    defer { UIPasteboard.remove(withName: pasteboardName) }
+    textView.pasteboard = pasteboard
+
+    pasteboard.items = [[LexicalConstants.pasteboardIdentifier: Data([0x01])]]
+    XCTAssertTrue(textView.canPerformAction(#selector(UIResponderStandardEditActions.paste(_:)), withSender: nil))
+  }
+
+  func testCanPerformActionPaste_ReturnsTrue_WhenUTF8PlainTextPresent() {
+    let view = LexicalView(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: FeatureFlags())
+    let textView = view.textView
+
+    guard let (pasteboard, pasteboardName) = makeUniquePasteboard() else {
+      XCTFail("Could not create a unique pasteboard")
+      return
+    }
+    defer { UIPasteboard.remove(withName: pasteboardName) }
+    textView.pasteboard = pasteboard
+
+    pasteboard.items = [[UTType.utf8PlainText.identifier: Data("Plain".utf8)]]
+    XCTAssertTrue(textView.canPerformAction(#selector(UIResponderStandardEditActions.paste(_:)), withSender: nil))
+  }
+
+  func testCanPerformActionPaste_ReturnsTrue_WhenRTFPresent() throws {
+    let view = LexicalView(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: FeatureFlags())
+    let textView = view.textView
+
+    guard let (pasteboard, pasteboardName) = makeUniquePasteboard() else {
+      XCTFail("Could not create a unique pasteboard")
+      return
+    }
+    defer { UIPasteboard.remove(withName: pasteboardName) }
+    textView.pasteboard = pasteboard
+
+    let attributed = NSAttributedString(
+      string: "Bold",
+      attributes: [.font: UIFont.boldSystemFont(ofSize: UIFont.systemFontSize)]
+    )
+    let rtfData = try attributed.data(
+      from: NSRange(location: 0, length: attributed.length),
+      documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
+    )
+    pasteboard.items = [[UTType.rtf.identifier: rtfData]]
+    XCTAssertTrue(textView.canPerformAction(#selector(UIResponderStandardEditActions.paste(_:)), withSender: nil))
   }
 
   func testInsertPlainText() throws {

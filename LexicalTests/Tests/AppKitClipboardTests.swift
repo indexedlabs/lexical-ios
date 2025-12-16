@@ -176,7 +176,95 @@ final class AppKitClipboardTests: XCTestCase {
       XCTAssertTrue(t.format.bold, "Expected bold formatting to be preserved from RTF")
     }
   }
+
+  func testPaste_PrefersLexicalNodesOverRTF_WhenBothPresent_PreservesDecoratorNode() throws {
+    let pasteboard = makeUniquePasteboard()
+
+    // Copy a decorator node into the pasteboard (writes Lexical nodes + RTF + plain text)
+    do {
+      let source = createTestEditorView()
+      let editor = source.editor
+      try registerTestSerializableDecoratorNode(on: editor)
+
+      var decoratorKey: NodeKey?
+      try editor.update {
+        guard let root = getRoot() else { return }
+        for child in root.getChildren() { try child.remove() }
+        let paragraph = createParagraphNode()
+        let left = createTextNode(text: "A")
+        let decorator = TestSerializableDecoratorNodeCrossplatform()
+        let right = createTextNode(text: "B")
+        try paragraph.append([left, decorator, right])
+        decoratorKey = decorator.getKey()
+        try root.append([paragraph])
+
+        guard let decoratorKey else { return }
+        try setSelection(NodeSelection(nodes: [decoratorKey]))
+      }
+
+      try editor.update {
+        try onCopyFromTextView(editor: editor, pasteboard: pasteboard)
+      }
+    }
+
+    func containsDecoratorNode(_ editor: Editor) throws -> Bool {
+      var found = false
+      try editor.read {
+        found = editor.getEditorState().nodeMap.values.contains(where: { $0 is TestSerializableDecoratorNodeCrossplatform })
+      }
+      return found
+    }
+
+    // Paste with Lexical nodes present → decorator should round-trip
+    do {
+      let dest = createTestEditorView()
+      let editor = dest.editor
+      try registerTestSerializableDecoratorNode(on: editor)
+
+      try editor.update {
+        guard let root = getRoot() else { return }
+        for child in root.getChildren() { try child.remove() }
+        let paragraph = createParagraphNode()
+        try root.append([paragraph])
+        try paragraph.selectStart()
+      }
+
+      try editor.update {
+        try onPasteFromTextView(editor: editor, pasteboard: pasteboard)
+      }
+
+      XCTAssertTrue(try containsDecoratorNode(editor))
+    }
+
+    // Copy only RTF into a new pasteboard (simulate non-Lexical source) → decorator should NOT be recreated
+    guard let rtfData = pasteboard.data(forType: .rtf) else {
+      XCTFail("Expected RTF data on pasteboard")
+      return
+    }
+    let rtfOnlyPasteboard = makeUniquePasteboard()
+    rtfOnlyPasteboard.declareTypes([.rtf], owner: nil)
+    rtfOnlyPasteboard.setData(rtfData, forType: .rtf)
+
+    do {
+      let dest = createTestEditorView()
+      let editor = dest.editor
+      try registerTestSerializableDecoratorNode(on: editor)
+
+      try editor.update {
+        guard let root = getRoot() else { return }
+        for child in root.getChildren() { try child.remove() }
+        let paragraph = createParagraphNode()
+        try root.append([paragraph])
+        try paragraph.selectStart()
+      }
+
+      try editor.update {
+        try onPasteFromTextView(editor: editor, pasteboard: rtfOnlyPasteboard)
+      }
+
+      XCTAssertFalse(try containsDecoratorNode(editor))
+    }
+  }
 }
 
 #endif // os(macOS) && !targetEnvironment(macCatalyst)
-
