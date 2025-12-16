@@ -239,7 +239,12 @@ class InlineImageTests: XCTestCase {
       try p.append([t1, img, t2]); try root.append([p])
       try t2.select(anchorOffset: 0, focusOffset: 0)
     }
+    // First backspace selects the image (NodeSelection), second backspace deletes it.
     try ed.update { try (getSelection() as? RangeSelection)?.deleteCharacter(isBackwards: true) }
+    try ed.read {
+      XCTAssertTrue(try getSelection() is NodeSelection, "First backspace should select the image")
+    }
+    try ed.update { try getSelection()?.deleteCharacter(isBackwards: true) }
     try ed.read {
       guard let sel = try getSelection() as? RangeSelection else { return XCTFail("Need range selection") }
       // After deleting image, caret should have advanced by the attachment width (one character in storage).

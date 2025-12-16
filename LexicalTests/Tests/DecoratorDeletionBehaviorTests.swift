@@ -24,6 +24,15 @@ final class DecoratorDeletionBehaviorTests: XCTestCase {
     let cfg = EditorConfig(theme: Theme(), plugins: [])
     let view = TestEditorView(editorConfig: cfg, featureFlags: FeatureFlags())
     try? registerTestDecoratorNode(on: view.editor)
+    // Editor initialization creates a default empty paragraph. These tests want full control
+    // over document structure, so start from an empty root.
+    try? view.editor.update {
+      guard let root = getRoot() else { return }
+      for child in root.getChildren() {
+        try child.remove()
+      }
+      try setSelection(nil)
+    }
     return view
   }
 

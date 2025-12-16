@@ -37,7 +37,9 @@ final class OptimizedReconcilerDecoratorBoundaryParityTests: XCTestCase {
         try tLeft.select(anchorOffset: 1, focusOffset: 1) // caret right after "A"
       }
       let beforeCache = ctx.textStorage.decoratorPositionCache.count
+      // First delete selects the decorator (NodeSelection), second delete removes it.
       try editor.update { try (getSelection() as? RangeSelection)?.deleteCharacter(isBackwards: false) }
+      try editor.update { try getSelection()?.deleteCharacter(isBackwards: false) }
       let after = ctx.textStorage.string
       let afterCache = ctx.textStorage.decoratorPositionCache.count
       XCTAssertEqual(beforeCache - 1, afterCache)
@@ -66,7 +68,9 @@ final class OptimizedReconcilerDecoratorBoundaryParityTests: XCTestCase {
         try tRight.select(anchorOffset: 0, focusOffset: 0)
       }
       let beforeCache = ctx.textStorage.decoratorPositionCache.count
+      // First backspace selects the decorator (NodeSelection), second backspace removes it.
       try editor.update { try (getSelection() as? RangeSelection)?.deleteCharacter(isBackwards: true) }
+      try editor.update { try getSelection()?.deleteCharacter(isBackwards: true) }
       let after = ctx.textStorage.string
       let afterCache = ctx.textStorage.decoratorPositionCache.count
       XCTAssertEqual(beforeCache - 1, afterCache)

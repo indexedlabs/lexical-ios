@@ -284,10 +284,6 @@ public class RangeSelection: BaseSelection {
 
   @MainActor
   public func insertText(_ text: String) throws {
-    if let ed = getActiveEditor(), ed.featureFlags.verboseLogging {
-      let preview = text.replacingOccurrences(of: "\n", with: "\\n")
-      print("🔥 TYPE: insertText text='\(preview)' len=\(text.lengthAsNSString()) at anchor=\(anchor.key):\(anchor.offset) focus=\(focus.key):\(focus.offset) collapsed=\(isCollapsed())")
-    }
     let anchor = anchor
     let focus = focus
     let anchorIsBefore = try anchor.isBefore(point: focus)
@@ -296,28 +292,8 @@ public class RangeSelection: BaseSelection {
     let style = style
 
     if isBefore && anchor.type == .element {
-      // Debug: check for decorators BEFORE transfer
-      if let ed = getActiveEditor(), let state = getActiveEditorState() {
-        for (key, node) in state.nodeMap where node is DecoratorNode {
-          print("🎯 INSERT-TEXT-A: decorator \(key) parent=\(node.parent ?? "nil")")
-          if let parentKey = node.parent, let parent = state.nodeMap[parentKey] as? ElementNode {
-            print("🎯 INSERT-TEXT-A: parent \(parentKey) children=\(parent.children) contains_decorator=\(parent.children.contains(key))")
-          }
-        }
-      }
       try transferStartingElementPointToTextPoint(
         start: anchor, end: focus, format: format, style: style)
-      // Debug: check for decorators AFTER transfer
-      if let ed = getActiveEditor(), let state = getActiveEditorState() {
-        for (key, node) in state.nodeMap where node is DecoratorNode {
-          print("🎯 INSERT-TEXT-B: decorator \(key) parent=\(node.parent ?? "nil")")
-          if let parentKey = node.parent, let parent = state.nodeMap[parentKey] as? ElementNode {
-            print("🎯 INSERT-TEXT-B: parent \(parentKey) children=\(parent.children) contains_decorator=\(parent.children.contains(key))")
-          } else {
-            print("🎯 INSERT-TEXT-B: decorator parent \(node.parent ?? "nil") not found in nodeMap or not ElementNode")
-          }
-        }
-      }
     } else if !isBefore && focus.type == .element {
       try transferStartingElementPointToTextPoint(
         start: focus, end: anchor, format: format, style: style)
@@ -325,9 +301,6 @@ public class RangeSelection: BaseSelection {
 
     let selectedNodes = try getNodes()
     let selectedNodesLength = selectedNodes.count
-    // Debug: log selected nodes to understand multi-node removal
-    print("🎯 INSERT-NODES: count=\(selectedNodesLength) keys=\(selectedNodes.map { $0.key }) types=\(selectedNodes.map { String(describing: type(of: $0)) })")
-    print("🎯 INSERT-NODES: anchor=\(anchor.key):\(anchor.offset):\(anchor.type) focus=\(focus.key):\(focus.offset):\(focus.type)")
 
     let firstPoint = isBefore ? anchor : focus
     let endPoint = isBefore ? focus : anchor
@@ -770,9 +743,6 @@ public class RangeSelection: BaseSelection {
       didReplaceOrMerge = false
 
       let newTarget = try insertNodeIntoTarget(node: node, target: target)
-      if let editor = getActiveEditor(), editor.featureFlags.verboseLogging, node is DecoratorNode {
-        print("🔥 INSERT-NODE: decorator inserted key=\(node.key) into target=\(target.key)")
-      }
       guard let newTarget else {
         continue
       }
@@ -1033,13 +1003,6 @@ public class RangeSelection: BaseSelection {
       } else {
         if !result.skipSelectStart {
           _ = try newElement.selectStart()
-          if let ed = getActiveEditor(), ed.featureFlags.verboseLogging {
-            if let sel = try? getSelection() as? RangeSelection {
-              print("🔥 SELECTION: after insertParagraph anchor=\(sel.anchor.key):\(sel.anchor.offset) focus=\(sel.focus.key):\(sel.focus.offset)")
-            } else {
-              print("🔥 SELECTION: after insertParagraph (no range selection)")
-            }
-          }
         }
       }
     }
@@ -1068,10 +1031,14 @@ public class RangeSelection: BaseSelection {
   #if canImport(UIKit)
   @MainActor
   public func deleteCharacter(isBackwards: Bool) throws {
-    if let ed = getActiveEditor(), ed.featureFlags.verboseLogging {
-      print("🔥 DELETE: begin backward=\(isBackwards) anchor=\(anchor.key):\(anchor.offset) focus=\(focus.key):\(focus.offset) collapsed=\(isCollapsed())")
-    }
     let wasCollapsed = isCollapsed()
+    let startedAtElementOffsetZero = wasCollapsed && isBackwards && anchor.type == .element && anchor.offset == 0
+    let startedAtInlineDecorator =
+      startedAtElementOffsetZero
+      && (try? (anchor.getNode() as? ElementNode)?.getChildAtIndex(index: anchor.offset) as? DecoratorNode)?
+        .isInline() == true
+    let startedInEmptyElement =
+      startedAtElementOffsetZero && ((try? (anchor.getNode() as? ElementNode)?.isEmpty()) == true)
     // Remember caret string location to allow clamping to a single-character deletion
     // if UIKit expands selection unexpectedly (e.g., predicts/selects the whole word).
     var caretStringLocation: Int? = nil
@@ -1081,19 +1048,55 @@ public class RangeSelection: BaseSelection {
     // Universal no-op: backspace at absolute document start should do nothing (parity with legacy)
     if isBackwards && wasCollapsed {
       if let editor = getActiveEditor() {
-        // Compute earliest visible text start across all TextNodes
-        var earliestTextStart = Int.max
-        for (key, item) in editor.rangeCache {
-          if let _ : TextNode = getNodeByKey(key: key) {
-            let start = item.location + item.preambleLength + item.childrenLength
-            if start < earliestTextStart { earliestTextStart = start }
+        func hasPreviousSiblingInAncestorChain(startingFrom node: Node) -> Bool {
+          var current: Node? = node
+          while let cur = current {
+            if cur.getPreviousSibling() != nil { return true }
+            let parent = cur.getParent()
+            if parent == nil || isRootNode(node: parent) { break }
+            current = parent
+          }
+          return false
+        }
+        func isAtAbsoluteDocumentStart(_ point: Point) -> Bool {
+          guard let node = try? point.getNode() else { return false }
+          switch point.type {
+          case .text:
+            guard let textNode = node as? TextNode else { return false }
+            if point.offset > 0 { return false }
+            return !hasPreviousSiblingInAncestorChain(startingFrom: textNode)
+          case .element:
+            guard let elementNode = node as? ElementNode else { return false }
+            if point.offset > 0 { return false }
+            return !hasPreviousSiblingInAncestorChain(startingFrom: elementNode)
+          default:
+            return false
           }
         }
-        if earliestTextStart == Int.max { earliestTextStart = 0 }
-        if let loc = try? stringLocationForPoint(anchor, editor: editor), loc <= earliestTextStart {
-          if editor.featureFlags.verboseLogging { print("🔥 DELETE: absolute doc-start backspace → no-op") }
+        if isAtAbsoluteDocumentStart(anchor), caretStringLocation == 0 {
           return
         }
+      }
+    }
+    // If the caret is adjacent to an inline decorator, handle selection transition to NodeSelection
+    // before any native clamping. The optimized reconciler pre-clamp turns a collapsed caret into
+    // a 1-char range selection, which would otherwise bypass decorator handling and delete the
+    // attachment immediately (breaking parity with legacy).
+    if wasCollapsed {
+      let anchorPoint = anchor
+      let focusPoint = focus
+      let anchorNode: Node? = try? anchorPoint.getNode()
+      let adjacentNode = try getAdjacentNode(focus: focusPoint, isBackward: isBackwards)
+      if let adjacentDecorator = adjacentNode as? DecoratorNode, adjacentDecorator.isInline() {
+        if let anchorElement = anchorNode as? ElementNode, anchorElement.isEmpty() {
+          try anchorElement.remove()
+        }
+        let nodeSelection = NodeSelection(nodes: Set([adjacentDecorator.key]))
+        try setSelection(nodeSelection)
+        if let editor = getActiveEditor() {
+          editor.dispatchCommand(type: .selectionChange)
+        }
+        return
       }
     }
     // Optimized: pre-clamp a single grapheme (composed character) deletion when starting
@@ -1149,13 +1152,6 @@ public class RangeSelection: BaseSelection {
         try applySelectionRange(clamp, affinity: .backward)
         editor.pendingDeletionClampRange = clamp
         didPreClampSingleChar = true
-        if editor.featureFlags.verboseLogging {
-          if editor.featureFlags.useOptimizedReconcilerStrictMode {
-            print("🔥 DELETE: pre-clamp scalar at \(NSStringFromRange(clamp))")
-          } else {
-            print("🔥 DELETE: pre-clamp grapheme at \(NSStringFromRange(clamp))")
-          }
-        }
       }
     }
     // Capture potential caret remap target for list/item merges when deleting backwards
@@ -1193,7 +1189,6 @@ public class RangeSelection: BaseSelection {
       if let anchorLoc = try stringLocationForPoint(anchor, editor: editor) {
         // If at absolute doc start and deleting backwards, this is a no-op.
         if isBackwards && anchorLoc == 0 {
-          if editor.featureFlags.verboseLogging { print("🔥 DELETE: read-only doc-start backspace → no-op") }
           return
         }
         let start = max(0, isBackwards ? anchorLoc - 1 : anchorLoc)
@@ -1217,9 +1212,6 @@ public class RangeSelection: BaseSelection {
             node = n.getParent()
           }
           if !hasPrev {
-            if let ed = getActiveEditor(), ed.featureFlags.verboseLogging {
-              print("🔥 DELETE: structural doc-start backspace → no-op")
-            }
             return
           }
         }
@@ -1248,9 +1240,7 @@ public class RangeSelection: BaseSelection {
 
       // Handle the deletion around decorators.
       let adjacentNode = try getAdjacentNode(focus: focus, isBackward: isBackwards)
-      print("🎯 DELETE-DECORATOR: adjacentNode=\(adjacentNode?.key ?? "nil") type=\(adjacentNode.map { String(describing: type(of: $0)) } ?? "nil")")
       if let adjacentNode = adjacentNode as? DecoratorNode {
-        print("🎯 DELETE-DECORATOR: is decorator, isInline=\(adjacentNode.isInline()) anchorNode=\(anchorNode?.key ?? "nil") anchorIsElement=\(anchorNode is ElementNode) anchorIsEmpty=\((anchorNode as? ElementNode)?.isEmpty() ?? false)")
         if adjacentNode.isInline() {
           // Make it possible to move selection from range selection to
           // node selection on the node.
@@ -1258,28 +1248,27 @@ public class RangeSelection: BaseSelection {
           let anchorNode = anchorNode as? ElementNode,
             anchorNode.isEmpty()
           {
-            print("🎯 DELETE-DECORATOR: removing empty anchor paragraph \(anchorNode.key), selecting decorator \(adjacentNode.key)")
             try anchorNode.remove()
             let nodeSelection = NodeSelection(nodes: Set([adjacentNode.key]))
             try setSelection(nodeSelection)
+            if let editor = getActiveEditor() {
+              editor.dispatchCommand(type: .selectionChange)
+            }
           } else {
-            print("🎯 DELETE-DECORATOR: selecting and removing decorator \(adjacentNode.key)")
-            try adjacentNode.selectStart()
-            try adjacentNode.remove()
+            let nodeSelection = NodeSelection(nodes: Set([adjacentNode.key]))
+            try setSelection(nodeSelection)
             if let editor = getActiveEditor() {
               editor.dispatchCommand(type: .selectionChange)
             }
           }
         } else {
           if let anchorNode = anchorNode as? ElementNode, anchorNode.isEmpty() {
-            print("🎯 DELETE-DECORATOR: block decorator, removing empty anchor paragraph \(anchorNode.key)")
             try anchorNode.remove()
             try adjacentNode.selectEnd()
           } else {
             if try adjacentNode.collapseAtStart(selection: self) {
               return
             } else {
-              print("🎯 DELETE-DECORATOR: block decorator, selecting and removing decorator \(adjacentNode.key)")
               try adjacentNode.selectPrevious(anchorOffset: nil, focusOffset: nil)
               try adjacentNode.remove()
             }
@@ -1315,9 +1304,6 @@ public class RangeSelection: BaseSelection {
         return
       }
       if didPreClampSingleChar {
-        if let ed = getActiveEditor(), ed.featureFlags.verboseLogging {
-          print("🔥 DELETE: skip native modify (pre-clamped)")
-        }
       } else {
         try modify(alter: .extend, isBackward: isBackwards, granularity: .character)
       }
@@ -1331,9 +1317,6 @@ public class RangeSelection: BaseSelection {
            let a = try? stringLocationForPoint(anchor, editor: editor),
            let b = try? stringLocationForPoint(focus, editor: editor) {
           let len = abs(a - b)
-          if editor.featureFlags.verboseLogging {
-            print("🔥 DELETE: native expansion detected start=\(start) a=\(a) b=\(b) len=\(len)")
-          }
           if len > 1 {
             // Clamp to either a single code unit (strict parity) or the full grapheme cluster
             var clamp = NSRange(location: 0, length: 0)
@@ -1350,21 +1333,11 @@ public class RangeSelection: BaseSelection {
             try applySelectionRange(clamp, affinity: isBackwards ? .backward : .forward)
             // Additionally clamp structural fast paths in the optimized reconciler (one‑shot)
             editor.pendingDeletionClampRange = clamp
-            if editor.featureFlags.verboseLogging {
-              if editor.featureFlags.useOptimizedReconcilerStrictMode {
-                print("🔥 DELETE: clamp native selection word→1-char at \(clamp.location)")
-              } else {
-                print("🔥 DELETE: clamp native selection word→grapheme cluster=\(NSStringFromRange(clamp))")
-              }
-            }
           }
           }
         }
 
       if !isCollapsed() {
-        if let ed = getActiveEditor(), ed.featureFlags.verboseLogging {
-          print("🔥 DELETE: after modify() collapsed=false; anchor=\(anchor.key):\(anchor.offset) focus=\(focus.key):\(focus.offset)")
-        }
         let focusNode = focus.type == .text ? try focus.getNode() : nil
         anchorNode = anchor.type == .text ? try anchor.getNode() : nil
 
@@ -1393,9 +1366,6 @@ public class RangeSelection: BaseSelection {
         // since our modify() accurately accounts for unicode boundaries
       } else if isBackwards && anchor.offset == 0 {
         // Special handling around rich text nodes
-        if let ed = getActiveEditor(), ed.featureFlags.verboseLogging {
-          print("🔥 DELETE: at start-of-paragraph (offset=0) — will merge with previous if possible")
-        }
         let element =
           anchor.type == .element ? try anchor.getNode() : try anchor.getNode().getParentOrThrow()
         if let element = element as? ElementNode, try element.collapseAtStart(selection: self) {
@@ -1404,65 +1374,7 @@ public class RangeSelection: BaseSelection {
       }
     }
 
-    // Log planned vs effective deletion (accounts for clamp + collapsed caret)
-    if let ed = getActiveEditor(), ed.featureFlags.verboseLogging {
-      let nsLen = ed.textStorage?.length ?? 0
-      let a = try? stringLocationForPoint(anchor, editor: ed)
-      let b = try? stringLocationForPoint(focus, editor: ed)
-      var selectionRange: NSRange? = nil
-      if let a, let b {
-        let lo = min(a, b); let hi = max(a, b)
-        selectionRange = NSRange(location: lo, length: hi - lo)
-      }
-      // Determine a single composed character (grapheme cluster) to delete/forward-delete
-      // when the selection was collapsed. This ensures emoji and ZWJ sequences are handled
-      // as one unit (parity with legacy + UIKit behavior).
-      var collapsedOneChar: NSRange? = nil
-      if wasCollapsed, let start = caretStringLocation, let ns = ed.textStorage?.string as NSString? {
-        func oneGraphemeRange(around start: Int, backwards: Bool, in ns: NSString) -> NSRange? {
-          if backwards {
-            if start <= 0 { return nil }
-            let idx = max(0, start - 1)
-            if idx < ns.length { return ns.rangeOfComposedCharacterSequence(at: idx) }
-            return nil
-          } else {
-            if start >= ns.length { return nil }
-            return ns.rangeOfComposedCharacterSequence(at: start)
-          }
-        }
-        collapsedOneChar = oneGraphemeRange(around: start, backwards: isBackwards, in: ns)
-      }
-      let clamp = ed.pendingDeletionClampRange
-      // Decide effective range used for deletion
-      var effective = NSRange(location: 0, length: 0)
-      if let clamp {
-        if let sel = selectionRange {
-          let inter = NSIntersectionRange(sel, clamp)
-          effective = inter.length > 0 ? inter : clamp
-        } else if let one = collapsedOneChar {
-          let inter = NSIntersectionRange(one, clamp)
-          effective = inter.length > 0 ? inter : clamp
-        } else {
-          effective = clamp
-        }
-      } else if let sel = selectionRange, sel.length > 0 {
-        effective = sel
-      } else if let one = collapsedOneChar {
-        effective = one
-      }
-      // Clamp to current TS length for preview
-      let safeEff = NSIntersectionRange(effective, NSRange(location: 0, length: nsLen))
-      var effText = ""
-      if safeEff.length > 0, let ns = ed.textStorage?.string as NSString? {
-        effText = ns.substring(with: safeEff)
-      }
-      let selStr = selectionRange.map { NSStringFromRange($0) } ?? "nil"
-      let clampStr = clamp.map { NSStringFromRange($0) } ?? "nil"
-      print("🔥 DELETE: plan sel=\(selStr) clamp=\(clampStr) → effective=\(NSStringFromRange(safeEff)) text='\(effText)')")
-      print("🔥 DELETE: removeText()")
-    }
     try removeText()
-    if let ed = getActiveEditor(), ed.featureFlags.verboseLogging { print("🔥 DELETE: end") }
 
     // After a successful backward delete at the start of a block (e.g., list item),
     // remap the caret to the end of the previous text node to mirror legacy behavior.
@@ -1471,11 +1383,46 @@ public class RangeSelection: BaseSelection {
         let end = prevText.getTextContentSize()
         do {
           try prevText.select(anchorOffset: end, focusOffset: end)
-          if let ed = getActiveEditor(), ed.featureFlags.verboseLogging {
-            print("🔥 DELETE: caret remapped to previous text end \(key):\(end)")
-          }
         } catch {
           // Best-effort remap; ignore if selection cannot be applied (structure changed differently)
+        }
+      }
+    }
+
+    // Selection normalization for paragraph-boundary backspace:
+    // - If we merged into a paragraph with an inline decorator, prefer element selection between
+    //   the preceding text and the decorator (to avoid landing inside the text node).
+    // - If we deleted an empty paragraph after a paragraph ending in an inline decorator, prefer
+    //   placing the caret at the end of the last text node (not after the decorator).
+    if isBackwards && wasCollapsed && isCollapsed() {
+      if startedAtInlineDecorator,
+         anchor.type == .text,
+         let textNode = try? anchor.getNode() as? TextNode,
+         anchor.offset == textNode.getTextContentSize(),
+         let nextDecorator = textNode.getNextSibling() as? DecoratorNode,
+         nextDecorator.isInline(),
+         let parent = textNode.getParent() as? ElementNode,
+         let index = textNode.getIndexWithinParent() {
+        try? parent.select(anchorOffset: index + 1, focusOffset: index + 1)
+      } else if startedInEmptyElement,
+                anchor.type == .element,
+                let element = try? anchor.getNode() as? ElementNode,
+                anchor.offset == element.getChildrenSize(),
+                let lastDecorator = element.getLastChild() as? DecoratorNode,
+                lastDecorator.isInline() {
+        var prev = lastDecorator.getPreviousSibling()
+        while let node = prev {
+          if let prevText = node as? TextNode {
+            let end = prevText.getTextContentSize()
+            try? prevText.select(anchorOffset: end, focusOffset: end)
+            break
+          }
+          if let prevElement = node as? ElementNode, let desc = prevElement.getLastDescendant() as? TextNode {
+            let end = desc.getTextContentSize()
+            try? desc.select(anchorOffset: end, focusOffset: end)
+            break
+          }
+          prev = node.getPreviousSibling()
         }
       }
     }
@@ -1496,13 +1443,6 @@ public class RangeSelection: BaseSelection {
   @MainActor
   public func deleteWord(isBackwards: Bool) throws {
     if isCollapsed() {
-      if let ed = getActiveEditor(), ed.featureFlags.verboseLogging {
-        if let native = ed.getNativeSelection().range {
-          print("🔥 DELETEWORD: begin collapsed=true backward=\(isBackwards) native=\(NSStringFromRange(native)) anchor=\(anchor.key):\(anchor.offset) focus=\(focus.key):\(focus.offset)")
-        } else {
-          print("🔥 DELETEWORD: begin collapsed=true backward=\(isBackwards) native=nil anchor=\(anchor.key):\(anchor.offset) focus=\(focus.key):\(focus.offset)")
-        }
-      }
       // Hint reconciler to avoid structural insert fast path for this update.
       getActiveEditor()?.suppressInsertFastPathOnce = true
       try modify(alter: .extend, isBackward: isBackwards, granularity: .word)
@@ -1534,7 +1474,6 @@ public class RangeSelection: BaseSelection {
             }
             if j > start {
               try applySelectionRange(NSRange(location: start, length: j - start), affinity: .forward)
-              if editor.featureFlags.verboseLogging { print("🔥 DELETEWORD: extended forward to \(j-start) chars from \(start) [explicit]") }
             }
           }
           // Record clamp range for structural delete fast path to avoid over-deletes
@@ -1542,7 +1481,6 @@ public class RangeSelection: BaseSelection {
             let loc = min(a, b)
             let len = abs(a - b)
             editor.pendingDeletionClampRange = NSRange(location: loc, length: len)
-            if editor.featureFlags.verboseLogging { print("🔥 DELETEWORD: clamp-range=\(NSStringFromRange(editor.pendingDeletionClampRange!))") }
           }
           // If selection is still collapsed at end of a text node, extend focus across decorators
           if isCollapsed(), anchor.type == .text, focus.type == .text, anchor.key == focus.key,
@@ -1553,16 +1491,12 @@ public class RangeSelection: BaseSelection {
             if let nextText = nextNode as? TextNode {
               focus.updatePoint(key: nextText.getKey(), offset: 0, type: .text)
               dirty = true
-              if editor.featureFlags.verboseLogging { print("🔥 DELETEWORD: extended focus across decorators to \(nextText.getKey()):0") }
             }
           }
         }
       }
     }
     try removeText()
-    if let ed = getActiveEditor(), ed.featureFlags.verboseLogging {
-      print("🔥 DELETEWORD: removeText() done anchor=\(anchor.key):\(anchor.offset) focus=\(focus.key):\(focus.offset)")
-    }
   }
 
   @MainActor
@@ -1611,9 +1545,6 @@ public class RangeSelection: BaseSelection {
           // Instead of immediately deleting, select the decorator first
           // The user will need to press backspace again to delete it
           let nodeSelection = NodeSelection(nodes: Set([adjacentNode.key]))
-          if editor.featureFlags.verboseLogging {
-            print("🎯 NODE-SEL-CREATE: Creating NodeSelection for decorator key=\(adjacentNode.key)")
-          }
           try setSelection(nodeSelection)
           editor.dispatchCommand(type: .selectionChange)
         }
@@ -2027,18 +1958,12 @@ public class RangeSelection: BaseSelection {
 
     let anchorOffset = affinity == .forward ? range.location : range.location + range.length
     let focusOffset = affinity == .forward ? range.location + range.length : range.location
-    if editor.featureFlags.verboseLogging {
-      print("🔥 APPLY-NATIVE: map range=\(NSStringFromRange(range)) → anchorOff=\(anchorOffset) focusOff=\(focusOffset)")
-    }
 
     if let anchor = try pointAtStringLocation(
       anchorOffset, searchDirection: affinity, rangeCache: editor.rangeCache),
       let focus = try pointAtStringLocation(
         focusOffset, searchDirection: affinity, rangeCache: editor.rangeCache)
     {
-      if editor.featureFlags.verboseLogging {
-        print("🔥 APPLY-NATIVE: mapped anchor=\(anchor.key):\(anchor.offset) focus=\(focus.key):\(focus.offset)")
-      }
       // Guard against mismapped wide ranges (observed at line breaks) when the original
       // native range length is 1. If the mapped points land on the same TextNode and span
       // its full content, clamp to 1 char at the intended string offsets.
@@ -2047,9 +1972,6 @@ public class RangeSelection: BaseSelection {
          let tn = (try? anchor.getNode()) as? TextNode,
          abs(anchor.offset - focus.offset) > 1,
          abs(anchor.offset - focus.offset) >= tn.getTextContentSize() {
-        if editor.featureFlags.verboseLogging {
-          print("🔥 APPLY-NATIVE: clamp mapped len=\(abs(anchor.offset - focus.offset)) → 1 (node=\(anchor.key))")
-        }
         if let aPt = try? pointAtStringLocation(anchorOffset, searchDirection: .backward, rangeCache: editor.rangeCache),
            let fPt = try? pointAtStringLocation(focusOffset, searchDirection: .forward, rangeCache: editor.rangeCache) {
           self.anchor = aPt; self.focus = fPt
@@ -2073,20 +1995,12 @@ public class RangeSelection: BaseSelection {
     guard let editor = getActiveEditor() else {
       throw LexicalError.invariantViolation("Cannot be called outside update loop")
     }
-    if editor.featureFlags.verboseLogging {
-      let rng = editor.getNativeSelection().range.map { NSStringFromRange($0) } ?? "nil"
-      print("🔥 MODIFY: request alter=\(alter) dir=\(isBackward ? "backward" : "forward") gran=\(granularity) native.before=\(rng)")
-    }
     editor.moveNativeSelection(
       type: alter,
       direction: isBackward ? .backward : .forward,
       granularity: granularity)
 
     let nativeSelection = editor.getNativeSelection()
-    if editor.featureFlags.verboseLogging {
-      let rng = nativeSelection.range.map { NSStringFromRange($0) } ?? "nil"
-      print("🔥 MODIFY: native.after=\(rng)")
-    }
     try applyNativeSelection(nativeSelection)
 
     // Because a range works on start and end, we might need to flip
@@ -2106,9 +2020,6 @@ public class RangeSelection: BaseSelection {
   @MainActor
   public func applyNativeSelection(_ nativeSelection: NativeSelection) throws {
     guard let range = nativeSelection.range else { return }
-    if let ed = getActiveEditor(), ed.featureFlags.verboseLogging {
-      print("🔥 APPLY-NATIVE: range=\(NSStringFromRange(range)) affinity=\(nativeSelection.affinity == .backward ? "backward" : "forward")")
-    }
     try applySelectionRange(
       range, affinity: range.length == 0 ? .backward : nativeSelection.affinity)
   }
@@ -2153,11 +2064,6 @@ public class RangeSelection: BaseSelection {
       throw LexicalError.invariantViolation("No AppKit frontend attached")
     }
 
-    if editor.featureFlags.verboseLogging {
-      let rng = NSStringFromRange(frontendAppKit.nativeSelectionRange)
-      print("🔥 MODIFY: request alter=\(alter) dir=\(isBackward ? "backward" : "forward") gran=\(granularity) native.before=\(rng)")
-    }
-
     frontendAppKit.moveNativeSelection(
       type: alter,
       direction: isBackward ? .backward : .forward,
@@ -2165,10 +2071,6 @@ public class RangeSelection: BaseSelection {
 
     let nativeRange = frontendAppKit.nativeSelectionRange
     let nativeAffinity: LexicalTextStorageDirection = frontendAppKit.nativeSelectionAffinity == .downstream ? .forward : .backward
-
-    if editor.featureFlags.verboseLogging {
-      print("🔥 MODIFY: native.after=\(NSStringFromRange(nativeRange))")
-    }
 
     try applySelectionRange(nativeRange, affinity: nativeAffinity)
 

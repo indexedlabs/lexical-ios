@@ -30,6 +30,11 @@ final class DocStartNoOpParityTests: XCTestCase {
       let ed = v.editor
       try ed.update {
         guard let root = getRoot() else { return }
+        // Editor initialization creates a default empty paragraph. Ensure we're truly at the start
+        // of the document for this test.
+        for child in root.getChildren() {
+          try child.remove()
+        }
         let p = createParagraphNode(); let t = createTextNode(text: "Hello")
         try p.append([t]); try root.append([p])
         try t.select(anchorOffset: 0, focusOffset: 0) // start of doc

@@ -230,6 +230,9 @@ final class DecoratorLayoutDuringEditingRegressionTests: XCTestCase {
     // Setup: just a decorator in a paragraph
     try editor.update {
       guard let root = getRoot() else { return }
+      for child in root.getChildren() {
+        try child.remove()
+      }
       let paragraph = createParagraphNode()
       let decorator = TestDecoratorNodeCrossplatform()
       decoratorKey = decorator.key
@@ -316,6 +319,9 @@ final class DecoratorLayoutDuringEditingRegressionTests: XCTestCase {
     // Setup: just a decorator in a paragraph
     try editor.update {
       guard let root = getRoot() else { return }
+      for child in root.getChildren() {
+        try child.remove()
+      }
       let paragraph = createParagraphNode()
       let decorator = TestDecoratorNodeCrossplatform()
       decoratorKey = decorator.key
@@ -396,6 +402,9 @@ final class DecoratorLayoutDuringEditingRegressionTests: XCTestCase {
 
     try editor.update {
       guard let root = getRoot() else { return }
+      for child in root.getChildren() {
+        try child.remove()
+      }
       let paragraph = createParagraphNode()
       let text = createTextNode(text: "Hello")
       let decorator = TestDecoratorNodeCrossplatform()
@@ -457,6 +466,9 @@ final class DecoratorLayoutDuringEditingRegressionTests: XCTestCase {
     // Setup: newline + decorator (decorator at position 1)
     try editor.update {
       guard let root = getRoot() else { return }
+      for child in root.getChildren() {
+        try child.remove()
+      }
       let paragraph = createParagraphNode()
       let decorator = TestDecoratorNodeCrossplatform()
       decoratorKey = decorator.key
