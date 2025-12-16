@@ -664,21 +664,7 @@ public class Editor: NSObject {
     type: NativeSelectionModificationType, direction: LexicalTextStorageDirection,
     granularity: LexicalTextGranularity
   ) {
-    if featureFlags.verboseLogging {
-      if let rng = getNativeSelection().range {
-        print("🔥 NATIVE-MOVE: before type=\(type) dir=\(direction == .backward ? "backward" : "forward") gran=\(granularity) range=\(NSStringFromRange(rng))")
-      } else {
-        print("🔥 NATIVE-MOVE: before type=\(type) dir=\(direction == .backward ? "backward" : "forward") gran=\(granularity) range=nil")
-      }
-    }
     frontend?.moveNativeSelection(type: type, direction: direction, granularity: granularity)
-    if featureFlags.verboseLogging {
-      if let rng = getNativeSelection().range {
-        print("🔥 NATIVE-MOVE: after  type=\(type) dir=\(direction == .backward ? "backward" : "forward") gran=\(granularity) range=\(NSStringFromRange(rng))")
-      } else {
-        print("🔥 NATIVE-MOVE: after  type=\(type) dir=\(direction == .backward ? "backward" : "forward") gran=\(granularity) range=nil")
-      }
-    }
   }
   #endif
 
@@ -713,9 +699,6 @@ public class Editor: NSObject {
       compositionKey = nil
     }
 
-    if featureFlags.verboseLogging {
-      print("🔥 STATE: setEditorState dirtyType=fullReconcile pending.nodes=\(pendingEditorState?.nodeMap.count ?? -1)")
-    }
     try beginUpdate({}, mode: UpdateBehaviourModificationMode(), reason: .setState)
   }
 
@@ -771,14 +754,10 @@ public class Editor: NSObject {
       self.log(.editor, .verbose, "No view for mounting decorator subviews.")
       return
     }
-    if featureFlags.verboseLogging {
-      print("🔥 DEC-MOUNT: begin cache.count=\(decoratorCache.count) ts.len=\(textStorage?.length ?? -1)")
-    }
     try? self.read {
       for (nodeKey, decoratorCacheItem) in decoratorCache {
         switch decoratorCacheItem {
         case .needsCreation:
-          if featureFlags.verboseLogging { print("🔥 DEC-MOUNT: create key=\(nodeKey)") }
           guard let view = decoratorView(forKey: nodeKey, createIfNecessary: true),
             let node = getNodeByKey(key: nodeKey) as? DecoratorNode
           else {
@@ -799,9 +778,6 @@ public class Editor: NSObject {
             let glyphRange = frontend?.layoutManager.glyphRange(
               forCharacterRange: rangeCacheItem.range, actualCharacterRange: nil) ?? .init(location: rangeCacheItem.range.location, length: rangeCacheItem.range.length)
             frontend?.layoutManager.ensureLayout(forGlyphRange: glyphRange)
-            if featureFlags.verboseLogging {
-              print("🔥 DEC-MOUNT: invalidate key=\(nodeKey) range=\(NSStringFromRange(rangeCacheItem.range))")
-            }
           }
 
           self.log(
@@ -809,7 +785,6 @@ public class Editor: NSObject {
             "needsCreation -> cached. Key \(nodeKey). Frame \(view.frame). Superview \(String(describing: view.superview))"
           )
         case .cachedView(let view):
-          if featureFlags.verboseLogging { print("🔥 DEC-MOUNT: cached key=\(nodeKey)") }
           // This shouldn't be needed if our appear/disappear logic is perfect, but it turns out we do currently need this.
           superview.addSubview(view)
           self.log(
@@ -817,7 +792,6 @@ public class Editor: NSObject {
             "no-op, already cached. Key \(nodeKey). Frame \(view.frame). Superview \(String(describing: view.superview))"
           )
         case .unmountedCachedView(let view):
-          if featureFlags.verboseLogging { print("🔥 DEC-MOUNT: remount key=\(nodeKey)") }
           view.isHidden = true  // decorators will be hidden until they are layed out by TextKit
           superview.addSubview(view)
           if let node = getNodeByKey(key: nodeKey) as? DecoratorNode {
@@ -830,16 +804,12 @@ public class Editor: NSObject {
             let glyphRange = frontend?.layoutManager.glyphRange(
               forCharacterRange: rangeCacheItem.range, actualCharacterRange: nil) ?? .init(location: rangeCacheItem.range.location, length: rangeCacheItem.range.length)
             frontend?.layoutManager.ensureLayout(forGlyphRange: glyphRange)
-            if featureFlags.verboseLogging {
-              print("🔥 DEC-MOUNT: remount invalidate key=\(nodeKey) range=\(NSStringFromRange(rangeCacheItem.range))")
-            }
           }
           self.log(
             .editor, .verbose,
             "unmounted -> cached. Key \(nodeKey). Frame \(view.frame). Superview \(String(describing: view.superview))"
           )
         case .needsDecorating(let view):
-          if featureFlags.verboseLogging { print("🔥 DEC-MOUNT: decorate key=\(nodeKey)") }
           superview.addSubview(view)
           decoratorCache[nodeKey] = DecoratorCacheItem.cachedView(view)
           if let node = getNodeByKey(key: nodeKey) as? DecoratorNode {
@@ -852,15 +822,9 @@ public class Editor: NSObject {
             let glyphRange = frontend?.layoutManager.glyphRange(
               forCharacterRange: rangeCacheItem.range, actualCharacterRange: nil) ?? .init(location: rangeCacheItem.range.location, length: rangeCacheItem.range.length)
             frontend?.layoutManager.ensureLayout(forGlyphRange: glyphRange)
-            if featureFlags.verboseLogging {
-              print("🔥 DEC-MOUNT: decorate invalidate key=\(nodeKey) range=\(NSStringFromRange(rangeCacheItem.range))")
-            }
           }
         }
       }
-    }
-    if featureFlags.verboseLogging {
-      print("🔥 DEC-MOUNT: end cache.count=\(decoratorCache.count)")
     }
   }
 
@@ -916,14 +880,10 @@ public class Editor: NSObject {
       self.log(.editor, .verbose, "No view for mounting decorator subviews.")
       return
     }
-    if featureFlags.verboseLogging {
-      print("🔥 DEC-MOUNT: begin cache.count=\(decoratorCache.count) ts.len=\(textStorage?.length ?? -1)")
-    }
     try? self.read {
       for (nodeKey, decoratorCacheItem) in decoratorCache {
         switch decoratorCacheItem {
         case .needsCreation:
-          if featureFlags.verboseLogging { print("🔥 DEC-MOUNT: create key=\(nodeKey)") }
           guard let view = decoratorView(forKey: nodeKey, createIfNecessary: true),
             let node = getNodeByKey(key: nodeKey) as? DecoratorNode
           else {
@@ -944,9 +904,6 @@ public class Editor: NSObject {
             let glyphRange = frontendAppKit?.layoutManager.glyphRange(
               forCharacterRange: rangeCacheItem.range, actualCharacterRange: nil) ?? .init(location: rangeCacheItem.range.location, length: rangeCacheItem.range.length)
             frontendAppKit?.layoutManager.ensureLayout(forGlyphRange: glyphRange)
-            if featureFlags.verboseLogging {
-              print("🔥 DEC-MOUNT: invalidate key=\(nodeKey) range=\(NSStringFromRange(rangeCacheItem.range))")
-            }
           }
 
           self.log(
@@ -954,7 +911,6 @@ public class Editor: NSObject {
             "needsCreation -> cached. Key \(nodeKey). Frame \(view.frame). Superview \(String(describing: view.superview))"
           )
         case .cachedView(let view):
-          if featureFlags.verboseLogging { print("🔥 DEC-MOUNT: cached key=\(nodeKey)") }
           // This shouldn't be needed if our appear/disappear logic is perfect, but it turns out we do currently need this.
           superview.addSubview(view)
           self.log(
@@ -962,7 +918,6 @@ public class Editor: NSObject {
             "no-op, already cached. Key \(nodeKey). Frame \(view.frame). Superview \(String(describing: view.superview))"
           )
         case .unmountedCachedView(let view):
-          if featureFlags.verboseLogging { print("🔥 DEC-MOUNT: remount key=\(nodeKey)") }
           view.isHidden = true  // decorators will be hidden until they are layed out by TextKit
           superview.addSubview(view)
           if let node = getNodeByKey(key: nodeKey) as? DecoratorNode {
@@ -975,16 +930,12 @@ public class Editor: NSObject {
             let glyphRange = frontendAppKit?.layoutManager.glyphRange(
               forCharacterRange: rangeCacheItem.range, actualCharacterRange: nil) ?? .init(location: rangeCacheItem.range.location, length: rangeCacheItem.range.length)
             frontendAppKit?.layoutManager.ensureLayout(forGlyphRange: glyphRange)
-            if featureFlags.verboseLogging {
-              print("🔥 DEC-MOUNT: remount invalidate key=\(nodeKey) range=\(NSStringFromRange(rangeCacheItem.range))")
-            }
           }
           self.log(
             .editor, .verbose,
             "unmounted -> cached. Key \(nodeKey). Frame \(view.frame). Superview \(String(describing: view.superview))"
           )
         case .needsDecorating(let view):
-          if featureFlags.verboseLogging { print("🔥 DEC-MOUNT: decorate key=\(nodeKey)") }
           superview.addSubview(view)
           decoratorCache[nodeKey] = DecoratorCacheItem.cachedView(view)
           if let node = getNodeByKey(key: nodeKey) as? DecoratorNode {
@@ -997,15 +948,9 @@ public class Editor: NSObject {
             let glyphRange = frontendAppKit?.layoutManager.glyphRange(
               forCharacterRange: rangeCacheItem.range, actualCharacterRange: nil) ?? .init(location: rangeCacheItem.range.location, length: rangeCacheItem.range.length)
             frontendAppKit?.layoutManager.ensureLayout(forGlyphRange: glyphRange)
-            if featureFlags.verboseLogging {
-              print("🔥 DEC-MOUNT: decorate invalidate key=\(nodeKey) range=\(NSStringFromRange(rangeCacheItem.range))")
-            }
           }
         }
       }
-    }
-    if featureFlags.verboseLogging {
-      print("🔥 DEC-MOUNT: end cache.count=\(decoratorCache.count)")
     }
   }
 
@@ -1134,10 +1079,6 @@ public class Editor: NSObject {
 
         #if canImport(UIKit)
         if !headless {
-          if featureFlags.verboseLogging {
-            let tsLen = textStorage?.length ?? -1
-            print("🔥 RECONCILE: begin optimized=\(featureFlags.useOptimizedReconciler) dirty=\(dirtyNodes.count) type=\(dirtyType) ts.len=\(tsLen)")
-          }
           if featureFlags.useOptimizedReconciler {
             try OptimizedReconciler.updateEditorState(
               currentEditorState: editorState,
@@ -1162,10 +1103,6 @@ public class Editor: NSObject {
               markedTextOperation: mode.markedTextOperation
             )
           }
-          if featureFlags.verboseLogging {
-            let tsLenAfter = textStorage?.length ?? -1
-            print("🔥 RECONCILE: end dirty=\(dirtyNodes.count) type=\(dirtyType) ts.len=\(tsLenAfter)")
-          }
         }
         #elseif os(macOS) && !targetEnvironment(macCatalyst)
         // AppKit reconciliation path - use legacy Reconciler only (no optimized path yet)
@@ -1174,21 +1111,13 @@ public class Editor: NSObject {
           frontendAppKit?.isUpdatingNativeSelection = true
           defer { frontendAppKit?.isUpdatingNativeSelection = false }
 
-          if featureFlags.verboseLogging {
-            let tsLen = textStorage?.length ?? -1
-            print("🔥 RECONCILE: begin (AppKit) dirty=\(dirtyNodes.count) type=\(dirtyType) ts.len=\(tsLen)")
-          }
           try Reconciler.updateEditorState(
             currentEditorState: editorState,
             pendingEditorState: pendingEditorState,
             editor: self,
             shouldReconcileSelection: !mode.suppressReconcilingSelection,
-            markedTextOperation: nil  // AppKit uses different IME handling
+            markedTextOperation: mode.markedTextOperation
           )
-          if featureFlags.verboseLogging {
-            let tsLenAfter = textStorage?.length ?? -1
-            print("🔥 RECONCILE: end (AppKit) dirty=\(dirtyNodes.count) type=\(dirtyType) ts.len=\(tsLenAfter)")
-          }
         }
         #endif
         self.isUpdating = previouslyUpdating
@@ -1556,7 +1485,7 @@ internal enum NativeSelectionModificationType {
 #endif
 
 internal struct UpdateBehaviourModificationMode {
-  #if canImport(UIKit)
+  #if canImport(UIKit) || (os(macOS) && !targetEnvironment(macCatalyst))
   let markedTextOperation: MarkedTextOperation?
   #endif
   let skipTransforms: Bool
@@ -1564,7 +1493,7 @@ internal struct UpdateBehaviourModificationMode {
   let suppressSanityCheck: Bool
   let allowUpdateWithoutTextStorage: Bool
 
-  #if canImport(UIKit)
+  #if canImport(UIKit) || (os(macOS) && !targetEnvironment(macCatalyst))
   internal init(
     suppressReconcilingSelection: Bool = false,
     suppressSanityCheck: Bool = false,

@@ -508,7 +508,7 @@ extension LexicalView: FrontendAppKit {
   public func unmarkTextWithoutUpdate() {
     // Clear any marked text from IME composition
     if textView.hasMarkedText() {
-      textView.unmarkText()
+      textView.unmarkTextWithoutUpdate()
     }
   }
 
@@ -535,11 +535,7 @@ extension LexicalView: FrontendAppKit {
 
   public func setMarkedTextFromReconciler(_ markedText: NSAttributedString, selectedRange: NSRange) {
     // Set marked text for IME composition from the reconciler
-    textView.setMarkedText(
-      markedText,
-      selectedRange: selectedRange,
-      replacementRange: textView.selectedRange()
-    )
+    textView.setMarkedTextFromReconciler(markedText, selectedRange: selectedRange)
   }
 
   public func resetSelectedRange() {

@@ -43,6 +43,13 @@ extension TextViewAppKit {
       return
     }
 
+    // Ensure Lexical selection matches the native replacement range before dispatching insertText.
+    // This is particularly important when committing IME text, where AppKit provides a replacementRange.
+    try? editor.update {
+      guard let selection = try getSelection() as? RangeSelection else { return }
+      try selection.applySelectionRange(range, affinity: .forward)
+    }
+
     // Dispatch Lexical command for text insertion
     editor.dispatchCommand(type: .insertText, payload: text)
 
@@ -52,20 +59,103 @@ extension TextViewAppKit {
 
   // MARK: - Marked Text (IME Composition)
 
+  /// Apply marked text provided by the reconciler without feeding it back into Lexical.
+  internal func setMarkedTextFromReconciler(_ markedText: NSAttributedString, selectedRange: NSRange) {
+    let oldIsUpdatingNativeSelection = isUpdatingNativeSelection
+    isUpdatingNativeSelection = true
+    super.setMarkedText(
+      markedText,
+      selectedRange: selectedRange,
+      replacementRange: self.selectedRange()
+    )
+    isUpdatingNativeSelection = oldIsUpdatingNativeSelection
+    updatePlaceholderVisibility()
+  }
+
+  /// Clear any marked text without triggering Lexical updates.
+  internal func unmarkTextWithoutUpdate() {
+    let oldIsUpdatingNativeSelection = isUpdatingNativeSelection
+    isUpdatingNativeSelection = true
+    super.unmarkText()
+    isUpdatingNativeSelection = oldIsUpdatingNativeSelection
+    updatePlaceholderVisibility()
+  }
+
   /// Override setMarkedText to track IME composition state.
   ///
   /// Marked text is displayed during IME composition (e.g., typing Japanese).
   public override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
-    super.setMarkedText(string, selectedRange: selectedRange, replacementRange: replacementRange)
+    // Get the string value
+    let text: String
+    switch string {
+    case let s as String:
+      text = s
+    case let attr as NSAttributedString:
+      text = attr.string
+    default:
+      return
+    }
 
-    // Track composition state for Lexical
-    // Editor's compositionKey handling will be integrated here
+    // Determine what range AppKit expects us to replace.
+    let rangeToReplace = replacementRange.location != NSNotFound
+      ? replacementRange
+      : self.selectedRange()
+
+    guard lexicalDelegate?.textViewShouldChangeText(self, range: rangeToReplace, replacementText: text) ?? true else {
+      return
+    }
+
+    do {
+      try onSetMarkedTextFromTextView(
+        text: text,
+        selectedRange: selectedRange,
+        replacementRange: rangeToReplace,
+        editor: editor
+      )
+    } catch {
+      // Best-effort: clear native marked text without feeding changes back into Lexical.
+      unmarkTextWithoutUpdate()
+      return
+    }
   }
 
   /// Override unmarkText to clear IME composition state.
   public override func unmarkText() {
+    let previousMarkedRange = markedRange()
+    let oldIsUpdatingNativeSelection = isUpdatingNativeSelection
+    isUpdatingNativeSelection = true
     super.unmarkText()
-    // Clear composition state
+    isUpdatingNativeSelection = oldIsUpdatingNativeSelection
+
+    // Clear composition state + reconcile attributes across the previously-marked range (best-effort).
+    if previousMarkedRange.location != NSNotFound {
+      do {
+        try editor.update {
+          guard
+            let anchor = try pointAtStringLocation(
+              previousMarkedRange.location,
+              searchDirection: .forward,
+              rangeCache: editor.rangeCache
+            ),
+            let focus = try pointAtStringLocation(
+              previousMarkedRange.location + previousMarkedRange.length,
+              searchDirection: .forward,
+              rangeCache: editor.rangeCache
+            )
+          else {
+            return
+          }
+
+          let markedSelection = RangeSelection(anchor: anchor, focus: focus, format: TextFormat())
+          for node in try markedSelection.getNodes() {
+            _ = try node.getWritable()
+          }
+        }
+      } catch {
+      }
+    }
+
+    updatePlaceholderVisibility()
   }
 
   // MARK: - Attributed String Access

@@ -258,7 +258,7 @@ internal func onSelectionChange(editor: Editor) {
       editor.dispatchCommand(type: .selectionChange, payload: nil)
     }
   } catch {
-    // log error "change selection: failed to update lexical selection"
+    editor.log(.TextView, .error, "onSelectionChange failed; \(String(describing: error))")
   }
 }
 
@@ -273,7 +273,7 @@ public func registerRichText(editor: Editor) {
         try onInsertLineBreakFromUITextView(editor: editor)
         return true
       } catch {
-        print("\(error)")
+        editor.log(.TextView, .error, "Exception in insertLineBreak; \(String(describing: error))")
       }
       return true
     })
@@ -286,7 +286,7 @@ public func registerRichText(editor: Editor) {
         try onDeleteBackwardsFromUITextView(editor: editor)
         return true
       } catch {
-        print("\(error)")
+        editor.log(.TextView, .error, "Exception in deleteCharacter; \(String(describing: error))")
       }
       return true
     })
@@ -299,7 +299,7 @@ public func registerRichText(editor: Editor) {
         try onDeleteWordFromUITextView(editor: editor)
         return true
       } catch {
-        print("\(error)")
+        editor.log(.TextView, .error, "Exception in deleteWord; \(String(describing: error))")
       }
       return true
     })
@@ -312,7 +312,7 @@ public func registerRichText(editor: Editor) {
         try onDeleteLineFromUITextView(editor: editor)
         return true
       } catch {
-        print("\(error)")
+        editor.log(.TextView, .error, "Exception in deleteLine; \(String(describing: error))")
       }
       return true
     })
@@ -343,7 +343,7 @@ public func registerRichText(editor: Editor) {
         try onInsertParagraphFromUITextView(editor: editor)
         return true
       } catch {
-        print("\(error)")
+        editor.log(.TextView, .error, "Exception in insertParagraph; \(String(describing: error))")
       }
       return true
     })
@@ -356,7 +356,7 @@ public func registerRichText(editor: Editor) {
         try onRemoveTextFromUITextView(editor: editor)
         return true
       } catch {
-        print("\(error)")
+        editor.log(.TextView, .error, "Exception in removeText; \(String(describing: error))")
       }
       return true
     })
@@ -371,7 +371,7 @@ public func registerRichText(editor: Editor) {
         try onFormatTextFromUITextView(editor: editor, type: text)
         return true
       } catch {
-        print("\(error)")
+        editor.log(.TextView, .error, "Exception in formatText; \(String(describing: error))")
       }
       return true
     })
@@ -386,7 +386,7 @@ public func registerRichText(editor: Editor) {
         try onCopyFromUITextView(editor: editor, pasteboard: text)
         return true
       } catch {
-        print("\(error)")
+        editor.log(.TextView, .error, "Exception in copy; \(String(describing: error))")
       }
       return true
     })
@@ -401,7 +401,7 @@ public func registerRichText(editor: Editor) {
         try onCutFromUITextView(editor: editor, pasteboard: text)
         return true
       } catch {
-        print("\(error)")
+        editor.log(.TextView, .error, "Exception in cut; \(String(describing: error))")
       }
       return true
     })
@@ -416,7 +416,7 @@ public func registerRichText(editor: Editor) {
         try onPasteFromUITextView(editor: editor, pasteboard: text)
         return true
       } catch {
-        print("\(error)")
+        editor.log(.TextView, .error, "Exception in paste; \(String(describing: error))")
       }
       return true
     })
@@ -438,7 +438,7 @@ public func registerRichText(editor: Editor) {
           })
         return true
       } catch {
-        print("\(error)")
+        editor.log(.TextView, .error, "Exception in indentContent; \(String(describing: error))")
       }
       return true
     })
@@ -469,7 +469,7 @@ public func registerRichText(editor: Editor) {
           })
         return true
       } catch {
-        print("\(error)")
+        editor.log(.TextView, .error, "Exception in outdentContent; \(String(describing: error))")
       }
       return true
     })
@@ -500,6 +500,48 @@ public func onInsertTextFromTextView(text: String, editor: Editor) throws {
     }
 
     // Handle different types of text
+    if text == "\n" || text == "\u{2029}" {
+      try selection.insertParagraph()
+    } else if text == "\u{2028}" {
+      try selection.insertLineBreak(selectStart: false)
+    } else {
+      try selection.insertText(text)
+    }
+  }
+}
+
+/// Apply marked text from AppKit IME composition.
+///
+/// AppKit delivers multi-stage IME input via `setMarkedText(_:selectedRange:replacementRange:)`.
+/// This helper mirrors UIKit's marked text flow by attaching a `MarkedTextOperation` to the update,
+/// allowing the reconciler to set native marked text without creating a feedback loop.
+@MainActor
+public func onSetMarkedTextFromTextView(
+  text: String,
+  selectedRange: NSRange,
+  replacementRange: NSRange,
+  editor: Editor
+) throws {
+  let op = MarkedTextOperation(
+    createMarkedText: true,
+    selectionRangeToReplace: replacementRange,
+    markedTextString: text,
+    markedTextInternalSelection: selectedRange
+  )
+
+  let mode = UpdateBehaviourModificationMode(
+    suppressReconcilingSelection: true,
+    suppressSanityCheck: true,
+    markedTextOperation: op
+  )
+
+  try editor.updateWithCustomBehaviour(mode: mode, reason: .update) {
+    guard let selection = try getSelection() else { return }
+
+    if let rangeSelection = selection as? RangeSelection {
+      try rangeSelection.applySelectionRange(replacementRange, affinity: .forward)
+    }
+
     if text == "\n" || text == "\u{2029}" {
       try selection.insertParagraph()
     } else if text == "\u{2028}" {
@@ -627,7 +669,7 @@ public func registerRichTextAppKit(editor: Editor) {
         try onInsertLineBreakFromTextView(editor: editor)
         return true
       } catch {
-        print("\(error)")
+        editor.log(.TextView, .error, "Exception in insertLineBreak; \(String(describing: error))")
       }
       return true
     })
@@ -641,7 +683,7 @@ public func registerRichTextAppKit(editor: Editor) {
         try onDeleteCharacterFromTextView(editor: editor, isBackwards: isBackwards)
         return true
       } catch {
-        print("\(error)")
+        editor.log(.TextView, .error, "Exception in deleteCharacter; \(String(describing: error))")
       }
       return true
     })
@@ -655,7 +697,7 @@ public func registerRichTextAppKit(editor: Editor) {
         try onDeleteWordFromTextView(editor: editor, isBackwards: isBackwards)
         return true
       } catch {
-        print("\(error)")
+        editor.log(.TextView, .error, "Exception in deleteWord; \(String(describing: error))")
       }
       return true
     })
@@ -669,7 +711,7 @@ public func registerRichTextAppKit(editor: Editor) {
         try onDeleteLineFromTextView(editor: editor, isBackwards: isBackwards)
         return true
       } catch {
-        print("\(error)")
+        editor.log(.TextView, .error, "Exception in deleteLine; \(String(describing: error))")
       }
       return true
     })
@@ -685,7 +727,7 @@ public func registerRichTextAppKit(editor: Editor) {
         try onInsertTextFromTextView(text: text, editor: editor)
         return true
       } catch {
-        print("\(error)")
+        editor.log(.TextView, .error, "Exception in insertText; \(String(describing: error))")
       }
       return true
     })
@@ -698,7 +740,7 @@ public func registerRichTextAppKit(editor: Editor) {
         try onInsertParagraphFromTextView(editor: editor)
         return true
       } catch {
-        print("\(error)")
+        editor.log(.TextView, .error, "Exception in insertParagraph; \(String(describing: error))")
       }
       return true
     })
@@ -711,7 +753,7 @@ public func registerRichTextAppKit(editor: Editor) {
         try onRemoveTextFromTextView(editor: editor)
         return true
       } catch {
-        print("\(error)")
+        editor.log(.TextView, .error, "Exception in removeText; \(String(describing: error))")
       }
       return true
     })
@@ -725,7 +767,7 @@ public func registerRichTextAppKit(editor: Editor) {
         try onFormatTextFromTextView(editor: editor, type: formatType)
         return true
       } catch {
-        print("\(error)")
+        editor.log(.TextView, .error, "Exception in formatText; \(String(describing: error))")
       }
       return true
     })
@@ -739,7 +781,7 @@ public func registerRichTextAppKit(editor: Editor) {
         try onCopyFromTextView(editor: editor, pasteboard: pasteboard)
         return true
       } catch {
-        print("\(error)")
+        editor.log(.TextView, .error, "Exception in copy; \(String(describing: error))")
       }
       return true
     })
@@ -753,7 +795,7 @@ public func registerRichTextAppKit(editor: Editor) {
         try onCutFromTextView(editor: editor, pasteboard: pasteboard)
         return true
       } catch {
-        print("\(error)")
+        editor.log(.TextView, .error, "Exception in cut; \(String(describing: error))")
       }
       return true
     })
@@ -767,7 +809,7 @@ public func registerRichTextAppKit(editor: Editor) {
         try onPasteFromTextView(editor: editor, pasteboard: pasteboard)
         return true
       } catch {
-        print("\(error)")
+        editor.log(.TextView, .error, "Exception in paste; \(String(describing: error))")
       }
       return true
     })
@@ -789,7 +831,7 @@ public func registerRichTextAppKit(editor: Editor) {
           })
         return true
       } catch {
-        print("\(error)")
+        editor.log(.TextView, .error, "Exception in indentContent; \(String(describing: error))")
       }
       return true
     })
@@ -819,7 +861,7 @@ public func registerRichTextAppKit(editor: Editor) {
           })
         return true
       } catch {
-        print("\(error)")
+        editor.log(.TextView, .error, "Exception in outdentContent; \(String(describing: error))")
       }
       return true
     })
