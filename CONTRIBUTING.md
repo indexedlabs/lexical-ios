@@ -1,36 +1,22 @@
 # Contributing to Lexical iOS
-We want to make contributing to this project as easy and transparent as
-possible.
 
-## Our Development Process
-The version of Lexical iOS you see in this repo is the same as the version we are using internally at Meta. While our internal repository is considered the 'source of truth', it is synced automatically with this GitHub repo. (Note that this is the opposite way round to Lexical JavaScript, which uses the GitHub repo as source of truth.)
+We want to make contributing to this project as easy and transparent as possible.
 
-Any changes made by external contributors which change Lexical's existing behaviour or public APIs, please discuss your proposals with us first! We may need to delay merging your PR until we have chance to update and test our internal app integrations.
+> [!NOTE]
+> This project is a fork of [facebook/lexical-ios](https://github.com/facebook/lexical-ios). The original is no longer actively maintained, and we've diverged significantly.
 
 ## Pull Requests
+
 We actively welcome your pull requests.
 
 1. Fork the repo and create your branch from `main`.
 2. If you've added code that can be tested via unit tests, add tests.
 3. If you've changed APIs, update the documentation.
 4. Ensure the test suite passes.
-5. If you haven't already, complete the Contributor License Agreement ("CLA").
-
-We don't have a public SwiftLint configuration for this project yet, but once we do, contributions will be expected to run the linter.
-
-## Contributor License Agreement ("CLA")
-In order to accept your pull request, we need you to submit a CLA. You only need
-to do this once to work on any of Meta's open source projects.
-
-Complete your CLA here: <https://code.facebook.com/cla>
 
 ## Issues
-We use GitHub issues to track public bugs. Please ensure your description is
-clear and has sufficient instructions to be able to reproduce the issue.
 
-Meta has a [bounty program](https://www.facebook.com/whitehat/) for the safe
-disclosure of security bugs. In those cases, please go through the process
-outlined on that page and do not file a public issue.
+We use GitHub issues to track bugs and feature requests. Please ensure your description is clear and has sufficient instructions to reproduce any issues.
 
 ## Coding Style
 * 2 spaces for indentation rather than tabs

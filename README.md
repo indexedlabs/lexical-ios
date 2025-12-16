@@ -1,14 +1,13 @@
 # Lexical iOS
 
+> [!NOTE]
+> This is a fork of the original [facebook/lexical-ios](https://github.com/facebook/lexical-ios) library, which is no longer actively maintained. We've diverged significantly from the original and are actively developing new features. This is currently an **alpha** product—APIs may change.
+
 An extensible text editor/renderer written in Swift, built on top of TextKit, and sharing a philosophy and API with [Lexical JavaScript](https://lexical.dev).
 
 ## Status
 
-Lexical iOS is used in multiple apps at Meta, including rendering feed posts that contain inline images in Workplace iOS.
-
-Lexical iOS is in pre-release with no guarantee of support.
-
-For changes between versions, see the [Lexical iOS Changelog](https://github.com/facebook/lexical-ios/blob/main/Lexical/Documentation.docc/Changelog.md).
+Lexical iOS is in active development as an alpha release.
 
 ## Platform Support
 
@@ -76,7 +75,7 @@ Then add the appropriate target to your dependencies:
 | `LexicalMarkdown` | iOS | Markdown support |
 | `EditorHistoryPlugin` | iOS | Undo/redo support |
 
-Some plugins included in this repository do not yet have package files. (This is because we use a different build system internally at Meta. Adding these would be an easy PR if you want to start contributing to Lexical!)
+Some plugins included in this repository do not yet have package files. Adding these would be an easy PR if you want to start contributing to Lexical!
 
 ## Using Lexical in your app
 
@@ -133,16 +132,14 @@ struct ContentView: View {
 
 For more information, see the documentation.
 
-## Full documentation
-Read [the Lexical iOS documentation](https://facebook.github.io/lexical-ios/documentation/lexical/). 
-
-## Join the Lexical community
-Join us at [our Discord server](https://discord.gg/KmG4wQnnD9), where you can talk with the Lexical team and other users.
+## Contributing
 
 See the [CONTRIBUTING](CONTRIBUTING.md) file for how to help out.
 
 ## Tests
-Lexical has a suite of unit tests, in XCTest format, which can be run from within Xcode. We do not currently have any end-to-end tests.
+
+Lexical has a suite of unit tests, in XCTest format, which can be run from within Xcode.
 
 ## License
-Lexical is [MIT licensed](https://github.com/facebook/lexical/blob/main/LICENSE).
+
+Lexical iOS is [MIT licensed](LICENSE).
