@@ -77,11 +77,6 @@ extension TextViewAppKit {
     editor.dispatchCommand(type: Self.undoCommand)
   }
 
-  /// Perform undo with no sender.
-  @objc public func undo() {
-    undo(nil)
-  }
-
   /// Perform redo (standard AppKit action).
   ///
   /// Note: AppKit's `NSTextView` does not expose an overridable `redo(_:)` in Swift
@@ -91,23 +86,16 @@ extension TextViewAppKit {
     editor.dispatchCommand(type: Self.redoCommand)
   }
 
-  /// Perform redo with no sender.
-  @objc public func redo() {
-    redo(nil)
-  }
-
   // MARK: - Menu Validation
 
   /// Validate undo/redo menu items.
   public override func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-    if menuItem.action == #selector(undo)
-      || menuItem.action == #selector(undo(_:))
+    if menuItem.action == #selector(undo(_:))
       || menuItem.action == #selector(performUndo(_:))
     {
       return allowsUndo && lexicalCanUndo
     }
-    if menuItem.action == #selector(redo)
-      || menuItem.action == #selector(redo(_:))
+    if menuItem.action == #selector(redo(_:))
       || menuItem.action == #selector(performRedo(_:))
     {
       return allowsUndo && lexicalCanRedo

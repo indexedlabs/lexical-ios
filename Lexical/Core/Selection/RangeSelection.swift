@@ -1951,7 +1951,7 @@ public class RangeSelection: BaseSelection {
   /// Apply a selection range from native coordinates to Lexical selection.
   /// This is cross-platform and can be used on both UIKit and AppKit.
   @MainActor
-  internal func applySelectionRange(_ range: NSRange, affinity: LexicalTextStorageDirection) throws {
+  public func applySelectionRange(_ range: NSRange, affinity: LexicalTextStorageDirection) throws {
     guard let editor = getActiveEditor() else {
       throw LexicalError.invariantViolation("Calling applySelectionRange when no active editor")
     }
