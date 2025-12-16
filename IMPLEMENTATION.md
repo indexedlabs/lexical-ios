@@ -925,3 +925,18 @@ Verification
 Files
 - Lexical/Core/FeatureFlags.swift — `aggressiveEditor` profile sets `useOptimizedReconcilerStrictMode = false`.
 - Lexical/Core/Selection/RangeSelection.swift — inside‑cluster heuristic with surrogate‑aware scalar fallback; cluster‑boundary uses composed sequence range.
+
+## Cleanup: Remove Debug Prints / Emoji Logs
+
+Status: Completed — 2025-12-15
+
+Changes
+- Removed emoji-prefixed debug `print(...)` logs across Lexical core, Plugins, Sources, and Playground (did not gate behind verboseLogging).
+- Replaced a subset of error prints with `editor.log(...)` (LogFeature `.TextView`/`.node`/`.editor`/`.other`) to keep diagnostics available without console spam.
+- Package.swift: `LexicalLinkPlugin` now conditionally depends on `LexicalAppKit` on macOS to fix macOS consumer builds.
+
+Verification
+- iOS simulator (iPhone 17 Pro / iOS 26.0) via Lexical-Package scheme: PASS.
+  - Command: xcodebuild -workspace Playground/LexicalPlayground.xcodeproj/project.xcworkspace -scheme Lexical-Package -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.0' test
+- Playground build (iPhone 17 Pro / iOS 26.0): PASS.
+  - Command: xcodebuild -project Playground/LexicalPlayground.xcodeproj -scheme LexicalPlayground -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.0' build
