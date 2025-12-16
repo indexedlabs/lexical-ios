@@ -257,7 +257,7 @@ public class ToolbarPlugin: Plugin {
           linkButton?.isSelected = false
         }
       } catch {
-        print("Error getting the selected Node: \(error.localizedDescription)")
+        editor?.log(.other, .warning, "ToolbarPlugin: failed to get selected node; \(String(describing: error))")
       }
     }
   }
@@ -406,15 +406,9 @@ public class ToolbarPlugin: Plugin {
       return
     }
     try? editor?.update {
-      if let ed = getActiveEditor(), ed.featureFlags.verboseLogging {
-        print("🔥 TOOLBAR: inserting sample image…")
-      }
       let imageNode = ImageNode(url: url.absoluteString, size: CGSize(width: 300, height: 300), sourceID: "")
       if let selection = try getSelection() {
         _ = try selection.insertNodes(nodes: [imageNode], selectStart: false)
-      }
-      if let ed = getActiveEditor(), ed.featureFlags.verboseLogging {
-        print("🔥 TOOLBAR: sample image inserted key=\(imageNode.key)")
       }
     }
   }
@@ -424,15 +418,9 @@ public class ToolbarPlugin: Plugin {
       return
     }
     try? editor?.update {
-      if let ed = getActiveEditor(), ed.featureFlags.verboseLogging {
-        print("🔥 TOOLBAR: inserting selectable image…")
-      }
       let imageNode = SelectableImageNode(url: url.absoluteString, size: CGSize(width: 300, height: 300), sourceID: "")
       if let selection = try getSelection() {
         _ = try selection.insertNodes(nodes: [imageNode], selectStart: false)
-      }
-      if let ed = getActiveEditor(), ed.featureFlags.verboseLogging {
-        print("🔥 TOOLBAR: selectable image inserted key=\(imageNode.key)")
       }
     }
   }
@@ -456,7 +444,7 @@ public class ToolbarPlugin: Plugin {
         }
       }
     } catch {
-      print("Error getting the selected node: \(error.localizedDescription)")
+      editor.log(.other, .warning, "ToolbarPlugin: failed to read selection for link editor; \(String(describing: error))")
     }
   }
 
@@ -489,7 +477,7 @@ public class ToolbarPlugin: Plugin {
         originalSelection = try getSelection() as? RangeSelection
       }
     } catch {
-      print("Error: \(error.localizedDescription)")
+      editor.log(.other, .warning, "ToolbarPlugin: failed to snapshot selection for link alert; \(String(describing: error))")
     }
 
     let title = isEdit ? "Edit Link" : "Link"

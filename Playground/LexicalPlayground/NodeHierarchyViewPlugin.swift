@@ -377,7 +377,7 @@ public class NodeHierarchyViewPlugin: Plugin {
       let selectionString = try getSelectionData(editorState: editorState)
       _hierarchyView.text = "\(hierarchyString)\n\n\(selectionString)"
     } catch {
-      print("Error updating node hierarchy.")
+      _hierarchyView.text = "Error updating node hierarchy: \(error)"
     }
   }
 }

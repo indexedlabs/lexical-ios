@@ -32,10 +32,8 @@ public class TextAttachmentAppKit: NSTextAttachment {
     characterIndex charIndex: Int
   ) -> NSRect {
     guard let key, let editor else {
-      print("🔥 ATTACH-BOUNDS: no key/editor, returning zero")
       return NSRect.zero
     }
-    print("🔥 ATTACH-BOUNDS: called for key=\(key) charIndex=\(charIndex) lineFrag=\(lineFrag)")
 
     let attributes =
       textContainer?.layoutManager?.textStorage?.attributes(at: charIndex, effectiveRange: nil)
@@ -52,7 +50,6 @@ public class TextAttachmentAppKit: NSTextAttachment {
     }
 
     self.bounds = bounds  // cache the value so that our LayoutManager can pull it back out later
-    print("🔥 ATTACH-BOUNDS: returning bounds=\(bounds) for key=\(key)")
     return bounds
   }
 

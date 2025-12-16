@@ -35,7 +35,6 @@ public class LayoutManager: NSLayoutManager, @unchecked Sendable {
   }
 
   override public func drawGlyphs(forGlyphRange drawingGlyphRange: NSRange, at origin: CGPoint) {
-    print("🎯 DEC-LM: drawGlyphs range=\(drawingGlyphRange) origin=\(origin)")
     super.drawGlyphs(forGlyphRange: drawingGlyphRange, at: origin)
     draw(forGlyphRange: drawingGlyphRange, at: origin, handlers: customDrawingText)
     drawCustomTruncationIfNeeded(forGlyphRange: drawingGlyphRange, at: origin)
@@ -160,8 +159,6 @@ public class LayoutManager: NSLayoutManager, @unchecked Sendable {
 
   private func positionAllDecorators() {
     guard let textStorage = textStorage as? TextStorage else { return }
-    let tsPtr = Unmanaged.passUnretained(textStorage).toOpaque()
-    print("🎯 DEC-LM: positionAllDecorators count=\(textStorage.decoratorPositionCache.count) ts.ptr=\(tsPtr)")
     for (key, location) in textStorage.decoratorPositionCache {
       positionDecorator(forKey: key, characterIndex: location)
     }
@@ -173,8 +170,6 @@ public class LayoutManager: NSLayoutManager, @unchecked Sendable {
       editor?.log(.TextView, .warning, "called with no container or storage")
       return
     }
-
-    print("🎯 DEC-LM-POS-START: key=\(key) charIndex=\(characterIndex) ts.len=\(textStorage.length)")
 
     if textStorage.length == 0 { return }
     let clampedCharIndex = max(0, min(characterIndex, textStorage.length - 1))
@@ -206,7 +201,6 @@ public class LayoutManager: NSLayoutManager, @unchecked Sendable {
     }
 
     guard let attr = attribute, let attrKey = attr.key, let editor = attr.editor else {
-      print("🎯 DEC-LM-POS-FAIL: key=\(key) charIndex=\(characterIndex) - no attachment found at this location")
       // Try to find where this attachment actually is - cache may be stale
       var foundAt: Int? = nil
       textStorage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: textStorage.length)) { value, range, stop in
@@ -216,7 +210,6 @@ public class LayoutManager: NSLayoutManager, @unchecked Sendable {
         }
       }
       if let actual = foundAt {
-        print("🎯 DEC-LM-POS-RECOVER: attachment for key=\(key) is actually at \(actual), not \(characterIndex) - repositioning with correct index")
         // Update the cache with the correct position
         if let ts = textStorage as? TextStorage {
           ts.decoratorPositionCache[key] = actual
@@ -232,7 +225,6 @@ public class LayoutManager: NSLayoutManager, @unchecked Sendable {
     let textContainerInset = self.editor?.frontend?.textContainerInsets ?? UIEdgeInsets.zero
 
     try? editor.read {
-      print("🎯 DEC-LM-POS: key=\(key) charIndex=\(characterIndex) glyphIndex=\(glyphIndex) inContainer=\(glyphIsInTextContainer) hide=\(shouldHideView) ts.len=\(textStorage.length)")
       guard let decoratorView = decoratorView(forKey: key, createIfNecessary: !shouldHideView)
       else {
         editor.log(.TextView, .warning, "create decorator view failed")
@@ -240,7 +232,6 @@ public class LayoutManager: NSLayoutManager, @unchecked Sendable {
       }
 
       if shouldHideView {
-        print("🎯 DEC-LM-POS: hide view key=\(key)")
         decoratorView.isHidden = true
         return
       }
@@ -256,7 +247,6 @@ public class LayoutManager: NSLayoutManager, @unchecked Sendable {
 
       let oldFrame = decoratorView.frame
       decoratorView.frame = CGRect(origin: decoratorOrigin, size: attr.bounds.size)
-      print("🎯 DEC-LM-POS: positioned key=\(key) oldFrame=\(oldFrame) newFrame=\(decoratorView.frame) glyphRect=\(glyphBoundingRect)")
     }
   }
 

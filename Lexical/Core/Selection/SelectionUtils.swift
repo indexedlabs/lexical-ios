@@ -540,12 +540,7 @@ func transferStartingElementPointToTextPoint(
 ) throws {
   guard let element = try start.getNode() as? ElementNode else { return }
 
-  // Debug logging for decorator orphaning investigation
-  print("🎯 TRANSFER: element=\(element.key) type=\(type(of: element)) start.offset=\(start.offset)")
-  print("🎯 TRANSFER: element.children=\(element.getChildrenKeys(fromLatest: true))")
-
   let placementNode = element.getChildAtIndex(index: start.offset)
-  print("🎯 TRANSFER: placementNode=\(placementNode?.key ?? "nil") type=\(placementNode.map { String(describing: type(of: $0)) } ?? "nil")")
 
   let textNode = try createTextNode(text: nil).setFormat(format: format)
   var target: Node
@@ -568,9 +563,7 @@ func transferStartingElementPointToTextPoint(
     if let elementNode = placementNode as? ElementNode {
       try elementNode.append([target])
     } else {
-      print("🎯 TRANSFER: calling placementNode.insertBefore(textNode=\(textNode.key))")
       let _ = try placementNode.insertBefore(nodeToInsert: target)
-      print("🎯 TRANSFER: after insertBefore, element.children=\(element.getChildrenKeys(fromLatest: true))")
       // fix the end point offset if it refers to the same element as start,
       // as we've now inserted another element before it (but only for non-collapsed selections).
       if !wasCollapsed && end.type == .element && end.key == start.key {

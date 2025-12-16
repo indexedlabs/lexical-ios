@@ -124,7 +124,7 @@ public func triggerCommandListeners(activeEditor: Editor, type: CommandType, pay
       try closure()
     }
   } catch {
-    print("\(error)")
+    activeEditor.log(.editor, .error, "Exception in triggerCommandListeners; \(String(describing: error))")
     return false
   }
 

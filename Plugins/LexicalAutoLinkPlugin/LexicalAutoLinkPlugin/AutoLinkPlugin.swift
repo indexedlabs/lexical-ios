@@ -45,7 +45,7 @@ open class AutoLinkPlugin: Plugin {
         try strongSelf.handleLinkEdit(linkNode: linkNode)
       })
     } catch {
-      print("\(error)")
+      editor.log(.other, .error, "AutoLinkPlugin setup failed; \(String(describing: error))")
     }
   }
 

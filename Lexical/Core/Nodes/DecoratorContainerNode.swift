@@ -69,13 +69,13 @@ open class DecoratorContainerNode: DecoratorBlockNode {
           childNodes.append(decodedNode)
           self.children.append(decodedNode.key)
         } catch {
-          print(error)
+          editor.log(.node, .error, "DecoratorContainerNode: failed to decode child node; \(String(describing: error))")
         }
 
         childIndex += 1
       }
     } catch {
-      print(error)
+      editor.log(.node, .error, "DecoratorContainerNode: failed to decode children; \(String(describing: error))")
     }
 
     self.direction = try container.decodeIfPresent(Direction.self, forKey: .direction)

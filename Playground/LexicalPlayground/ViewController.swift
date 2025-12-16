@@ -91,9 +91,6 @@ class ViewController: UIViewController, UIToolbarDelegate {
     }
 
     UserDefaults.standard.set(jsonString, forKey: editorStatePersistenceKey)
-    if activeOptimizedFlags.verboseLogging {
-      print("🔥 STATE: persisted json.len=\(jsonString.count)")
-    }
   }
 
   func restoreEditorState() {
@@ -105,7 +102,6 @@ class ViewController: UIViewController, UIToolbarDelegate {
     if let jsonString = UserDefaults.standard.value(forKey: editorStatePersistenceKey) as? String,
        let newEditorState = try? EditorState.fromJSON(json: jsonString, editor: editor) {
       try? editor.setEditorState(newEditorState)
-      if activeOptimizedFlags.verboseLogging { print("🔥 STATE: restored json.len=\(jsonString.count)") }
       return
     }
 
@@ -131,7 +127,6 @@ class ViewController: UIViewController, UIToolbarDelegate {
       let emptyParagraph = createParagraphNode()
       try root.append([emptyParagraph])
     }
-    if activeOptimizedFlags.verboseLogging { print("🔥 STATE: set up default with image") }
   }
 
   func setUpExportMenu() {
@@ -193,9 +188,6 @@ class ViewController: UIViewController, UIToolbarDelegate {
 
     let editorConfig = EditorConfig(theme: theme, plugins: [toolbarPlugin, listPlugin, hierarchyPlugin, imagePlugin, linkPlugin, editorHistoryPlugin])
     let lexicalView = LexicalView(editorConfig: editorConfig, featureFlags: flags)
-    if flags.verboseLogging {
-      print("🔥 EDITOR-FLAGS: optimized=\(flags.useOptimizedReconciler) fenwick=\(flags.useReconcilerFenwickDelta) insertFast=\(flags.useReconcilerInsertBlockFenwick) deleteFast=\(flags.useReconcilerDeleteBlockFenwick) prepostOnly=\(flags.useReconcilerPrePostAttributesOnly) threshold=\(flags.prePostAttrsOnlyMaxTargets) modernTK=\(flags.useModernTextKitOptimizations)")
-    }
     linkPlugin.lexicalView = lexicalView
 
     self.lexicalView = lexicalView

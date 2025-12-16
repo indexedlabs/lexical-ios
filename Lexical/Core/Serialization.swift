@@ -77,7 +77,7 @@ public struct SerializedNodeArray: @preconcurrency Decodable {
         let decodedNode = try klass.init(from: decoder)
         nodeArray.append(decodedNode)
       } catch {
-        print(error)
+        editor.log(.other, .error, "Failed decoding node; \(String(describing: error))")
       }
     }
 

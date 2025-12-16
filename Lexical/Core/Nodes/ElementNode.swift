@@ -65,13 +65,13 @@ open class ElementNode: Node {
           childNodes.append(decodedNode)
           self.children.append(decodedNode.key)
         } catch {
-          print(error)
+          editor.log(.node, .error, "ElementNode: failed to decode child node; \(String(describing: error))")
         }
 
         childIndex += 1
       }
     } catch {
-      print(error)
+      editor.log(.node, .error, "ElementNode: failed to decode children; \(String(describing: error))")
     }
 
     self.direction = try container.decodeIfPresent(Direction.self, forKey: .direction)

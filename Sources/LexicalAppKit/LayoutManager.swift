@@ -155,11 +155,6 @@ public class LayoutManagerAppKit: NSLayoutManager, @unchecked Sendable {
   private func positionAllDecorators() {
     guard let textStorage = textStorage as? TextStorageAppKit else { return }
 
-    if editor?.featureFlags.verboseLogging == true {
-      let tsPtr = Unmanaged.passUnretained(textStorage).toOpaque()
-      print("🔥 DEC-LM: positionAllDecorators count=\(textStorage.decoratorPositionCache.count) ts.ptr=\(tsPtr)")
-    }
-
     for (key, location) in textStorage.decoratorPositionCache {
       positionDecorator(forKey: key, characterIndex: location)
     }
@@ -208,10 +203,6 @@ public class LayoutManagerAppKit: NSLayoutManager, @unchecked Sendable {
     let textContainerInset = attachmentEditor.frontendAppKit?.textContainerInsets ?? NSEdgeInsets()
 
     try? attachmentEditor.read {
-      if attachmentEditor.featureFlags.verboseLogging {
-        print("🔥 DEC-LM: key=\(attachmentKey) charIndex=\(characterIndex) glyphIndex=\(glyphIndex) inContainer=\(glyphIsInTextContainer) hide=\(shouldHideView) ts.len=\(textStorage.length)")
-      }
-
       guard let decoratorView = decoratorView(forKey: attachmentKey, createIfNecessary: !shouldHideView)
       else {
         attachmentEditor.log(.TextView, .warning, "create decorator view failed")
@@ -219,9 +210,6 @@ public class LayoutManagerAppKit: NSLayoutManager, @unchecked Sendable {
       }
 
       if shouldHideView {
-        if attachmentEditor.featureFlags.verboseLogging {
-          print("🔥 DEC-LM: hide view key=\(attachmentKey)")
-        }
         decoratorView.isHidden = true
         return
       }
@@ -264,10 +252,6 @@ public class LayoutManagerAppKit: NSLayoutManager, @unchecked Sendable {
       )
 
       decoratorView.frame = CGRect(origin: decoratorOrigin, size: decoratorSize)
-
-      if attachmentEditor.featureFlags.verboseLogging {
-        print("🔥 DEC-LM: positioned key=\(attachmentKey) frame=\(decoratorView.frame) glyphRect=\(glyphBoundingRect) attrSize=\(decoratorSize)")
-      }
     }
   }
 

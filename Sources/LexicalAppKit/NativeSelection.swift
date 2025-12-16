@@ -164,14 +164,8 @@ extension TextViewAppKit {
   public func applyLexicalSelection(_ selection: RangeSelection, editor: Editor) {
     do {
       let nativeSelection = try createNativeSelectionAppKit(from: selection, editor: editor)
-      if editor.featureFlags.verboseLogging {
-        print("🔥 NATIVE_SEL: applyLexicalSelection anchor=\(selection.anchor.key):\(selection.anchor.offset) focus=\(selection.focus.key):\(selection.focus.offset) → native=\(nativeSelection.range?.description ?? "nil")")
-      }
       applySelection(nativeSelection)
     } catch {
-      if editor.featureFlags.verboseLogging {
-        print("🔥 NATIVE_SEL: applyLexicalSelection FAILED: \(error)")
-      }
       // Selection conversion failed - this can happen if nodes aren't in range cache yet
     }
   }
@@ -198,11 +192,6 @@ public func createNativeSelectionAppKit(from selection: RangeSelection, editor: 
   let focusLocation = try stringLocationForPoint(selection.focus, editor: editor)
 
   guard let anchorLoc = anchorLocation, let focusLoc = focusLocation else {
-    if editor.featureFlags.verboseLogging {
-      let anchorInCache = editor.rangeCache[selection.anchor.key] != nil
-      let focusInCache = editor.rangeCache[selection.focus.key] != nil
-      print("🔥 NATIVE_SEL: createNativeSelectionAppKit FAILED - anchorLoc=\(anchorLocation?.description ?? "nil") focusLoc=\(focusLocation?.description ?? "nil") anchorInCache=\(anchorInCache) focusInCache=\(focusInCache)")
-    }
     return NativeSelectionAppKit()
   }
 
@@ -221,21 +210,12 @@ extension TextViewAppKit {
   ///
   /// Override point for tracking selection changes and syncing with Lexical.
   internal func handleSelectionChange() {
-    if editor.featureFlags.verboseLogging {
-      print("🎯 HANDLE-SEL: called, isUpdatingNativeSelection=\(isUpdatingNativeSelection)")
-    }
     guard !isUpdatingNativeSelection else {
-      if editor.featureFlags.verboseLogging {
-        print("🎯 HANDLE-SEL: skipped due to isUpdatingNativeSelection")
-      }
       return
     }
 
     // Get the current selection
     let selection = nativeSelection
-    if editor.featureFlags.verboseLogging {
-      print("🎯 HANDLE-SEL: proceeding with native range=\(selection.range?.description ?? "nil")")
-    }
 
     // Notify Lexical about selection change
     notifyLexicalOfSelectionChange(selection)
@@ -277,17 +257,9 @@ extension TextViewAppKit {
       // overwrite it when the native selection changes (e.g., during reconciliation)
       if let existingSelection = try? getSelection() {
         if existingSelection is NodeSelection {
-          if editor.featureFlags.verboseLogging {
-            print("🎯 SEL-SYNC: Preserving NodeSelection, not overwriting with RangeSelection")
-          }
           // Keep the NodeSelection - don't overwrite with a RangeSelection
           return
         }
-      }
-
-      if editor.featureFlags.verboseLogging {
-        let existingType = (try? getSelection()).map { String(describing: type(of: $0)) } ?? "nil"
-        print("🎯 SEL-SYNC: Converting native range to RangeSelection (existing=\(existingType))")
       }
 
       // Get or create the RangeSelection

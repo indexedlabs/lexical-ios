@@ -78,9 +78,6 @@ public class TextStorage: NSTextStorage {
     // Since we're in either controller or non-controlled mode, call super -- this will in turn call
     // both replaceCharacters and replaceAttributes. Clamp to storage bounds to avoid crashes
     // if a caller provides an out-of-range NSRange (e.g., after concurrent length changes).
-    if let ed = editor, ed.featureFlags.verboseLogging {
-      print("🔥 TS-EDIT: replace(attr) mode=\(mode) range=\(range) repl.len=\(attrString.length) ts.len(before)=\(backingAttributedString.length)")
-    }
     // Clamp start to [0, length], and end to [start, length]. For pure insertions with an
     // out-of-bounds location, insert at the end rather than at 0.
     let length = backingAttributedString.length
@@ -100,9 +97,6 @@ public class TextStorage: NSTextStorage {
     }
 
     // Mode is not none, so this change has already passed through Lexical
-    if let ed = editor, ed.featureFlags.verboseLogging {
-      print("🔥 TS-EDIT: replace(str) mode=\(mode) range=\(range) repl.len=\((str as NSString).length) ts.len(before)=\(backingAttributedString.length)")
-    }
     // Clamp range to storage bounds to avoid NSRangeException from UIKit internals when fast paths race with length changes.
     let length = backingAttributedString.length
     let start = max(0, min(range.location, length))
@@ -157,7 +151,7 @@ public class TextStorage: NSTextStorage {
 
       frontend.showPlaceholderText()
     } catch {
-      print("\(error)")
+      editor?.log(.NSTextStorage, .error, "Controller mode update failed; \(String(describing: error))")
     }
     return
   }
@@ -165,10 +159,6 @@ public class TextStorage: NSTextStorage {
   override open func setAttributes(_ attrs: [NSAttributedString.Key: Any]?, range: NSRange) {
     if mode != .controllerMode {
       return
-    }
-
-    if let ed = editor, ed.featureFlags.verboseLogging {
-      print("🔥 TS-EDIT: setAttributes mode=\(mode) range=\(range) attrs.keys=\(attrs?.keys.count ?? 0)")
     }
     // Clamp attributes range to safe bounds
     let length = backingAttributedString.length

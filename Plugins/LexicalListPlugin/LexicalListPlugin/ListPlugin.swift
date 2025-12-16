@@ -231,7 +231,7 @@ open class ListPlugin: Plugin {
       }
 #endif
     } catch {
-      print("\(error)")
+      editor.log(.other, .error, "ListPlugin setup failed; \(String(describing: error))")
     }
   }
 
@@ -281,7 +281,7 @@ open class ListPlugin: Plugin {
         handled = true
       }
     } catch {
-      print("failed updating node: \(error)")
+      editor?.log(.other, .error, "ListPlugin tap handler failed; \(String(describing: error))")
     }
 
     return handled

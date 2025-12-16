@@ -95,7 +95,7 @@ public class EditorHistory {
 
       externalHistoryState = historyState
     } catch {
-      print("Failed to get mergeAction: \(error.localizedDescription)")
+      editor.log(.other, .error, "History: failed to get mergeAction; \(String(describing: error))")
     }
   }
 

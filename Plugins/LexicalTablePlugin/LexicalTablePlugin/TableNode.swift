@@ -87,7 +87,7 @@ public class TableNode: DecoratorNode {
             try para.append([node])
           }
         } catch {
-          print("error \(error)")
+          parentEditor.log(.other, .error, "TableNode cell init failed; \(String(describing: error))")
         }
       }
     }

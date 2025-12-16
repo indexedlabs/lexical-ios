@@ -41,7 +41,7 @@ open class LinkPlugin: Plugin {
     do {
       try editor.registerNode(nodeType: NodeType.link, class: LinkNode.self)
     } catch {
-      print("\(error)")
+      editor.log(.other, .error, "LinkPlugin failed to register link node; \(String(describing: error))")
     }
 
     _ = editor.registerCommand(
@@ -92,7 +92,7 @@ open class LinkPlugin: Plugin {
         getActiveEditorState()?.selection = modifiedSelection
       }
     } catch {
-      print("\(error)")
+      editor.log(.other, .error, "LinkPlugin insertLink failed; \(String(describing: error))")
     }
   }
 
