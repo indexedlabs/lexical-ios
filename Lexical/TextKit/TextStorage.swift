@@ -18,6 +18,7 @@ public class TextStorage: NSTextStorage {
 
   private var backingAttributedString: NSMutableAttributedString
   var mode: TextStorageEditingMode
+  private var editingDepth: Int = 0
   weak var editor: Editor?
   /// True while inside `performControllerModeUpdate`, indicating that UIKit's text storage editing
   /// session is still active. Layout operations must be deferred until this is false.
@@ -43,6 +44,16 @@ public class TextStorage: NSTextStorage {
 
   override open var string: String {
     return backingAttributedString.string
+  }
+
+  override open func beginEditing() {
+    editingDepth += 1
+    super.beginEditing()
+  }
+
+  override open func endEditing() {
+    super.endEditing()
+    editingDepth = max(0, editingDepth - 1)
   }
 
   override open func attributes(
@@ -99,16 +110,26 @@ public class TextStorage: NSTextStorage {
     // Mode is not none, so this change has already passed through Lexical
     // Clamp range to storage bounds to avoid NSRangeException from UIKit internals when fast paths race with length changes.
     let length = backingAttributedString.length
+    let wasEmpty = length == 0
     let start = max(0, min(range.location, length))
     let end = max(start, min(range.location + range.length, length))
     let safe = NSRange(location: start, length: end - start)
-    beginEditing()
+
+    let shouldManageEditing = editingDepth == 0
+    if shouldManageEditing {
+      beginEditing()
+    }
+
     backingAttributedString.replaceCharacters(in: safe, with: str)
     edited(.editedCharacters, range: safe, changeInLength: (str as NSString).length - safe.length)
-    endEditing()
+    if shouldManageEditing {
+      endEditing()
+    }
 
-    guard let editor, let frontend = editor.frontend else { return }
-    frontend.showPlaceholderText()
+    let isEmpty = backingAttributedString.length == 0
+    if wasEmpty != isEmpty, let editor, let frontend = editor.frontend {
+      frontend.showPlaceholderText()
+    }
   }
 
   private func performControllerModeUpdate(_ str: String, range: NSRange) {
@@ -165,15 +186,18 @@ public class TextStorage: NSTextStorage {
     let start = max(0, min(range.location, length))
     let end = max(start, min(range.location + range.length, length))
     let safe = NSRange(location: start, length: end - start)
-    beginEditing()
+
+    let shouldManageEditing = editingDepth == 0
+    if shouldManageEditing {
+      beginEditing()
+    }
     if safe.length > 0 {
       backingAttributedString.setAttributes(attrs, range: safe)
       edited(.editedAttributes, range: safe, changeInLength: 0)
     }
-    endEditing()
-
-    guard let editor, let frontend = editor.frontend else { return }
-    frontend.showPlaceholderText()
+    if shouldManageEditing {
+      endEditing()
+    }
   }
 
   public var extraLineFragmentAttributes: [NSAttributedString.Key: Any]? {
