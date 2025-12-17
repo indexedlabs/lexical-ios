@@ -321,6 +321,18 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
     editor.dispatchCommand(type: .insertText, payload: text)
     textStorage.mode = TextStorageEditingMode.none
 
+    // When layout is allowed to be non-contiguous, TextKit may defer laying out newly-inserted
+    // content. During rapid typing this can make the caret appear to lag behind the inserted text.
+    // Ensure layout in a tiny range around the caret so the insertion point stays visually in sync.
+    if modernTKOptimizations {
+      let len = textStorage.length
+      if len > 0 {
+        let caret = min(max(0, selectedRange.location), len)
+        let ensureLoc = min(max(0, (caret == len) ? (caret - 1) : caret), len - 1)
+        layoutManager.ensureLayout(forCharacterRange: NSRange(location: ensureLoc, length: 1))
+      }
+    }
+
     // check if we need to send a selectionChanged (i.e. something unexpected happened)
     if selectedRange.length != 0 || selectedRange.location != expectedSelectionLocation {
       inputDelegateProxy.sendSelectionChangedIgnoringSuspended(self)
