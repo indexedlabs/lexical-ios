@@ -41,14 +41,25 @@ By default the mixed-document benchmarks build ~50 blocks. You can override this
 ```bash
 LEXICAL_BENCH_BLOCKS=500 \
   python3 scripts/benchmarks.py record --issue lexical-ios-u7r --tag large-doc -- \
-    xcodebuild -workspace Playground/LexicalPlayground.xcodeproj/project.xcworkspace \
-      -scheme Lexical-Package \
-      -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.0' \
-      -parallel-testing-enabled NO \
-      -maximum-concurrent-test-simulator-destinations 1 \
-      -only-testing:LexicalTests/MixedDocumentLiveBenchmarkTests \
-      test
+    python3 scripts/xcodebuild-test-with-env.py -- \
+      xcodebuild -workspace Playground/LexicalPlayground.xcodeproj/project.xcworkspace \
+        -scheme Lexical-Package \
+        -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.0' \
+        -parallel-testing-enabled NO \
+        -maximum-concurrent-test-simulator-destinations 1 \
+        -only-testing:LexicalTests/MixedDocumentLiveBenchmarkTests \
+        test
 ```
+
+Notes:
+- `xcodebuild test` does not automatically forward host env vars into iOS simulator XCTest; use `scripts/xcodebuild-test-with-env.py` when relying on `LEXICAL_*` variables.
+
+## A/B toggles
+
+Some optimizations include environment-variable toggles to compare against the previous behavior:
+
+- `LEXICAL_ENABLE_DFS_ORDER_TREE=1`: enable tree-traversal DFS ordering (falls back to sort if validation fails).
+- `LEXICAL_FORCE_DFS_ORDER_SORT=1`: force sort-by-location DFS ordering (overrides tree traversal).
 
 ## Debug hangs with timeouts
 

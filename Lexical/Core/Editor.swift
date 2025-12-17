@@ -107,6 +107,24 @@ internal enum DecoratorCacheItem {
 @MainActor
 public class Editor: NSObject {
   internal static var maxUpdateCount = 99
+  private static let enableDFSOrderTreeTraversal: Bool = {
+    guard let raw = ProcessInfo.processInfo.environment["LEXICAL_ENABLE_DFS_ORDER_TREE"] else { return false }
+    switch raw.lowercased() {
+    case "1", "true", "yes", "y":
+      return true
+    default:
+      return false
+    }
+  }()
+  private static let forceDFSOrderSort: Bool = {
+    guard let raw = ProcessInfo.processInfo.environment["LEXICAL_FORCE_DFS_ORDER_SORT"] else { return false }
+    switch raw.lowercased() {
+    case "1", "true", "yes", "y":
+      return true
+    default:
+      return false
+    }
+  }()
 
   private var editorState: EditorState
   private var editorStateVersion: Int
@@ -1002,8 +1020,13 @@ public class Editor: NSObject {
     }
 
     let stateForOrder = pendingEditorState ?? editorState
-    let ordered = nodeKeysByTreeDFSOrder(state: stateForOrder, rangeCache: rangeCache)
-      ?? sortedNodeKeysByLocation(rangeCache: rangeCache)
+    let ordered: [NodeKey]
+    if Editor.enableDFSOrderTreeTraversal && !Editor.forceDFSOrderSort {
+      ordered = nodeKeysByTreeDFSOrder(state: stateForOrder, rangeCache: rangeCache)
+        ?? sortedNodeKeysByLocation(rangeCache: rangeCache)
+    } else {
+      ordered = sortedNodeKeysByLocation(rangeCache: rangeCache)
+    }
     var index: [NodeKey: Int] = [:]
     index.reserveCapacity(ordered.count)
     for (i, key) in ordered.enumerated() { index[key] = i + 1 }
