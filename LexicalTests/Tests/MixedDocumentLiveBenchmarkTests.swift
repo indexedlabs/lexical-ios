@@ -187,6 +187,28 @@ final class MixedDocumentLiveBenchmarkTests: XCTestCase {
     }
   }
 
+  private func deleteMixedBlock(editor: Editor, position: Position) throws {
+    try editor.update {
+      guard let root = getRoot() else { return }
+      let count = root.getChildrenSize()
+      guard count > 0 else { return }
+
+      let idx: Int
+      switch position {
+      case .top:
+        idx = 0
+      case .end:
+        idx = max(0, count - 1)
+      case .middle:
+        idx = max(0, count / 2)
+      }
+
+      if let node = root.getChildAtIndex(index: idx) {
+        try node.remove()
+      }
+    }
+  }
+
   private func insertText(
     editor: Editor,
     textKey: NodeKey,
@@ -378,6 +400,51 @@ final class MixedDocumentLiveBenchmarkTests: XCTestCase {
             suite: String(describing: Self.self),
             test: #function,
             scenario: "live-typing",
+            variation: v.name,
+            position: label,
+            loops: loops,
+            optimizedWallTimeSeconds: dtOpt,
+            optimizedMetrics: optSummary,
+            legacyWallTimeSeconds: dtLeg,
+            legacyMetrics: legSummary
+          )
+        }
+      }
+    }
+  }
+
+  func testMixedDocumentLiveDeleteBlockBenchmarkTopMiddleEndQuick() throws {
+    let positions: [(Position, String)] = [(.top, "TOP"), (.middle, "MIDDLE"), (.end, "END")]
+    let loops = 5
+
+    for v in variations {
+      for (pos, label) in positions {
+        try autoreleasepool {
+          let (opt, leg) = try makeViews(flags: v.flags)
+
+          _ = try buildMixedDocument(editor: opt.view.editor, blockCount: 50, paragraphWidth: 200)
+          _ = try buildMixedDocument(editor: leg.view.editor, blockCount: 50, paragraphWidth: 200)
+
+          leg.metrics.resetMetrics()
+          let dtLeg = try measureWallTime {
+            for _ in 0..<loops { try deleteMixedBlock(editor: leg.view.editor, position: pos) }
+          }
+          let legSummary = leg.metrics.summarize(label: "live/delete/\(label)/legacy/\(v.name)")
+          XCTAssertGreaterThanOrEqual(leg.metrics.reconcilerRuns.count, loops)
+
+          opt.metrics.resetMetrics()
+          let dtOpt = try measureWallTime {
+            for _ in 0..<loops { try deleteMixedBlock(editor: opt.view.editor, position: pos) }
+          }
+          let optSummary = opt.metrics.summarize(label: "live/delete/\(label)/opt/\(v.name)")
+          XCTAssertGreaterThanOrEqual(opt.metrics.reconcilerRuns.count, loops)
+
+          XCTAssertEqual(opt.view.attributedTextString, leg.view.attributedTextString)
+          print("🔥 LIVE-DELETE [\(label)] variation=\(v.name) optimized=\(dtOpt)s legacy=\(dtLeg)s opt=\(optSummary.debugDescription) leg=\(legSummary.debugDescription)")
+          emitPerfBenchmarkRecord(
+            suite: String(describing: Self.self),
+            test: #function,
+            scenario: "live-delete",
             variation: v.name,
             position: label,
             loops: loops,
