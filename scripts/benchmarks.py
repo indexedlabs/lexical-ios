@@ -75,6 +75,22 @@ def get_git_head() -> Optional[str]:
         return None
 
 
+def get_git_branch() -> Optional[str]:
+    try:
+        out = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"], text=True).strip()
+        return out or None
+    except Exception:
+        return None
+
+
+def get_git_is_dirty() -> Optional[bool]:
+    try:
+        out = subprocess.check_output(["git", "status", "--porcelain"], text=True)
+        return bool(out.strip())
+    except Exception:
+        return None
+
+
 def append_jsonl(path: str, rows: Iterable[Dict[str, Any]]) -> None:
     ensure_parent_dir(path)
     with open(path, "a", encoding="utf-8") as f:
@@ -93,6 +109,8 @@ def cmd_record(args: argparse.Namespace) -> int:
     issue: Optional[str] = args.issue
     tag: Optional[str] = args.tag
     git_head = args.git_head or get_git_head()
+    git_branch = get_git_branch()
+    git_dirty = get_git_is_dirty()
 
     started_at = utc_now_iso()
     rc, perf_records = run_cmd_capture_perf_json(args.cmd)
@@ -107,6 +125,8 @@ def cmd_record(args: argparse.Namespace) -> int:
                     "issue": issue,
                     "tag": tag,
                     "git_head": git_head,
+                    "git_branch": git_branch,
+                    "git_dirty": git_dirty,
                     "started_at": started_at,
                     "ended_at": ended_at,
                     "cmd": " ".join(args.cmd),
@@ -133,6 +153,9 @@ class AggKey:
 @dataclass
 class Agg:
     started_at: str
+    tag: str
+    git_head: str
+    git_dirty: Optional[bool]
     count: int = 0
     opt_sum: float = 0.0
     leg_sum: float = 0.0
@@ -162,6 +185,7 @@ def cmd_report(args: argparse.Namespace) -> int:
         return 2
 
     issue_filter: Optional[str] = args.issue
+    scenario_filter: Optional[str] = args.scenario
 
     aggs: Dict[AggKey, Agg] = {}
 
@@ -185,6 +209,8 @@ def cmd_report(args: argparse.Namespace) -> int:
             run_id = run.get("id") or ""
             started_at = run.get("started_at") or ""
             scenario = bench.get("scenario") or ""
+            if scenario_filter and scenario != scenario_filter:
+                continue
 
             opt = ((bench.get("optimized") or {}).get("wallTimeSeconds")) or 0.0
             leg = ((bench.get("legacy") or {}).get("wallTimeSeconds")) or 0.0
@@ -192,7 +218,12 @@ def cmd_report(args: argparse.Namespace) -> int:
             key = AggKey(run_id=run_id, issue=issue, scenario=scenario)
             agg = aggs.get(key)
             if not agg:
-                agg = Agg(started_at=started_at)
+                agg = Agg(
+                    started_at=started_at,
+                    tag=run.get("tag") or "",
+                    git_head=run.get("git_head") or "",
+                    git_dirty=run.get("git_dirty"),
+                )
                 aggs[key] = agg
             agg.add(float(opt), float(leg))
 
@@ -212,10 +243,16 @@ def cmd_report(args: argparse.Namespace) -> int:
         print("No benchmark records matched.")
         return 0
 
-    print("run_id\tissue\tscenario\tcount\topt_avg_s\tleg_avg_s\topt/leg")
+    print("run_id\tissue\ttag\tgit\tdirty\tscenario\tcount\topt_avg_s\tleg_avg_s\topt/leg")
     for (k, agg) in rows:
+        git_short = (agg.git_head or "")[:8]
+        dirty = ""
+        if agg.git_dirty is True:
+            dirty = "dirty"
+        elif agg.git_dirty is False:
+            dirty = "clean"
         print(
-            f"{k.run_id}\t{k.issue}\t{k.scenario}\t{agg.count}\t{agg.opt_avg:.4f}\t{agg.leg_avg:.4f}\t{agg.opt_over_leg:.2f}"
+            f"{k.run_id}\t{k.issue}\t{agg.tag}\t{git_short}\t{dirty}\t{k.scenario}\t{agg.count}\t{agg.opt_avg:.4f}\t{agg.leg_avg:.4f}\t{agg.opt_over_leg:.2f}"
         )
     return 0
 
@@ -235,6 +272,7 @@ def main() -> int:
     rep = sub.add_parser("report", help="Summarize recorded benchmark JSONL")
     rep.add_argument("--in", dest="input", default=".benchmarks/results.jsonl", help="Input JSONL path")
     rep.add_argument("--issue", default=None, help="Filter by bd issue id")
+    rep.add_argument("--scenario", default=None, help="Filter by scenario id")
     rep.add_argument("--last", type=int, default=10, help="Only show the last N run_ids (default 10)")
 
     args, unknown = ap.parse_known_args()
