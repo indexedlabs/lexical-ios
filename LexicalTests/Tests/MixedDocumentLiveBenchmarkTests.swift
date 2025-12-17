@@ -215,6 +215,26 @@ final class MixedDocumentLiveBenchmarkTests: XCTestCase {
     }
   }
 
+  private func typingInsertionLocation(
+    editor: Editor,
+    textKey: NodeKey,
+    position: Position
+  ) throws -> Int {
+    var loc: Int?
+    try editor.read {
+      guard let range = editor.rangeCache[textKey]?.range else { return }
+      switch position {
+      case .top:
+        loc = range.location
+      case .middle:
+        loc = range.location + (range.length / 2)
+      case .end:
+        loc = range.location + range.length
+      }
+    }
+    return loc ?? 0
+  }
+
   func testMixedDocumentLiveInsertBenchmarkTopMiddleEndQuick() throws {
     let positions: [(Position, String)] = [(.top, "TOP"), (.middle, "MIDDLE"), (.end, "END")]
     let loops = 3
@@ -299,6 +319,65 @@ final class MixedDocumentLiveBenchmarkTests: XCTestCase {
             suite: String(describing: Self.self),
             test: #function,
             scenario: "live-text",
+            variation: v.name,
+            position: label,
+            loops: loops,
+            optimizedWallTimeSeconds: dtOpt,
+            optimizedMetrics: optSummary,
+            legacyWallTimeSeconds: dtLeg,
+            legacyMetrics: legSummary
+          )
+        }
+      }
+    }
+  }
+
+  func testMixedDocumentLiveTypingInsertBenchmarkTopMiddleEndQuick() throws {
+    let loops = 50
+
+    for v in variations {
+      try autoreleasepool {
+        let (opt, leg) = try makeViews(flags: v.flags)
+
+        let optAnchors = try buildMixedDocument(editor: opt.view.editor, blockCount: 50, paragraphWidth: 220)
+        let legAnchors = try buildMixedDocument(editor: leg.view.editor, blockCount: 50, paragraphWidth: 220)
+
+        for (pos, label, optKey, legKey) in [
+          (Position.top, "TOP", optAnchors.topTextKey, legAnchors.topTextKey),
+          (Position.middle, "MIDDLE", optAnchors.middleTextKey, legAnchors.middleTextKey),
+          (Position.end, "END", optAnchors.endTextKey, legAnchors.endTextKey),
+        ] {
+          let optLoc = try typingInsertionLocation(editor: opt.view.editor, textKey: optKey, position: pos)
+          let legLoc = try typingInsertionLocation(editor: leg.view.editor, textKey: legKey, position: pos)
+
+          opt.view.setSelectedRange(NSRange(location: min(max(0, optLoc), opt.view.textStorageLength), length: 0))
+          leg.view.setSelectedRange(NSRange(location: min(max(0, legLoc), leg.view.textStorageLength), length: 0))
+
+          leg.metrics.resetMetrics()
+          let dtLeg = try measureWallTime {
+            for i in 0..<loops {
+              leg.view.insertText(String(i % 10))
+            }
+          }
+          let legSummary = leg.metrics.summarize(label: "live/typing/\(label)/legacy/\(v.name)")
+          XCTAssertGreaterThanOrEqual(leg.metrics.reconcilerRuns.count, loops)
+
+          opt.metrics.resetMetrics()
+          let dtOpt = try measureWallTime {
+            for i in 0..<loops {
+              opt.view.insertText(String(i % 10))
+            }
+          }
+          let optSummary = opt.metrics.summarize(label: "live/typing/\(label)/opt/\(v.name)")
+          XCTAssertGreaterThanOrEqual(opt.metrics.reconcilerRuns.count, loops)
+
+          XCTAssertEqual(opt.view.attributedTextString, leg.view.attributedTextString)
+          XCTAssertEqual(opt.view.selectedRange, leg.view.selectedRange)
+          print("🔥 LIVE-TYPING [\(label)] variation=\(v.name) optimized=\(dtOpt)s legacy=\(dtLeg)s opt=\(optSummary.debugDescription) leg=\(legSummary.debugDescription)")
+          emitPerfBenchmarkRecord(
+            suite: String(describing: Self.self),
+            test: #function,
+            scenario: "live-typing",
             variation: v.name,
             position: label,
             loops: loops,
