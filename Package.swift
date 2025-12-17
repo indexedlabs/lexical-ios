@@ -138,7 +138,10 @@ let package = Package(
 
     .target(
       name: "LexicalListPlugin",
-      dependencies: ["Lexical"],
+      dependencies: [
+        "Lexical",
+        .target(name: "LexicalAppKit", condition: .when(platforms: [.macOS])),
+      ],
       path: "./Plugins/LexicalListPlugin/LexicalListPlugin"),
     .testTarget(
       name: "LexicalListPluginTests",
