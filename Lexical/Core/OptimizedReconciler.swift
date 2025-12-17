@@ -1657,6 +1657,32 @@ internal enum OptimizedReconciler {
     }
     groups.append((s, e))
 
+    // Safety: if any removed direct child is still attached in the pending state,
+    // this is a move (not a delete). Bail out to avoid dropping content.
+    for idx in removedIndices {
+      let k = prevChildren[idx]
+      if let n = pendingEditorState.nodeMap[k], n.isAttached() {
+        return false
+      }
+    }
+
+    let theme = editor.getTheme()
+    var rangeShifts: [(startKey: NodeKey, endKeyExclusive: NodeKey?, delta: Int)] = []
+    rangeShifts.reserveCapacity(groups.count * 2)
+
+    @inline(__always)
+    func applyChildrenLengthDeltaFromParent(_ parentKey: NodeKey, delta: Int) {
+      guard delta != 0 else { return }
+      var cursor: NodeKey? = parentKey
+      while let k = cursor {
+        if var it = editor.rangeCache[k] {
+          it.childrenLength &+= delta
+          editor.rangeCache[k] = it
+        }
+        cursor = pendingEditorState.nodeMap[k]?.parent
+      }
+    }
+
     // Build delete ranges coalesced per group
     var instructions: [Instruction] = []
     var totalDelta = 0
@@ -1666,16 +1692,55 @@ internal enum OptimizedReconciler {
       let firstKey = prevChildren[g.start]
       let lastKey = prevChildren[g.end]
       guard let firstItem = editor.rangeCache[firstKey], let lastItem = editor.rangeCache[lastKey] else { continue }
+
+      // Neighbor boundary: the previous sibling's postamble can depend on its next sibling.
+      // When blocks are removed in the middle, update the previous sibling's postamble to
+      // match pending state so the resulting string stays in parity with legacy.
+      if g.start > 0 {
+        let prevSiblingKey = prevChildren[g.start - 1]
+        if let prevSiblingRange = editor.rangeCache[prevSiblingKey],
+           let prevSiblingNext = pendingEditorState.nodeMap[prevSiblingKey] {
+          let oldPost = prevSiblingRange.postambleLength
+          let newPostStr = prevSiblingNext.getPostamble()
+          let newPost = newPostStr.lengthAsNSString()
+          if newPost != oldPost {
+            let postLoc = prevSiblingRange.location + prevSiblingRange.preambleLength + prevSiblingRange.childrenLength + prevSiblingRange.textLength
+            if oldPost > 0 {
+              instructions.append(.delete(range: NSRange(location: postLoc, length: oldPost)))
+            }
+            let postAttrStr = AttributeUtils.attributedStringByAddingStyles(
+              NSAttributedString(string: newPostStr),
+              from: prevSiblingNext,
+              state: pendingEditorState,
+              theme: theme
+            )
+            if postAttrStr.length > 0 {
+              instructions.append(.insert(location: postLoc, attrString: postAttrStr))
+            }
+            let deltaPost = newPost - oldPost
+            if var it = editor.rangeCache[prevSiblingKey] { it.postambleLength = newPost; editor.rangeCache[prevSiblingKey] = it }
+            if let pk = prevSiblingNext.parent { applyChildrenLengthDeltaFromParent(pk, delta: deltaPost) }
+            rangeShifts.append((startKey: prevSiblingKey, endKeyExclusive: Optional<NodeKey>.none, delta: deltaPost))
+          }
+        }
+      }
+
       let start = firstItem.location
       let end = lastItem.location + lastItem.range.length
       let len = max(0, end - start)
-      if len > 0 { instructions.append(.delete(range: NSRange(location: start, length: len))) }
+      if len > 0 {
+        instructions.append(.delete(range: NSRange(location: start, length: len)))
+        rangeShifts.append((startKey: lastKey, endKeyExclusive: Optional<NodeKey>.none, delta: -len))
+      }
       totalDelta &-= len
       // Mark neighbors as affected for block attributes
       if g.start > 0 { affected.insert(prevChildren[g.start - 1]) }
       if g.end + 1 < prevChildren.count { affected.insert(prevChildren[g.end + 1]) }
     }
     if instructions.isEmpty { return false }
+
+    // Update parent+ancestor childrenLength now that removed blocks are gone.
+    applyChildrenLengthDeltaFromParent(parentKey, delta: totalDelta)
 
     // Apply deletes via batch path
     // If a clamp range was provided (selection-driven delete), intersect deletes.
@@ -1726,26 +1791,32 @@ internal enum OptimizedReconciler {
     let prePruneOrderAndIndex: ([NodeKey], [NodeKey: Int])? =
       editor.featureFlags.useReconcilerFenwickDelta ? fenwickOrderAndIndex(editor: editor) : nil
 
-    // Prune removed keys from range cache under the parent and rebuild positions via Fenwick range shifts
-    pruneRangeCacheUnderAncestor(ancestorKey: parentKey, prevState: currentEditorState, nextState: pendingEditorState, editor: editor)
+    // Prune removed subtrees from range cache without scanning the entire parent subtree.
+    let removedRoots: [NodeKey] = removedIndices.map { prevChildren[$0] }
+    if !removedRoots.isEmpty {
+      var toRemove: Set<NodeKey> = []
+      for r in removedRoots {
+        toRemove.formUnion(subtreeKeysDFS(rootKey: r, state: currentEditorState))
+      }
+      if !toRemove.isEmpty {
+        for k in toRemove { editor.rangeCache.removeValue(forKey: k) }
+        editor.invalidateDFSOrderCache()
+      }
 
-    // Reconcile decorator add/remove/positions for the affected subtree so removed decorators
-    // are unmounted immediately and caches are purged.
-    reconcileDecoratorOpsForSubtree(
-      ancestorKey: parentKey,
-      prevState: currentEditorState,
-      nextState: pendingEditorState,
-      editor: editor
-    )
+      // Reconcile decorator removals only for deleted subtrees to avoid scanning the entire parent.
+      for r in removedRoots {
+        reconcileDecoratorOpsForSubtree(
+          ancestorKey: r,
+          prevState: currentEditorState,
+          nextState: pendingEditorState,
+          editor: editor
+        )
+      }
+    }
 
     if editor.featureFlags.useReconcilerFenwickDelta, let pre = prePruneOrderAndIndex {
-      // Shift everything after the last removed index by totalDelta (negative)
       let (order, positions) = pre
-      // Use the last removed child's key in prev (still present in order before pruning) as start anchor if available,
-      // otherwise fall back to parent key (shift after parent's preamble)
-      let startAnchor: NodeKey = prevChildren[removedIndices.max() ?? 0]
-      let ranges = [(startKey: startAnchor, endKeyExclusive: Optional<NodeKey>.none, delta: totalDelta)]
-      applyIncrementalLocationShifts(rangeCache: &editor.rangeCache, ranges: ranges, order: order, indexOf: positions, diffScratch: &editor.locationShiftDiffScratch)
+      applyIncrementalLocationShifts(rangeCache: &editor.rangeCache, ranges: rangeShifts, order: order, indexOf: positions, diffScratch: &editor.locationShiftDiffScratch)
     } else {
       // Recompute subtree under parent for correctness
       if let parentPrevRange = editor.rangeCache[parentKey] {
@@ -2527,6 +2598,17 @@ internal enum OptimizedReconciler {
   ) {
     guard let textStorage = editor.textStorage else { return }
 
+    @inline(__always)
+    func isAttached(key: NodeKey, in state: EditorState) -> Bool {
+      var cursor: NodeKey? = key
+      while let k = cursor {
+        if k == kRootNodeKey { return true }
+        guard let node = state.nodeMap[k] else { return false }
+        cursor = node.parent
+      }
+      return false
+    }
+
     // Helper: derive a fallback character location for a decorator by scanning
     // TextStorage for the TextAttachment carrying the same node key. This is
     // robust when rangeCache has not yet been populated for newly inserted
@@ -2547,7 +2629,12 @@ internal enum OptimizedReconciler {
     func decoratorKeys(in state: EditorState, under root: NodeKey) -> Set<NodeKey> {
       let keys = subtreeKeysDFS(rootKey: root, state: state)
       var out: Set<NodeKey> = []
-      for k in keys { if state.nodeMap[k] is DecoratorNode { out.insert(k) } }
+      for k in keys {
+        // Ignore detached nodes that still exist in nodeMap but are no longer part of the
+        // attached editor tree in this state (e.g., deleted nodes awaiting GC).
+        guard isAttached(key: k, in: state) else { continue }
+        if state.nodeMap[k] is DecoratorNode { out.insert(k) }
+      }
       return out
     }
 
@@ -2561,8 +2648,8 @@ internal enum OptimizedReconciler {
       // If we're scanning from root and can't find it, it's orphaned - must remove.
       let decoratorNode = nextState.nodeMap[k] as? DecoratorNode
       let existsInNextState = decoratorNode != nil
-      let isAttached = decoratorNode?.isAttached() ?? false
-      if existsInNextState && isAttached && ancestorKey != kRootNodeKey {
+      let isAttachedInNextState = existsInNextState && isAttached(key: k, in: nextState)
+      if existsInNextState && isAttachedInNextState && ancestorKey != kRootNodeKey {
         // The decorator still exists in the next state AND is attached, just not under this ancestor.
         // This can happen during paragraph merges. Don't remove it.
         continue
