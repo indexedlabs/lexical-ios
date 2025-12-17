@@ -35,6 +35,84 @@ final class ReconcilerMetricsCollector: EditorMetricsContainer {
   }
 }
 
+// MARK: - Benchmark recording
+
+struct PerfBenchmarkRecord: Codable {
+  struct Side: Codable {
+    let wallTimeSeconds: TimeInterval
+    let metrics: ReconcilerMetricsSummary
+  }
+
+  /// Increment when the schema changes in a non-backwards-compatible way.
+  let schemaVersion: Int
+
+  /// ISO8601 date string (local to the test runner).
+  let timestamp: String
+
+  /// Logical grouping (usually the XCTestCase type name).
+  let suite: String
+
+  /// XCTest method name.
+  let test: String
+
+  /// Scenario identifier (e.g. "seed", "insert", "text").
+  let scenario: String
+
+  /// Variation identifier (e.g. "optimized-balanced").
+  let variation: String
+
+  /// Optional position tag (e.g. "TOP", "MIDDLE", "END").
+  let position: String?
+
+  /// Number of iterations inside the scenario loop.
+  let loops: Int
+
+  let optimized: Side
+  let legacy: Side
+}
+
+@MainActor
+func emitPerfBenchmarkRecord(
+  suite: String,
+  test: String,
+  scenario: String,
+  variation: String,
+  position: String? = nil,
+  loops: Int,
+  optimizedWallTimeSeconds: TimeInterval,
+  optimizedMetrics: ReconcilerMetricsSummary,
+  legacyWallTimeSeconds: TimeInterval,
+  legacyMetrics: ReconcilerMetricsSummary
+) {
+  let formatter = ISO8601DateFormatter()
+  formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+
+  let record = PerfBenchmarkRecord(
+    schemaVersion: 1,
+    timestamp: formatter.string(from: Date()),
+    suite: suite,
+    test: test,
+    scenario: scenario,
+    variation: variation,
+    position: position,
+    loops: loops,
+    optimized: .init(wallTimeSeconds: optimizedWallTimeSeconds, metrics: optimizedMetrics),
+    legacy: .init(wallTimeSeconds: legacyWallTimeSeconds, metrics: legacyMetrics)
+  )
+
+  let encoder = JSONEncoder()
+  encoder.outputFormatting = [.sortedKeys]
+  guard let data = try? encoder.encode(record),
+        let json = String(data: data, encoding: .utf8) else {
+    let positionLabel = position ?? ""
+    print("🔥 PERF_JSON_ENCODE_FAILED suite=\(suite) test=\(test) scenario=\(scenario) variation=\(variation) position=\(positionLabel)")
+    return
+  }
+
+  // Intentionally single-line JSON for host-side collection.
+  print("🔥 PERF_JSON \(json)")
+}
+
 struct ReconcilerMetricsSummary: Codable, CustomDebugStringConvertible {
   struct Percentiles: Codable {
     let p50: TimeInterval
@@ -144,4 +222,3 @@ func measureWallTime(_ block: () throws -> Void) rethrows -> TimeInterval {
   try block()
   return CFAbsoluteTimeGetCurrent() - start
 }
-

@@ -240,6 +240,17 @@ final class MixedDocumentBenchmarkTests: XCTestCase {
       XCTAssertEqual(opt.1.textStorage.string, leg.1.textStorage.string)
 
       print("🔥 MIXED-SEED variation=\(v.name) optimized=\(dtOpt)s legacy=\(dtLeg)s opt=\(optSummary.debugDescription) leg=\(legSummary.debugDescription)")
+      emitPerfBenchmarkRecord(
+        suite: String(describing: Self.self),
+        test: #function,
+        scenario: "seed",
+        variation: v.name,
+        loops: 1,
+        optimizedWallTimeSeconds: dtOpt,
+        optimizedMetrics: optSummary,
+        legacyWallTimeSeconds: dtLeg,
+        legacyMetrics: legSummary
+      )
     }
   }
 
@@ -270,6 +281,18 @@ final class MixedDocumentBenchmarkTests: XCTestCase {
 
         XCTAssertEqual(opt.1.textStorage.string, leg.1.textStorage.string)
         print("🔥 MIXED-INSERT [\(label)] variation=\(v.name) optimized=\(dtOpt)s legacy=\(dtLeg)s opt=\(optSummary.debugDescription) leg=\(legSummary.debugDescription)")
+        emitPerfBenchmarkRecord(
+          suite: String(describing: Self.self),
+          test: #function,
+          scenario: "insert",
+          variation: v.name,
+          position: label,
+          loops: loops,
+          optimizedWallTimeSeconds: dtOpt,
+          optimizedMetrics: optSummary,
+          legacyWallTimeSeconds: dtLeg,
+          legacyMetrics: legSummary
+        )
       }
     }
   }
@@ -303,6 +326,18 @@ final class MixedDocumentBenchmarkTests: XCTestCase {
       XCTAssertEqual(opt.2.reconcilerRuns.count, loops)
       XCTAssertEqual(opt.1.textStorage.string, leg.1.textStorage.string)
       print("🔥 MIXED-TEXT [TOP] variation=\(v.name) optimized=\(dtOptTop)s legacy=\(dtLegTop)s opt=\(optTopSummary.debugDescription) leg=\(legTopSummary.debugDescription)")
+      emitPerfBenchmarkRecord(
+        suite: String(describing: Self.self),
+        test: #function,
+        scenario: "text",
+        variation: v.name,
+        position: "TOP",
+        loops: loops,
+        optimizedWallTimeSeconds: dtOptTop,
+        optimizedMetrics: optTopSummary,
+        legacyWallTimeSeconds: dtLegTop,
+        legacyMetrics: legTopSummary
+      )
 
       // MIDDLE (insert into middle of representative text node)
       leg.2.resetMetrics()
@@ -324,6 +359,18 @@ final class MixedDocumentBenchmarkTests: XCTestCase {
       XCTAssertEqual(opt.2.reconcilerRuns.count, loops)
       XCTAssertEqual(opt.1.textStorage.string, leg.1.textStorage.string)
       print("🔥 MIXED-TEXT [MIDDLE] variation=\(v.name) optimized=\(dtOptMid)s legacy=\(dtLegMid)s opt=\(optMidSummary.debugDescription) leg=\(legMidSummary.debugDescription)")
+      emitPerfBenchmarkRecord(
+        suite: String(describing: Self.self),
+        test: #function,
+        scenario: "text",
+        variation: v.name,
+        position: "MIDDLE",
+        loops: loops,
+        optimizedWallTimeSeconds: dtOptMid,
+        optimizedMetrics: optMidSummary,
+        legacyWallTimeSeconds: dtLegMid,
+        legacyMetrics: legMidSummary
+      )
 
       // END (append into last text node)
       leg.2.resetMetrics()
@@ -345,7 +392,18 @@ final class MixedDocumentBenchmarkTests: XCTestCase {
       XCTAssertEqual(opt.2.reconcilerRuns.count, loops)
       XCTAssertEqual(opt.1.textStorage.string, leg.1.textStorage.string)
       print("🔥 MIXED-TEXT [END] variation=\(v.name) optimized=\(dtOptEnd)s legacy=\(dtLegEnd)s opt=\(optEndSummary.debugDescription) leg=\(legEndSummary.debugDescription)")
+      emitPerfBenchmarkRecord(
+        suite: String(describing: Self.self),
+        test: #function,
+        scenario: "text",
+        variation: v.name,
+        position: "END",
+        loops: loops,
+        optimizedWallTimeSeconds: dtOptEnd,
+        optimizedMetrics: optEndSummary,
+        legacyWallTimeSeconds: dtLegEnd,
+        legacyMetrics: legEndSummary
+      )
     }
   }
 }
-
