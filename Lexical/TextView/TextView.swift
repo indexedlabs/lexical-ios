@@ -324,7 +324,7 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
     // When layout is allowed to be non-contiguous, TextKit may defer laying out newly-inserted
     // content. During rapid typing this can make the caret appear to lag behind the inserted text.
     // Ensure layout in a tiny range around the caret so the insertion point stays visually in sync.
-    if modernTKOptimizations {
+    if modernTKOptimizations && layoutManager.hasNonContiguousLayout {
       let len = textStorage.length
       if len > 0 {
         let caret = min(max(0, selectedRange.location), len)
