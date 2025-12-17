@@ -1001,7 +1001,9 @@ public class Editor: NSObject {
       return (cached, cachedIndex)
     }
 
-    let ordered = sortedNodeKeysByLocation(rangeCache: rangeCache)
+    let stateForOrder = pendingEditorState ?? editorState
+    let ordered = nodeKeysByTreeDFSOrder(state: stateForOrder, rangeCache: rangeCache)
+      ?? sortedNodeKeysByLocation(rangeCache: rangeCache)
     var index: [NodeKey: Int] = [:]
     index.reserveCapacity(ordered.count)
     for (i, key) in ordered.enumerated() { index[key] = i + 1 }
