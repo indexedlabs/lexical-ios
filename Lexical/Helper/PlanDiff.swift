@@ -20,7 +20,11 @@ struct NodePartDiff: Sendable {
 }
 
 /// Computes per-node deltas for preamble/text/postamble lengths between prev (range cache) and pending state
-/// for the current update cycle. Only nodes present in both states and marked dirty are considered.
+/// for the current update cycle.
+///
+/// - For nodes present in both prev (range cache) and next state, deltas are computed normally.
+/// - For newly-inserted nodes missing from the prev range cache, the prev lengths are treated as zero.
+/// - For removed/detached nodes where the next node is not attached, the next lengths are treated as zero.
 @MainActor
 func computePartDiffs(
   editor: Editor,
@@ -33,13 +37,30 @@ func computePartDiffs(
   let prevMap = prevRangeCache ?? editor.rangeCache
   let sourceKeys: [NodeKey] = keys ?? Array(editor.dirtyNodes.keys)
   for key in sourceKeys {
-    guard let prev = prevMap[key], let next = nextState.nodeMap[key] else { continue }
-    let preNext = next.getPreamble().lengthAsNSString()
-    let textNext = next.getTextPart().lengthAsNSString()
-    let postNext = next.getPostamble().lengthAsNSString()
-    let preDelta = preNext - prev.preambleLength
-    let textDelta = textNext - prev.textLength
-    let postDelta = postNext - prev.postambleLength
+    let prev = prevMap[key]
+    let next = nextState.nodeMap[key]
+
+    if prev == nil && next == nil {
+      continue
+    }
+
+    let prePrev = prev?.preambleLength ?? 0
+    let textPrev = prev?.textLength ?? 0
+    let postPrev = prev?.postambleLength ?? 0
+
+    let nextIsAttached: Bool = {
+      guard let next else { return false }
+      if key == kRootNodeKey { return true }
+      return next.parent != nil
+    }()
+
+    let preNext = nextIsAttached ? (next?.getPreamble().lengthAsNSString() ?? 0) : 0
+    let textNext = nextIsAttached ? (next?.getTextPart().lengthAsNSString() ?? 0) : 0
+    let postNext = nextIsAttached ? (next?.getPostamble().lengthAsNSString() ?? 0) : 0
+
+    let preDelta = preNext - prePrev
+    let textDelta = textNext - textPrev
+    let postDelta = postNext - postPrev
     if preDelta != 0 || textDelta != 0 || postDelta != 0 {
       out[key] = NodePartDiff(key: key, preDelta: preDelta, textDelta: textDelta, postDelta: postDelta)
     }
