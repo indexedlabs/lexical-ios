@@ -26,6 +26,7 @@ final class RapidTypingBackspaceParityTests: XCTestCase {
 
   private func scenario_typeAndQuickBackspace(on v: LexicalView) throws -> String {
     let ed = v.editor
+    print("🔥 RAPID TYPING: seed doc + insert paragraph + type 'word'")
     try ed.update {
       guard let root = getRoot() else { return }
       let p = createParagraphNode(); let t = createTextNode(text: "Hello.")
@@ -35,9 +36,13 @@ final class RapidTypingBackspaceParityTests: XCTestCase {
       try (getSelection() as? RangeSelection)?.insertText("word")
     }
     // Quick successive backspaces (simulate fast user input)
+    print("🔥 RAPID TYPING: backspace 1/4")
     try ed.update { try (getSelection() as? RangeSelection)?.deleteCharacter(isBackwards: true) }
+    print("🔥 RAPID TYPING: backspace 2/4")
     try ed.update { try (getSelection() as? RangeSelection)?.deleteCharacter(isBackwards: true) }
+    print("🔥 RAPID TYPING: backspace 3/4")
     try ed.update { try (getSelection() as? RangeSelection)?.deleteCharacter(isBackwards: true) }
+    print("🔥 RAPID TYPING: backspace 4/4")
     try ed.update { try (getSelection() as? RangeSelection)?.deleteCharacter(isBackwards: true) }
     return v.attributedText.string
   }
@@ -47,5 +52,3 @@ final class RapidTypingBackspaceParityTests: XCTestCase {
     XCTAssertEqual(try scenario_typeAndQuickBackspace(on: opt), try scenario_typeAndQuickBackspace(on: leg))
   }
 }
-
-

@@ -1105,6 +1105,61 @@ public class RangeSelection: BaseSelection {
     if isBackwards && wasCollapsed, let editor = getActiveEditor(),
        editor.frontend is LexicalView, editor.featureFlags.useOptimizedReconciler {
       if let start = caretStringLocation, start > 0 {
+        // Prefer a point-based clamp when deleting inside a TextNode. This avoids relying on
+        // native selection movement (which can be unavailable in tests) and avoids mapping
+        // global string offsets back into Points via rangeCache search.
+        if anchor.type == .text, focus == anchor, let textNode = (try? anchor.getNode()) as? TextNode {
+          let ns = textNode.getTextPart() as NSString
+          let caret = anchor.offset
+          if caret > 0, caret <= ns.length {
+            let localClamp: NSRange
+            if editor.featureFlags.useOptimizedReconcilerStrictMode {
+              // Previous Unicode scalar (handle surrogate pairs)
+              let i = caret - 1
+              if i >= 0 {
+                let c = ns.character(at: i)
+                if c >= 0xDC00 && c <= 0xDFFF, i - 1 >= 0 {
+                  let h = ns.character(at: i - 1)
+                  if h >= 0xD800 && h <= 0xDBFF { localClamp = NSRange(location: i - 1, length: 2) } else { localClamp = NSRange(location: i, length: 1) }
+                } else {
+                  localClamp = NSRange(location: i, length: 1)
+                }
+              } else {
+                localClamp = NSRange(location: max(0, caret - 1), length: 1)
+              }
+            } else {
+              // Default (non-strict): delete one user-perceived character (grapheme cluster).
+              // If caret is inside a composed sequence, mimic native parity by deleting only
+              // the previous scalar segment (typically the base).
+              let left = ns.rangeOfComposedCharacterSequence(at: caret - 1)
+              let insideSameCluster = (caret > left.location) && (caret < left.location + left.length)
+              if insideSameCluster {
+                let i = caret - 1
+                if i >= 0 {
+                  let c = ns.character(at: i)
+                  if c >= 0xDC00 && c <= 0xDFFF, i - 1 >= 0 {
+                    let h = ns.character(at: i - 1)
+                    if h >= 0xD800 && h <= 0xDBFF { localClamp = NSRange(location: i - 1, length: 2) } else { localClamp = NSRange(location: i, length: 1) }
+                  } else {
+                    localClamp = NSRange(location: i, length: 1)
+                  }
+                } else {
+                  localClamp = NSRange(location: max(0, caret - 1), length: 1)
+                }
+              } else {
+                localClamp = left
+              }
+            }
+            if localClamp.length > 0 && localClamp.location != caret {
+              focus.updatePoint(key: anchor.key, offset: localClamp.location, type: .text)
+              // Clamp structural fast paths in the optimized reconciler (one-shot)
+              editor.pendingDeletionClampRange = NSRange(location: start - localClamp.length, length: localClamp.length)
+              didPreClampSingleChar = true
+            }
+          }
+        }
+
+        if !didPreClampSingleChar {
         let clamp: NSRange
         if let ns = editor.textStorage?.string as NSString?, editor.featureFlags.useOptimizedReconcilerStrictMode {
           // Previous Unicode scalar (handle surrogate pairs)
@@ -1150,8 +1205,11 @@ public class RangeSelection: BaseSelection {
         }
         // Map and apply explicit 1‑char selection; also set structural clamp for reconciler.
         try applySelectionRange(clamp, affinity: .backward)
-        editor.pendingDeletionClampRange = clamp
-        didPreClampSingleChar = true
+        if !isCollapsed() {
+          editor.pendingDeletionClampRange = clamp
+          didPreClampSingleChar = true
+        }
+        }
       }
     }
     // Capture potential caret remap target for list/item merges when deleting backwards
@@ -1303,8 +1361,7 @@ public class RangeSelection: BaseSelection {
         try possibleNode.selectStart()
         return
       }
-      if didPreClampSingleChar {
-      } else {
+      if !didPreClampSingleChar {
         try modify(alter: .extend, isBackward: isBackwards, granularity: .character)
       }
 

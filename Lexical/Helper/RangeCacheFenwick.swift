@@ -129,7 +129,11 @@ internal func rebuildLocationsWithRangeDiffs(
   var diff = Array(repeating: 0, count: keys.count + 2)
   for (s, e, d) in ranges {
     if d == 0 { continue }
-    if let si = lookup[s] { diff[si] &+= d }
+    // Exclusive startKey semantics: shift nodes strictly after startKey.
+    if let si = lookup[s] {
+      let startPos = si + 1
+      if startPos <= keys.count { diff[startPos] &+= d }
+    }
     if let e, let ei = lookup[e] { diff[ei] &-= d }
   }
   var prefix = 0

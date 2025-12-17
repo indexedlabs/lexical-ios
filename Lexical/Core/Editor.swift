@@ -172,6 +172,8 @@ public class Editor: NSObject {
   // See description in RangeCache.swift.
   public internal(set) var rangeCache: [NodeKey: RangeCacheItem] = [:]
   private var dfsOrderCache: [NodeKey]? = nil
+  private var dfsOrderIndexCache: [NodeKey: Int]? = nil
+  internal var locationShiftDiffScratch: [Int] = []
   internal var dirtyNodes: DirtyNodeMap = [:]
   internal var cloneNotNeeded: Set<NodeKey> = Set()
   internal var normalizedNodes: Set<NodeKey> = Set()
@@ -191,7 +193,9 @@ public class Editor: NSObject {
   // Used to help co-ordinate selection and events
   internal var compositionKey: NodeKey?
   public var dirtyType: DirtyType = .noDirtyNodes  // TODO: I made this public to work around an issue in playground. @amyworrall
-  public var featureFlags: FeatureFlags = FeatureFlags()
+  public var featureFlags: FeatureFlags = FeatureFlags() {
+    didSet { invalidateDFSOrderCache() }
+  }
 
   // Used for storing editor listener events
   internal var listeners = Listeners()
@@ -238,7 +242,7 @@ public class Editor: NSObject {
     }
     rangeCache[rootNodeKey] = RangeCacheItem()
     dfsOrderCache = nil
-    dfsOrderCache = nil
+    dfsOrderIndexCache = nil
     theme = editorConfig.theme
     plugins = editorConfig.plugins
     super.init()
@@ -543,7 +547,7 @@ public class Editor: NSObject {
     rangeCache = [:]
     rangeCache[kRootNodeKey] = RangeCacheItem()
     dfsOrderCache = nil
-    dfsOrderCache = nil
+    dfsOrderIndexCache = nil
 
     #if canImport(UIKit)
     if let textStorage = frontend?.textStorage {
@@ -989,13 +993,26 @@ public class Editor: NSObject {
   var isUpdating = false
   internal func invalidateDFSOrderCache() {
     dfsOrderCache = nil
+    dfsOrderIndexCache = nil
+  }
+
+  internal func cachedDFSOrderAndIndex() -> ([NodeKey], [NodeKey: Int]) {
+    if let cached = dfsOrderCache, let cachedIndex = dfsOrderIndexCache {
+      return (cached, cachedIndex)
+    }
+
+    let ordered = sortedNodeKeysByLocation(rangeCache: rangeCache)
+    var index: [NodeKey: Int] = [:]
+    index.reserveCapacity(ordered.count)
+    for (i, key) in ordered.enumerated() { index[key] = i + 1 }
+
+    dfsOrderCache = ordered
+    dfsOrderIndexCache = index
+    return (ordered, index)
   }
 
   internal func cachedDFSOrder() -> [NodeKey] {
-    if let cached = dfsOrderCache { return cached }
-    let ordered = sortedNodeKeysByLocation(rangeCache: rangeCache)
-    dfsOrderCache = ordered
-    return ordered
+    cachedDFSOrderAndIndex().0
   }
 
   private func beginUpdate(
@@ -1401,6 +1418,7 @@ public class Editor: NSObject {
     self.cloneNotNeeded = Set()
     self.rangeCache = [kRootNodeKey: RangeCacheItem()]
     self.dfsOrderCache = nil
+    self.dfsOrderIndexCache = nil
     self.normalizedNodes = Set()
     self.editorState = editorState
     self.pendingEditorState = nil
@@ -1412,6 +1430,7 @@ public class Editor: NSObject {
       self.cloneNotNeeded = previousCloneNotNeeded
       self.rangeCache = previousRangeCache
       self.dfsOrderCache = nil
+      self.dfsOrderIndexCache = nil
       self.normalizedNodes = previousNormalizedNodes
       self.editorState = previousActiveEditorState
       self.pendingEditorState = previousPendingEditorState
