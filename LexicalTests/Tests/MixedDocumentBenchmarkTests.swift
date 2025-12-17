@@ -39,6 +39,10 @@ final class MixedDocumentBenchmarkTests: XCTestCase {
     .init(name: "optimized-aggressive", flags: FeatureFlags.optimizedProfile(.aggressive)),
   ]
 
+  private var benchBlockCount: Int {
+    perfEnvInt("LEXICAL_BENCH_BLOCKS", default: 50)
+  }
+
   private func makeEditors(
     flags: FeatureFlags
   ) throws -> (
@@ -227,13 +231,13 @@ final class MixedDocumentBenchmarkTests: XCTestCase {
 
       opt.2.resetMetrics()
       let dtOpt = try measureWallTime {
-        _ = try buildMixedDocument(editor: opt.0, blockCount: 50, paragraphWidth: 240)
+        _ = try buildMixedDocument(editor: opt.0, blockCount: benchBlockCount, paragraphWidth: 240)
       }
       let optSummary = opt.2.summarize(label: "seed/\(v.name)")
 
       leg.2.resetMetrics()
       let dtLeg = try measureWallTime {
-        _ = try buildMixedDocument(editor: leg.0, blockCount: 50, paragraphWidth: 240)
+        _ = try buildMixedDocument(editor: leg.0, blockCount: benchBlockCount, paragraphWidth: 240)
       }
       let legSummary = leg.2.summarize(label: "seed/legacy")
 
@@ -262,8 +266,8 @@ final class MixedDocumentBenchmarkTests: XCTestCase {
       for (pos, label) in positions {
         let (opt, leg) = try makeEditors(flags: v.flags)
 
-        _ = try buildMixedDocument(editor: opt.0, blockCount: 50, paragraphWidth: 200)
-        _ = try buildMixedDocument(editor: leg.0, blockCount: 50, paragraphWidth: 200)
+        _ = try buildMixedDocument(editor: opt.0, blockCount: benchBlockCount, paragraphWidth: 200)
+        _ = try buildMixedDocument(editor: leg.0, blockCount: benchBlockCount, paragraphWidth: 200)
 
         leg.2.resetMetrics()
         let dtLeg = try measureWallTime {
@@ -303,8 +307,8 @@ final class MixedDocumentBenchmarkTests: XCTestCase {
     for v in variations {
       let (opt, leg) = try makeEditors(flags: v.flags)
 
-      let optAnchors = try buildMixedDocument(editor: opt.0, blockCount: 50, paragraphWidth: 220)
-      let legAnchors = try buildMixedDocument(editor: leg.0, blockCount: 50, paragraphWidth: 220)
+      let optAnchors = try buildMixedDocument(editor: opt.0, blockCount: benchBlockCount, paragraphWidth: 220)
+      let legAnchors = try buildMixedDocument(editor: leg.0, blockCount: benchBlockCount, paragraphWidth: 220)
 
       // TOP (insert at start of first text node)
       leg.2.resetMetrics()

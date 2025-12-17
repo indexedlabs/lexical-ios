@@ -37,6 +37,15 @@ final class ReconcilerMetricsCollector: EditorMetricsContainer {
 
 // MARK: - Benchmark recording
 
+func perfEnvInt(_ key: String, default defaultValue: Int) -> Int {
+  guard let raw = ProcessInfo.processInfo.environment[key],
+        let value = Int(raw),
+        value > 0 else {
+    return defaultValue
+  }
+  return value
+}
+
 struct PerfBenchmarkRecord: Codable {
   struct Side: Codable {
     let wallTimeSeconds: TimeInterval

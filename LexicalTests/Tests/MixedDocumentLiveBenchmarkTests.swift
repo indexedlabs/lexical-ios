@@ -35,6 +35,10 @@ final class MixedDocumentLiveBenchmarkTests: XCTestCase {
     .init(name: "optimized-aggressive", flags: FeatureFlags.optimizedProfile(.aggressive)),
   ]
 
+  private var benchBlockCount: Int {
+    perfEnvInt("LEXICAL_BENCH_BLOCKS", default: 50)
+  }
+
   private func makeViews(
     flags: FeatureFlags
   ) throws -> (
@@ -266,8 +270,8 @@ final class MixedDocumentLiveBenchmarkTests: XCTestCase {
         try autoreleasepool {
           let (opt, leg) = try makeViews(flags: v.flags)
 
-          _ = try buildMixedDocument(editor: opt.view.editor, blockCount: 50, paragraphWidth: 200)
-          _ = try buildMixedDocument(editor: leg.view.editor, blockCount: 50, paragraphWidth: 200)
+          _ = try buildMixedDocument(editor: opt.view.editor, blockCount: benchBlockCount, paragraphWidth: 200)
+          _ = try buildMixedDocument(editor: leg.view.editor, blockCount: benchBlockCount, paragraphWidth: 200)
 
           leg.metrics.resetMetrics()
           let dtLeg = try measureWallTime {
@@ -309,8 +313,8 @@ final class MixedDocumentLiveBenchmarkTests: XCTestCase {
       try autoreleasepool {
         let (opt, leg) = try makeViews(flags: v.flags)
 
-        let optAnchors = try buildMixedDocument(editor: opt.view.editor, blockCount: 50, paragraphWidth: 220)
-        let legAnchors = try buildMixedDocument(editor: leg.view.editor, blockCount: 50, paragraphWidth: 220)
+        let optAnchors = try buildMixedDocument(editor: opt.view.editor, blockCount: benchBlockCount, paragraphWidth: 220)
+        let legAnchors = try buildMixedDocument(editor: leg.view.editor, blockCount: benchBlockCount, paragraphWidth: 220)
 
         for (pos, label, optKey, legKey) in [
           (Position.top, "TOP", optAnchors.topTextKey, legAnchors.topTextKey),
@@ -361,8 +365,8 @@ final class MixedDocumentLiveBenchmarkTests: XCTestCase {
       try autoreleasepool {
         let (opt, leg) = try makeViews(flags: v.flags)
 
-        let optAnchors = try buildMixedDocument(editor: opt.view.editor, blockCount: 50, paragraphWidth: 220)
-        let legAnchors = try buildMixedDocument(editor: leg.view.editor, blockCount: 50, paragraphWidth: 220)
+        let optAnchors = try buildMixedDocument(editor: opt.view.editor, blockCount: benchBlockCount, paragraphWidth: 220)
+        let legAnchors = try buildMixedDocument(editor: leg.view.editor, blockCount: benchBlockCount, paragraphWidth: 220)
 
         for (pos, label, optKey, legKey) in [
           (Position.top, "TOP", optAnchors.topTextKey, legAnchors.topTextKey),
@@ -422,8 +426,8 @@ final class MixedDocumentLiveBenchmarkTests: XCTestCase {
         try autoreleasepool {
           let (opt, leg) = try makeViews(flags: v.flags)
 
-          _ = try buildMixedDocument(editor: opt.view.editor, blockCount: 50, paragraphWidth: 200)
-          _ = try buildMixedDocument(editor: leg.view.editor, blockCount: 50, paragraphWidth: 200)
+          _ = try buildMixedDocument(editor: opt.view.editor, blockCount: benchBlockCount, paragraphWidth: 200)
+          _ = try buildMixedDocument(editor: leg.view.editor, blockCount: benchBlockCount, paragraphWidth: 200)
 
           leg.metrics.resetMetrics()
           let dtLeg = try measureWallTime {

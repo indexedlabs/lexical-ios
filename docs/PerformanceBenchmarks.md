@@ -34,6 +34,22 @@ python3 scripts/benchmarks.py report --issue lexical-ios-u7r.7
 python3 scripts/benchmarks.py report --scenario live-delete
 ```
 
+## Scale the benchmark document
+
+By default the mixed-document benchmarks build ~50 blocks. You can override this locally:
+
+```bash
+LEXICAL_BENCH_BLOCKS=500 \
+  python3 scripts/benchmarks.py record --issue lexical-ios-u7r --tag large-doc -- \
+    xcodebuild -workspace Playground/LexicalPlayground.xcodeproj/project.xcworkspace \
+      -scheme Lexical-Package \
+      -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.0' \
+      -parallel-testing-enabled NO \
+      -maximum-concurrent-test-simulator-destinations 1 \
+      -only-testing:LexicalTests/MixedDocumentLiveBenchmarkTests \
+      test
+```
+
 ## Debug hangs with timeouts
 
 Wrap `xcodebuild` with `scripts/with-timeout.py` to kill the run if it stops producing output and capture a `sample`:
