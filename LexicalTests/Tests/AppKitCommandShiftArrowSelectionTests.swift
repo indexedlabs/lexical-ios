@@ -47,6 +47,44 @@ final class AppKitCommandShiftArrowSelectionTests: XCTestCase {
     return event
   }
 
+  private func makeCmdShiftRightArrowKeyDownEvent(window: NSWindow) throws -> NSEvent {
+    let rightArrow = String(UnicodeScalar(NSRightArrowFunctionKey)!)
+    guard let event = NSEvent.keyEvent(
+      with: .keyDown,
+      location: .zero,
+      modifierFlags: [.command, .shift],
+      timestamp: 0,
+      windowNumber: window.windowNumber,
+      context: nil,
+      characters: rightArrow,
+      charactersIgnoringModifiers: rightArrow,
+      isARepeat: false,
+      keyCode: 124 // Right arrow
+    ) else {
+      throw XCTSkip("Could not construct NSEvent for Cmd+Shift+Right")
+    }
+    return event
+  }
+
+  private func makeCmdRightArrowKeyDownEvent(window: NSWindow) throws -> NSEvent {
+    let rightArrow = String(UnicodeScalar(NSRightArrowFunctionKey)!)
+    guard let event = NSEvent.keyEvent(
+      with: .keyDown,
+      location: .zero,
+      modifierFlags: [.command],
+      timestamp: 0,
+      windowNumber: window.windowNumber,
+      context: nil,
+      characters: rightArrow,
+      charactersIgnoringModifiers: rightArrow,
+      isARepeat: false,
+      keyCode: 124 // Right arrow
+    ) else {
+      throw XCTSkip("Could not construct NSEvent for Cmd+Right")
+    }
+    return event
+  }
+
   func testCmdShiftLeft_SelectsToBeginningOfLineOnFirstPress() throws {
     let testView = createTestEditorView()
 
@@ -67,6 +105,27 @@ final class AppKitCommandShiftArrowSelectionTests: XCTestCase {
     testView.view.textView.keyDown(with: event)
 
     XCTAssertEqual(testView.selectedRange, NSRange(location: 0, length: fullLength))
+  }
+
+  func testCmdRight_CollapsesSelectionBackToCaret() throws {
+    let testView = createTestEditorView()
+
+    let window = makeWindow(with: testView.view)
+    XCTAssertTrue(window.makeFirstResponder(testView.view.textView))
+
+    testView.insertText("Test this")
+    let fullLength = (testView.attributedTextString as NSString).length
+    XCTAssertEqual(testView.selectedRange, NSRange(location: fullLength, length: 0))
+
+    // Select to beginning of line.
+    let left = try makeCmdShiftLeftArrowKeyDownEvent(window: window)
+    testView.view.textView.keyDown(with: left)
+    XCTAssertEqual(testView.selectedRange, NSRange(location: 0, length: fullLength))
+
+    // Cmd+Right should collapse the selection back to a caret at the end.
+    let right = try makeCmdRightArrowKeyDownEvent(window: window)
+    testView.view.textView.keyDown(with: right)
+    XCTAssertEqual(testView.selectedRange, NSRange(location: fullLength, length: 0))
   }
 }
 

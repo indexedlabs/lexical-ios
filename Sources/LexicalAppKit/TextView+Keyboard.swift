@@ -31,16 +31,16 @@ extension TextViewAppKit {
     NSCursor.setHiddenUntilMouseMoves(true)
 
     // Command-modified navigation (e.g. Cmd+Shift+Left) should always be routed through
-    // AppKit's key interpretation so selection/movement commands run reliably.
+    // NSTextView's native key handling so selection/movement commands run reliably.
     if event.modifierFlags.contains(.command) {
-      interpretKeyEvents([event])
+      super.keyDown(with: event)
       return
     }
 
     // Let the input context handle the event first (for IME)
     // If not handled, interpret the key event
     if inputContext?.handleEvent(event) != true {
-      interpretKeyEvents([event])
+      super.keyDown(with: event)
     }
   }
 
