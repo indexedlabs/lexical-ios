@@ -29,7 +29,6 @@ final class FlagsViewController: UITableViewController {
       // Input / TextKit
       [
         Row(title: "Proxy InputDelegate", keyPath: \.proxyInputDelegate),
-        Row(title: "Modern TextKit Optimizations", keyPath: \.modernTextKit),
       ],
       // Diagnostics
       [

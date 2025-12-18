@@ -14,7 +14,7 @@ final class FlagsStore {
 
   // Keys
   private enum K: String {
-    case strict, sanityCheck, proxyInputDelegate, modernTextKit, verboseLogging
+    case strict, sanityCheck, proxyInputDelegate, verboseLogging
   }
 
   private init() {}
@@ -25,7 +25,6 @@ final class FlagsStore {
   var strict: Bool { get { b(.strict) } set { set(.strict, newValue) } }
   var sanityCheck: Bool { get { b(.sanityCheck) } set { set(.sanityCheck, newValue) } }
   var proxyInputDelegate: Bool { get { b(.proxyInputDelegate) } set { set(.proxyInputDelegate, newValue) } }
-  var modernTextKit: Bool { get { b(.modernTextKit) } set { set(.modernTextKit, newValue) } }
   var verboseLogging: Bool { get { b(.verboseLogging) } set { set(.verboseLogging, newValue) } }
 
   func makeFeatureFlags() -> FeatureFlags {
@@ -33,14 +32,13 @@ final class FlagsStore {
       reconcilerSanityCheck: sanityCheck,
       proxyTextViewInputDelegate: proxyInputDelegate,
       reconcilerStrictMode: strict,
-      useModernTextKitOptimizations: modernTextKit,
       verboseLogging: verboseLogging
     )
   }
 
   func signature() -> String {
     return [
-      strict, sanityCheck, proxyInputDelegate, modernTextKit, verboseLogging
+      strict, sanityCheck, proxyInputDelegate, verboseLogging
     ].map { $0 ? "1" : "0" }.joined()
   }
 

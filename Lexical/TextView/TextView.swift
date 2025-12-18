@@ -49,7 +49,6 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
   private var pendingScrollSelectionWorkItem: DispatchWorkItem?
 
   fileprivate var textViewDelegate: TextViewDelegate
-  private let modernTKOptimizations: Bool
 
   override public var keyCommands: [UIKeyCommand]? {
     return _keyCommands
@@ -82,7 +81,6 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
       reconcilerSanityCheck: reconcilerSanityCheck,
       proxyTextViewInputDelegate: featureFlags.proxyTextViewInputDelegate,
       reconcilerStrictMode: featureFlags.reconcilerStrictMode,
-      useModernTextKitOptimizations: featureFlags.useModernTextKitOptimizations,
       verboseLogging: featureFlags.verboseLogging
     )
 
@@ -93,7 +91,6 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
     placeholderLabel = UILabel(frame: .zero)
 
     useInputDelegateProxy = featureFlags.proxyTextViewInputDelegate
-    modernTKOptimizations = featureFlags.useModernTextKitOptimizations
     inputDelegateProxy = InputDelegateProxy()
     textViewDelegate = TextViewDelegate(editor: editor)
     _keyCommands = editorConfig.keyCommands
@@ -113,12 +110,10 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
     setUpPlaceholderLabel()
     registerRichText(editor: editor)
 
-    // Opportunistically drive viewport-only layout on iOS 16+ when enabled.
-    if modernTKOptimizations {
-      if #available(iOS 16.0, *) {
-        // Trigger an initial viewport layout; we’ll also refresh in layoutSubviews.
-        self.textLayoutManager?.textViewportLayoutController.layoutViewport()
-      }
+    // Opportunistically drive viewport-only layout on iOS 16+.
+    if #available(iOS 16.0, *) {
+      // Trigger an initial viewport layout; we’ll also refresh in layoutSubviews.
+      self.textLayoutManager?.textViewportLayoutController.layoutViewport()
     }
   }
 
@@ -140,11 +135,9 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
       y: textContainerInset.top)
     placeholderLabel.sizeToFit()
 
-    // Keep viewport layout bounded to visible area when enabled (iOS 16+)
-    if modernTKOptimizations {
-      if #available(iOS 16.0, *) {
-        self.textLayoutManager?.textViewportLayoutController.layoutViewport()
-      }
+    // Keep viewport layout bounded to visible area (iOS 16+)
+    if #available(iOS 16.0, *) {
+      self.textLayoutManager?.textViewportLayoutController.layoutViewport()
     }
   }
 
@@ -332,7 +325,7 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
     // When layout is allowed to be non-contiguous, TextKit may defer laying out newly-inserted
     // content. During rapid typing this can make the caret appear to lag behind the inserted text.
     // Ensure layout in a tiny range around the caret so the insertion point stays visually in sync.
-    if modernTKOptimizations && layoutManager.hasNonContiguousLayout {
+    if layoutManager.hasNonContiguousLayout {
       let len = textStorage.length
       if len > 0 {
         let caret = min(max(0, selectedRange.location), len)

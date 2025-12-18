@@ -11,20 +11,17 @@ import Foundation
   public let reconcilerSanityCheck: Bool
   public let proxyTextViewInputDelegate: Bool
   public let reconcilerStrictMode: Bool
-  public let useModernTextKitOptimizations: Bool
   public let verboseLogging: Bool
 
   @objc public init(
     reconcilerSanityCheck: Bool = false,
     proxyTextViewInputDelegate: Bool = false,
     reconcilerStrictMode: Bool = false,
-    useModernTextKitOptimizations: Bool = true,
     verboseLogging: Bool = false
   ) {
     self.reconcilerSanityCheck = reconcilerSanityCheck
     self.proxyTextViewInputDelegate = proxyTextViewInputDelegate
     self.reconcilerStrictMode = reconcilerStrictMode
-    self.useModernTextKitOptimizations = useModernTextKitOptimizations
     self.verboseLogging = verboseLogging
     super.init()
   }

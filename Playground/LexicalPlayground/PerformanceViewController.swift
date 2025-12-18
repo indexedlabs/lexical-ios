@@ -158,7 +158,6 @@ final class PerformanceViewController: UIViewController {
         let store = FlagsStore.shared
         switch name {
         case "strict-mode": store.strict.toggle()
-        case "modern-textkit": store.modernTextKit.toggle()
         case "verbose-logging": store.verboseLogging.toggle()
         default: break
         }
@@ -168,7 +167,6 @@ final class PerformanceViewController: UIViewController {
     }
     let toggles: [UIAction] = [
       coreToggle("strict-mode", activeFlags.reconcilerStrictMode),
-      coreToggle("modern-textkit", activeFlags.useModernTextKitOptimizations),
       coreToggle("verbose-logging", activeFlags.verboseLogging)
     ]
     featuresBarButton.menu = UIMenu(title: "Features", children: toggles)

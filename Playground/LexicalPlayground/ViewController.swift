@@ -208,7 +208,6 @@ class ViewController: UIViewController, UIToolbarDelegate {
         case "strict-mode": store.strict.toggle()
         case "sanity-check": store.sanityCheck.toggle()
         case "proxy-input-delegate": store.proxyInputDelegate.toggle()
-        case "modern-textkit": store.modernTextKit.toggle()
         case "verbose-logging": store.verboseLogging.toggle()
         default: break
         }
@@ -236,7 +235,6 @@ class ViewController: UIViewController, UIToolbarDelegate {
       coreToggle("strict-mode", activeFlags.reconcilerStrictMode),
       coreToggle("sanity-check", activeFlags.reconcilerSanityCheck),
       coreToggle("proxy-input-delegate", activeFlags.proxyTextViewInputDelegate),
-      coreToggle("modern-textkit", activeFlags.useModernTextKitOptimizations),
       coreToggle("verbose-logging", activeFlags.verboseLogging)
     ]
     featuresBarButton.menu = UIMenu(title: "Features", children: [debugMenu] + toggles)

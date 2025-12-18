@@ -257,21 +257,47 @@ internal enum OptimizedReconciler {
     let applyStart = CFAbsoluteTimeGetCurrent()
     
     // Step 1: Categorize all operations
-    var deletes: [NSRange] = []
-    var inserts: [(Int, NSAttributedString)] = []
-    var sets: [(NSRange, [NSAttributedString.Key: Any])] = []
+    struct TextOp {
+      enum Kind {
+        case delete(NSRange)
+        case insert(Int, NSAttributedString)
+        case set(NSRange, [NSAttributedString.Key: Any])
+      }
+
+      // Higher locations should be applied first to avoid adjusting offsets.
+      let location: Int
+      // Ordering at the same location: delete → insert → set.
+      let order: Int
+      // Stable ordering within the same location/type.
+      let sequence: Int
+      let kind: Kind
+    }
+
+    var textOps: [TextOp] = []
     var decoratorOps: [Instruction] = []
     var blockAttributeOps: [NodeKey] = []
     var fixCount = 0
+    var deleteCount = 0
+    var insertCount = 0
+    var setCount = 0
     
-    for inst in instructions {
+    for (index, inst) in instructions.enumerated() {
       switch inst {
       case .delete(let r):
-        deletes.append(r)
+        if r.length > 0 {
+          deleteCount += 1
+          textOps.append(TextOp(location: r.location, order: 0, sequence: index, kind: .delete(r)))
+        }
       case .insert(let loc, let s):
-        inserts.append((loc, s))
+        if s.length > 0 {
+          insertCount += 1
+          textOps.append(TextOp(location: loc, order: 1, sequence: index, kind: .insert(loc, s)))
+        }
       case .setAttributes(let r, let attrs):
-        sets.append((r, attrs))
+        if r.length > 0 {
+          setCount += 1
+          textOps.append(TextOp(location: r.location, order: 2, sequence: index, kind: .set(r, attrs)))
+        }
       case .fixAttributes:
         fixCount += 1
       case .decoratorAdd, .decoratorRemove, .decoratorDecorate:
@@ -281,12 +307,7 @@ internal enum OptimizedReconciler {
       }
     }
     
-    // Step 2: Optimize coalescing with Set-based deduplication
-    let deletesCoalesced = optimizedBatchCoalesceDeletes(deletes)
-    let insertsCoalesced = optimizedBatchCoalesceInserts(inserts)
-    let setsCoalesced = optimizedBatchCoalesceAttributeSets(sets)
-    
-    // Step 3: Apply text changes in single batch transaction
+    // Step 2: Apply text changes in a single batch transaction
     let previousMode = textStorage.mode
     textStorage.mode = .controllerMode
     
@@ -305,33 +326,30 @@ internal enum OptimizedReconciler {
     // Pre-calculate all safe ranges to minimize bounds checking
     var currentLength = textStorage.length
     var allModifiedRanges: [NSRange] = []
-    allModifiedRanges.reserveCapacity(deletesCoalesced.count + insertsCoalesced.count + setsCoalesced.count)
-    
-    // Batch apply deletes (in reverse order for safety)
-    if !deletesCoalesced.isEmpty {
-      for r in deletesCoalesced where r.length > 0 {
+    allModifiedRanges.reserveCapacity(textOps.count)
+
+    // Apply operations in descending location order to avoid offset adjustments.
+    textOps.sort {
+      if $0.location != $1.location { return $0.location > $1.location }
+      if $0.order != $1.order { return $0.order < $1.order }
+      return $0.sequence < $1.sequence
+    }
+
+    for op in textOps {
+      switch op.kind {
+      case .delete(let r):
         let safe = NSIntersectionRange(r, NSRange(location: 0, length: currentLength))
         if safe.length > 0 {
           textStorage.deleteCharacters(in: safe)
           allModifiedRanges.append(safe)
           currentLength -= safe.length
         }
-      }
-    }
-    
-    // Batch apply inserts with pre-allocated strings
-    if !insertsCoalesced.isEmpty {
-      for (loc, s) in insertsCoalesced where s.length > 0 {
+      case .insert(let loc, let s):
         let safeLoc = max(0, min(loc, currentLength))
         textStorage.insert(s, at: safeLoc)
         allModifiedRanges.append(NSRange(location: safeLoc, length: s.length))
         currentLength += s.length
-      }
-    }
-    
-    // Batch apply attribute changes
-    if !setsCoalesced.isEmpty {
-      for (r, attrs) in setsCoalesced {
+      case .set(let r, let attrs):
         let safe = NSIntersectionRange(r, NSRange(location: 0, length: currentLength))
         if safe.length > 0 {
           textStorage.setAttributes(attrs, range: safe)
@@ -340,7 +358,7 @@ internal enum OptimizedReconciler {
       }
     }
     
-    // Step 4: Optimize fixAttributes with minimal range
+    // Step 3: Optimize fixAttributes with minimal range
     if fixAttributesEnabled && !allModifiedRanges.isEmpty {
       let cover = allModifiedRanges.reduce(allModifiedRanges[0]) { acc, r in
         NSRange(
@@ -354,7 +372,7 @@ internal enum OptimizedReconciler {
       }
     }
     
-    // Step 5: Batch decorator operations without animations
+    // Step 4: Batch decorator operations without animations
     if !decoratorOps.isEmpty {
       performWithoutAnimation {
         for op in decoratorOps {
@@ -378,9 +396,9 @@ internal enum OptimizedReconciler {
     
     let applyDuration = CFAbsoluteTimeGetCurrent() - applyStart
     return InstructionApplyStats(
-      deletes: deletesCoalesced.count,
-      inserts: insertsCoalesced.count,
-      sets: setsCoalesced.count,
+      deletes: deleteCount,
+      inserts: insertCount,
+      sets: setCount,
       fixes: (fixCount > 0 ? 1 : 0),
       duration: applyDuration
     )
@@ -588,121 +606,7 @@ internal enum OptimizedReconciler {
   // MARK: - Instruction application & coalescing
   @MainActor
   private static func applyInstructions(_ instructions: [Instruction], editor: Editor, fixAttributesEnabled: Bool = true) -> InstructionApplyStats {
-    // Use modern optimizations if enabled
-    if editor.featureFlags.useModernTextKitOptimizations {
-      let stats = applyInstructionsWithModernBatching(instructions, editor: editor, fixAttributesEnabled: fixAttributesEnabled)
-      return stats
-    }
-    
-    guard let textStorage = reconcilerTextStorage(editor) else { return InstructionApplyStats(deletes: 0, inserts: 0, sets: 0, fixes: 0, duration: 0) }
-
-    // Gather deletes and inserts
-    var deletes: [NSRange] = []
-    var inserts: [(Int, NSAttributedString)] = []
-    var sets: [(NSRange, [NSAttributedString.Key: Any])] = []
-
-    var fixCount = 0
-    for inst in instructions {
-      switch inst {
-      case .delete(let r): deletes.append(r)
-      case .insert(let loc, let s): inserts.append((loc, s))
-      case .setAttributes(let r, let attrs): sets.append((r, attrs))
-      case .fixAttributes: fixCount += 1
-      case .decoratorAdd, .decoratorRemove, .decoratorDecorate, .applyBlockAttributes:
-        ()
-      }
-    }
-
-    func coalesceDeletes(_ ranges: [NSRange]) -> [NSRange] {
-      if ranges.isEmpty { return [] }
-      // Merge overlapping/adjacent and sort descending by location for safe deletion
-      let sorted = ranges.sorted { lhs, rhs in
-        lhs.location < rhs.location
-      }
-      var merged: [NSRange] = []
-      var current = sorted[0]
-      for r in sorted.dropFirst() {
-        if NSMaxRange(current) >= r.location { // overlap or adjacent
-          let end = max(NSMaxRange(current), NSMaxRange(r))
-          current = NSRange(location: current.location, length: end - current.location)
-        } else {
-          merged.append(current)
-          current = r
-        }
-      }
-      merged.append(current)
-      return merged.sorted { $0.location > $1.location }
-    }
-
-    func coalesceInserts(_ ops: [(Int, NSAttributedString)]) -> [(Int, NSAttributedString)] {
-      if ops.isEmpty { return [] }
-      // Combine consecutive inserts at the same location in ascending order
-      let sorted = ops.sorted { $0.0 < $1.0 }
-      var out: [(Int, NSMutableAttributedString)] = []
-      for (loc, s) in sorted {
-        if let last = out.last, last.0 == loc {
-          out[out.count - 1].1.append(s)
-        } else {
-          out.append((loc, NSMutableAttributedString(attributedString: s)))
-        }
-      }
-      return out.map { ($0.0, NSAttributedString(attributedString: $0.1)) }
-    }
-
-    let deletesCoalesced = coalesceDeletes(deletes)
-    let insertsCoalesced = coalesceInserts(inserts)
-
-    let previousMode = textStorage.mode
-    let applyStart = CFAbsoluteTimeGetCurrent()
-    textStorage.mode = .controllerMode
-    textStorage.beginEditing()
-    
-    var modifiedRanges: [NSRange] = []
-    // Apply deletes safely in descending order; clamp to current length to avoid out-of-bounds
-    var currentLength = textStorage.length
-    for r in deletesCoalesced where r.length > 0 {
-      let safe = NSIntersectionRange(r, NSRange(location: 0, length: currentLength))
-      if safe.length > 0 {
-        textStorage.deleteCharacters(in: safe)
-        modifiedRanges.append(safe)
-        currentLength -= safe.length
-      }
-    }
-    // Apply inserts; clamp location into [0, currentLength]
-    for (loc, s) in insertsCoalesced where s.length > 0 {
-      let safeLoc = max(0, min(loc, currentLength))
-      textStorage.insert(s, at: safeLoc)
-      modifiedRanges.append(NSRange(location: safeLoc, length: s.length))
-      currentLength += s.length
-    }
-    // Apply attribute sets; intersect with current string length
-    for (r, attrs) in sets {
-      let safe = NSIntersectionRange(r, NSRange(location: 0, length: currentLength))
-      if safe.length > 0 {
-        textStorage.setAttributes(attrs, range: safe)
-        modifiedRanges.append(safe)
-      }
-    }
-
-    // Fix attributes over the minimal covering range (optional)
-    if fixAttributesEnabled {
-      if let cover = modifiedRanges.reduce(nil as NSRange?, { acc, r in
-        guard let a = acc else { return r }
-        let start = min(a.location, r.location)
-        let end = max(NSMaxRange(a), NSMaxRange(r))
-        return NSRange(location: start, length: end - start)
-      }) {
-        let safeCover = NSIntersectionRange(cover, NSRange(location: 0, length: currentLength))
-        if safeCover.length > 0 {
-          textStorage.fixAttributes(in: safeCover)
-        }
-      }
-    }
-
-    textStorage.endEditing()
-    textStorage.mode = previousMode
-    let applyDuration = CFAbsoluteTimeGetCurrent() - applyStart
-    return InstructionApplyStats(deletes: deletesCoalesced.count, inserts: insertsCoalesced.count, sets: sets.count, fixes: (fixCount > 0 ? 1 : 0), duration: applyDuration)
+    applyInstructionsWithModernBatching(instructions, editor: editor, fixAttributesEnabled: fixAttributesEnabled)
   }
 
   @MainActor
@@ -848,21 +752,12 @@ internal enum OptimizedReconciler {
         aggregatedLengthChanges.append(contentsOf: plan.lengthChanges)
       }
       if !aggregatedInstructions.isEmpty {
-        // Wrap in CATransaction when modern optimizations enabled
-        if editor.featureFlags.useModernTextKitOptimizations {
-          CATransaction.begin()
-          CATransaction.setDisableActions(true)
-        }
-        
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+
         let stats = applyInstructions(aggregatedInstructions, editor: editor)
         if !aggregatedLengthChanges.isEmpty {
-          if editor.featureFlags.useModernTextKitOptimizations {
-            // Use batch update when enabled
-            batchUpdateRangeCache(editor: editor, pendingEditorState: pendingEditorState, changes: aggregatedLengthChanges)
-          } else {
-            let shifts = applyLengthDeltasBatch(editor: editor, changes: aggregatedLengthChanges)
-            for (k, d) in shifts where d != 0 { fenwickAggregatedDeltas[k, default: 0] &+= d }
-          }
+          batchUpdateRangeCache(editor: editor, pendingEditorState: pendingEditorState, changes: aggregatedLengthChanges)
         }
 
         if !fenwickAggregatedDeltas.isEmpty {
@@ -879,45 +774,8 @@ internal enum OptimizedReconciler {
           nextState: pendingEditorState,
           editor: editor
         )
-        if editor.featureFlags.useModernTextKitOptimizations {
-          batchUpdateDecoratorPositions(editor: editor)
-        } else if let ts = reconcilerTextStorage(editor) {
-          // Update positions and invalidate display for moved decorators
-          var movedDecorators: [(NodeKey, Int, Int)] = []
-          for (key, oldLoc) in ts.decoratorPositionCache {
-            if let newLoc = editor.rangeCache[key]?.location {
-              if oldLoc != newLoc {
-                movedDecorators.append((key, oldLoc, newLoc))
-              }
-              ts.decoratorPositionCache[key] = newLoc
-            }
-          }
-          // Invalidate display for moved decorators
-          // IMPORTANT: Defer invalidation to next run loop to avoid crash when textStorage is editing.
-          if !movedDecorators.isEmpty {
-            let editorWeak = editor
-            let movedCopy = movedDecorators
-            DispatchQueue.main.async {
-              guard let layoutManager = reconcilerLayoutManager(editorWeak),
-                    let ts = reconcilerTextStorage(editorWeak) else {
-                return
-              }
-              for (key, oldLoc, _) in movedCopy {
-                if let range = editorWeak.rangeCache[key]?.range {
-                  layoutManager.invalidateDisplay(forCharacterRange: range)
-                }
-                let oldRange = NSRange(location: oldLoc, length: 1)
-                if oldRange.location < ts.length {
-                  layoutManager.invalidateDisplay(forCharacterRange: oldRange)
-                }
-              }
-            }
-          }
-        }
-
-        if editor.featureFlags.useModernTextKitOptimizations {
-          CATransaction.commit()
-        }
+        batchUpdateDecoratorPositions(editor: editor)
+        CATransaction.commit()
         // One-time block attribute pass over affected keys
         applyBlockAttributesPass(editor: editor, pendingEditorState: pendingEditorState, affectedKeys: aggregatedAffected, treatAllNodesAsDirty: false)
         // One-time selection reconcile
