@@ -46,6 +46,7 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
   private let useInputDelegateProxy: Bool
   private let inputDelegateProxy: InputDelegateProxy
   private let _keyCommands: [UIKeyCommand]?
+  private var pendingScrollSelectionWorkItem: DispatchWorkItem?
 
   fileprivate var textViewDelegate: TextViewDelegate
   private let modernTKOptimizations: Bool
@@ -344,7 +345,7 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
     // Ensure the insertion point remains visible when inserting newlines (e.g. pressing Return).
     // With Lexical's controller-driven text storage, UIKit doesn't always auto-scroll for us.
     if text.contains("\n") {
-      scrollRangeToVisible(selectedRange)
+      requestScrollSelectionToVisible()
     }
 
     // check if we need to send a selectionChanged (i.e. something unexpected happened)
@@ -496,11 +497,51 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
 
     if let range = nativeSelection.range {
       selectedRange = range
+      requestScrollSelectionToVisible()
     }
   }
 
   internal func resetSelectedRange() {
     selectedRange = NSRange(location: 0, length: 0)
+  }
+
+  fileprivate func requestScrollSelectionToVisible() {
+    guard window != nil, isScrollEnabled else { return }
+    pendingScrollSelectionWorkItem?.cancel()
+    let work = DispatchWorkItem { [weak self] in
+      guard let self, self.window != nil, self.isScrollEnabled else { return }
+      let rangeToScroll = self.selectedRange
+      let len = self.textStorage.length
+      if len > 0 {
+        let caret = min(max(0, rangeToScroll.location), len)
+        let ensureLoc = min(max(0, (caret == len) ? (caret - 1) : caret), len - 1)
+        self.layoutManager.ensureLayout(forCharacterRange: NSRange(location: ensureLoc, length: 1))
+      }
+      self.layoutIfNeeded()
+      if let end = self.selectedTextRange?.end {
+        var caretRect = self.caretRect(for: end)
+        caretRect = caretRect.insetBy(dx: 0, dy: -8)
+        let padding: CGFloat = 8
+        let minY = -self.adjustedContentInset.top
+        let maxY = max(minY, self.contentSize.height - self.bounds.height + self.adjustedContentInset.bottom)
+        let visibleTop = self.contentOffset.y
+        let visibleBottom = visibleTop + self.bounds.height
+
+        var targetY = self.contentOffset.y
+        if caretRect.maxY > (visibleBottom - padding) {
+          targetY = caretRect.maxY - self.bounds.height + padding
+        } else if caretRect.minY < (visibleTop + padding) {
+          targetY = caretRect.minY - padding
+        }
+
+        targetY = min(max(targetY, minY), maxY)
+        self.setContentOffset(CGPoint(x: self.contentOffset.x, y: targetY), animated: false)
+      } else {
+        self.scrollRangeToVisible(rangeToScroll)
+      }
+    }
+    pendingScrollSelectionWorkItem = work
+    DispatchQueue.main.async(execute: work)
   }
 
   func defaultClearEditor() throws {
@@ -596,6 +637,13 @@ private class TextViewDelegate: NSObject, UITextViewDelegate {
 
     textView.validateNativeSelection(textView)
     onSelectionChange(editor: textView.editor)
+
+    // Keep caret visible when UIKit moves selection as part of text storage edits (e.g. Return/Enter),
+    // since controller-driven editing doesn't always trigger UITextView's built-in autoscroll.
+    let range = textView.selectedRange
+    if range.length == 0 {
+      textView.requestScrollSelectionToVisible()
+    }
   }
 
   public func textView(

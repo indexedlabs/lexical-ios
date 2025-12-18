@@ -1170,10 +1170,18 @@ public class Editor: NSObject {
             pendingEditorState.selection = selection
             // We already ran reconciliation earlier in this update; update native selection now to keep
             // frontend + editor state consistent.
-            try? frontend?.updateNativeSelection(from: selection)
+            #if canImport(UIKit)
+            try? self.frontend?.updateNativeSelection(from: selection)
+            #elseif os(macOS)
+            try? self.frontendAppKit?.updateNativeSelection(from: selection)
+            #endif
           } else {
             pendingEditorState.selection = nil
-            frontend?.resetSelectedRange()
+            #if canImport(UIKit)
+            self.frontend?.resetSelectedRange()
+            #elseif os(macOS)
+            self.frontendAppKit?.resetSelectedRange()
+            #endif
           }
         }
       } else if let pendingSelection = pendingEditorState.selection as? NodeSelection {

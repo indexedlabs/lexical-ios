@@ -145,6 +145,12 @@ extension TextViewAppKit {
 
     ignoreNextSelectionChangeIfMatchesRange = range
     setSelectedRange(range, affinity: affinity, stillSelecting: false)
+
+    // AppKit also doesn't always auto-scroll when selection is set programmatically. Keep the
+    // caret visible while the editor is active.
+    if window?.firstResponder === self {
+      scrollRangeToVisible(range)
+    }
   }
 
   /// Apply a selection from NativeSelectionAppKit.
