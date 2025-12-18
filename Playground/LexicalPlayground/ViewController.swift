@@ -18,8 +18,6 @@ class ViewController: UIViewController, UIToolbarDelegate {
   weak var toolbar: UIToolbar?
   weak var hierarchyView: UIView?
   private let editorStatePersistenceKey = "editorState"
-  private let reconcilerPreferenceKey = "useOptimizedInPlayground"
-  private var reconcilerControl: UISegmentedControl!
   private var featuresBarButton: UIBarButtonItem!
   private var activeOptimizedFlags: FeatureFlags = FeatureFlags.optimizedProfile(.aggressiveEditor)
   private var activeProfile: FeatureFlags.OptimizedProfile = .aggressiveEditor
@@ -28,15 +26,8 @@ class ViewController: UIViewController, UIToolbarDelegate {
     super.viewDidLoad()
     view.backgroundColor = .systemBackground
 
-    // Toggle (Legacy | Optimized)
-    let control = UISegmentedControl(items: ["Legacy", "Optimized"])
-    control.selectedSegmentIndex = UserDefaults.standard.bool(forKey: reconcilerPreferenceKey) ? 1 : 0
-    control.addTarget(self, action: #selector(onReconcilerToggleChanged), for: .valueChanged)
-    self.reconcilerControl = control
-    navigationItem.titleView = control
-
-    // Initial build for selected reconciler
-    rebuildEditor(useOptimized: control.selectedSegmentIndex == 1)
+    // Always use the optimized reconciler in the Playground.
+    rebuildEditor()
     // Clear persisted state for debugging (start fresh with just an image)
     UserDefaults.standard.removeObject(forKey: editorStatePersistenceKey)
     // Immediately restore any persisted editor state to avoid a first-cycle
@@ -151,16 +142,7 @@ class ViewController: UIViewController, UIToolbarDelegate {
     return .top
   }
 
-  @objc private func onReconcilerToggleChanged() {
-    let useOptimized = reconcilerControl.selectedSegmentIndex == 1
-    // Persist current state and rebuild the editor with new flags
-    persistEditorState()
-    UserDefaults.standard.set(useOptimized, forKey: reconcilerPreferenceKey)
-    rebuildEditor(useOptimized: useOptimized)
-    restoreEditorState()
-  }
-
-  private func rebuildEditor(useOptimized: Bool) {
+  private func rebuildEditor() {
     // Clean old views
     lexicalView?.removeFromSuperview()
     toolbar?.removeFromSuperview()
@@ -184,7 +166,7 @@ class ViewController: UIViewController, UIToolbarDelegate {
     theme.link = [ .foregroundColor: UIColor.systemBlue ]
 
     // Feature flags
-    let flags: FeatureFlags = useOptimized ? activeOptimizedFlags : FeatureFlags()
+    let flags: FeatureFlags = activeOptimizedFlags
 
     let debugMetricsContainer = PlaygroundDebugMetricsContainer(onReconcilerRun: { [weak hierarchyPlugin] run in
       hierarchyPlugin?.logReconcilerRun(run)
@@ -238,7 +220,7 @@ class ViewController: UIViewController, UIToolbarDelegate {
         guard let self else { return }
         self.activeOptimizedFlags = toggled(self.activeOptimizedFlags, name: name)
         self.updateFeaturesMenu()
-        self.persistEditorState(); self.rebuildEditor(useOptimized: true); self.restoreEditorState()
+        self.persistEditorState(); self.rebuildEditor(); self.restoreEditorState()
       })
     }
 
@@ -265,7 +247,7 @@ class ViewController: UIViewController, UIToolbarDelegate {
       )
       activeOptimizedFlags = next
       updateFeaturesMenu()
-      persistEditorState(); rebuildEditor(useOptimized: true); restoreEditorState()
+      persistEditorState(); rebuildEditor(); restoreEditorState()
     }
 
     let profiles: [UIAction] = [
