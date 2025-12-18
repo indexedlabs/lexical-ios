@@ -102,7 +102,7 @@ let package = Package(
     .target(
       name: "LexicalSwiftUI",
       dependencies: [
-        .target(name: "LexicalSwiftUIUIKit", condition: .when(platforms: [.iOS, .macCatalyst])),
+        "LexicalSwiftUIUIKit",
         .target(name: "LexicalSwiftUIAppKit", condition: .when(platforms: [.macOS])),
       ],
       path: "Sources/LexicalSwiftUI"),
