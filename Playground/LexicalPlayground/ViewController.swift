@@ -183,24 +183,24 @@ class ViewController: UIViewController, UIToolbarDelegate {
     theme.indentSize = 40.0
     theme.link = [ .foregroundColor: UIColor.systemBlue ]
 
-	    // Feature flags
-	    let flags: FeatureFlags = useOptimized ? activeOptimizedFlags : FeatureFlags()
+    // Feature flags
+    let flags: FeatureFlags = useOptimized ? activeOptimizedFlags : FeatureFlags()
 
-	    let debugMetricsContainer = PlaygroundDebugMetricsContainer(onReconcilerRun: { [weak hierarchyPlugin] run in
-	      hierarchyPlugin?.logReconcilerRun(run)
-	    })
-	    let editorConfig = EditorConfig(
-	      theme: theme,
-	      plugins: [toolbarPlugin, listPlugin, hierarchyPlugin, imagePlugin, linkPlugin, editorHistoryPlugin],
-	      metricsContainer: debugMetricsContainer
-	    )
-	    let lexicalView = LexicalView(editorConfig: editorConfig, featureFlags: flags)
-	    linkPlugin.lexicalView = lexicalView
-	    hierarchyPlugin.lexicalView = lexicalView
+    let debugMetricsContainer = PlaygroundDebugMetricsContainer(onReconcilerRun: { [weak hierarchyPlugin] run in
+      hierarchyPlugin?.logReconcilerRun(run)
+    })
+    let editorConfig = EditorConfig(
+      theme: theme,
+      plugins: [toolbarPlugin, listPlugin, hierarchyPlugin, imagePlugin, linkPlugin, editorHistoryPlugin],
+      metricsContainer: debugMetricsContainer
+    )
+    let lexicalView = LexicalView(editorConfig: editorConfig, featureFlags: flags)
+    linkPlugin.lexicalView = lexicalView
+    hierarchyPlugin.lexicalView = lexicalView
 
-	    self.lexicalView = lexicalView
-	    self.toolbar = toolbar
-	    self.hierarchyView = hierarchyView
+    self.lexicalView = lexicalView
+    self.toolbar = toolbar
+    self.hierarchyView = hierarchyView
 
     view.addSubview(lexicalView)
     view.addSubview(toolbar)
