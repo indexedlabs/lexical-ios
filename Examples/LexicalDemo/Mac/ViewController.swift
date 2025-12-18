@@ -83,12 +83,8 @@ final class ViewController: NSViewController, NSSplitViewDelegate {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        print("[DEBUG] ViewController.viewDidLoad called")
-        fflush(stdout)
         setupToolbar()
         setupSplitView()
-        print("[DEBUG] ViewController setup complete")
-        fflush(stdout)
     }
 
     private func setupToolbar() {
