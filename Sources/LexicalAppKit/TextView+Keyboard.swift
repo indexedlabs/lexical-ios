@@ -45,7 +45,23 @@ extension TextViewAppKit {
       return super.performKeyEquivalent(with: event)
     }
 
-    // Let NSTextView handle standard shortcuts (Cmd+C, Cmd+V, etc.)
+    if event.type == .keyDown, event.modifierFlags.contains(.command) {
+      let key = (event.charactersIgnoringModifiers ?? "").lowercased()
+      switch key {
+      case "c":
+        copy(nil)
+        return true
+      case "x":
+        cut(nil)
+        return true
+      case "v":
+        paste(nil)
+        return true
+      default:
+        break
+      }
+    }
+
     return super.performKeyEquivalent(with: event)
   }
 
@@ -100,6 +116,7 @@ extension TextViewAppKit {
     // Dispatch Lexical command for paragraph insertion
     editor.dispatchCommand(type: .insertParagraph, payload: nil)
     updatePlaceholderVisibility()
+    scrollRangeToVisible(selectedRange())
   }
 
   /// Insert newline ignoring field editor (Option+Return).
@@ -107,6 +124,7 @@ extension TextViewAppKit {
     // Dispatch Lexical command for line break insertion
     editor.dispatchCommand(type: .insertLineBreak, payload: nil)
     updatePlaceholderVisibility()
+    scrollRangeToVisible(selectedRange())
   }
 
   /// Insert tab.

@@ -157,9 +157,43 @@ extension TextViewAppKit {
   public override func resetCursorRects() {
     super.resetCursorRects()
 
-    // Add I-beam cursor for text area
-    if isEditable || isSelectable {
-      addCursorRect(bounds, cursor: .iBeam)
+    guard isEditable || isSelectable else { return }
+
+    // Add I-beam cursor for the overall text area as a fallback.
+    addCursorRect(bounds, cursor: .iBeam)
+
+    guard let textStorage,
+          let layoutManager,
+          let textContainer
+    else {
+      return
+    }
+
+    // Only consider link ranges in the currently visible region for performance.
+    var visibleRectInTextContainerCoords = visibleRect
+    visibleRectInTextContainerCoords.origin.x -= textContainerInset.width
+    visibleRectInTextContainerCoords.origin.y -= textContainerInset.height
+
+    let visibleGlyphRange = layoutManager.glyphRange(forBoundingRect: visibleRectInTextContainerCoords, in: textContainer)
+    let visibleCharRange = layoutManager.characterRange(forGlyphRange: visibleGlyphRange, actualGlyphRange: nil)
+    if visibleCharRange.length == 0 { return }
+
+    let selectedGlyphRange = layoutManager.glyphRange(forCharacterRange: selectedRange(), actualCharacterRange: nil)
+
+    textStorage.enumerateAttribute(.link, in: visibleCharRange) { value, range, _ in
+      guard value != nil else { return }
+
+      let linkGlyphRange = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+      layoutManager.enumerateEnclosingRects(
+        forGlyphRange: linkGlyphRange,
+        withinSelectedGlyphRange: selectedGlyphRange,
+        in: textContainer
+      ) { rect, _ in
+        var r = rect
+        r.origin.x += self.textContainerInset.width
+        r.origin.y += self.textContainerInset.height
+        self.addCursorRect(r, cursor: .pointingHand)
+      }
     }
   }
 }

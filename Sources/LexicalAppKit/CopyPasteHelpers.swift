@@ -27,6 +27,26 @@ extension TextViewAppKit {
   /// The pasteboard identifier for Lexical node data.
   private var lexicalPasteboardIdentifier: String { "x-lexical-nodes" }
 
+  public override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+    let action = item.action
+    if action == #selector(copy(_:)) || action == #selector(cut(_:)) {
+      return selectedRange().length > 0
+    }
+    if action == #selector(paste(_:)) || action == #selector(pasteAsPlainText(_:)) {
+      let pb = clipboardPasteboard
+      if pb.string(forType: .string) != nil { return true }
+      if pb.string(forType: NSPasteboard.PasteboardType("NSStringPboardType")) != nil { return true }
+      if pb.data(forType: .rtf) != nil { return true }
+      if pb.data(forType: NSPasteboard.PasteboardType("NSRTFPboardType")) != nil { return true }
+      if pb.data(forType: .rtfd) != nil { return true }
+      if pb.data(forType: NSPasteboard.PasteboardType("NSRTFDPboardType")) != nil { return true }
+      if pb.data(forType: NSPasteboard.PasteboardType(lexicalPasteboardIdentifier)) != nil { return true }
+      if pb.data(forType: .lexicalNodes) != nil { return true }
+      return false
+    }
+    return super.validateUserInterfaceItem(item)
+  }
+
   // MARK: - Copy
 
   /// Copy the current selection to the pasteboard.
@@ -37,7 +57,7 @@ extension TextViewAppKit {
     }
 
     // Dispatch Lexical copy command with pasteboard
-    let pasteboard = NSPasteboard.general
+    let pasteboard = clipboardPasteboard
     editor.dispatchCommand(type: .copy, payload: pasteboard)
   }
 
@@ -46,7 +66,7 @@ extension TextViewAppKit {
   /// Cut the current selection to the pasteboard.
   public override func cut(_ sender: Any?) {
     // Dispatch Lexical cut command with pasteboard
-    let pasteboard = NSPasteboard.general
+    let pasteboard = clipboardPasteboard
     editor.dispatchCommand(type: .cut, payload: pasteboard)
     updatePlaceholderVisibility()
   }
@@ -56,14 +76,14 @@ extension TextViewAppKit {
   /// Paste from the pasteboard.
   public override func paste(_ sender: Any?) {
     // Dispatch Lexical paste command with pasteboard
-    let pasteboard = NSPasteboard.general
+    let pasteboard = clipboardPasteboard
     editor.dispatchCommand(type: .paste, payload: pasteboard)
     updatePlaceholderVisibility()
   }
 
   /// Paste as plain text, stripping formatting.
   public override func pasteAsPlainText(_ sender: Any?) {
-    let pasteboard = NSPasteboard.general
+    let pasteboard = clipboardPasteboard
 
     // For plain text paste, just insert the text directly
     if let string = pasteboard.string(forType: .string) {

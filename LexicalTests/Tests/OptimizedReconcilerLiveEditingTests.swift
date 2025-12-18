@@ -188,10 +188,6 @@ final class OptimizedReconcilerLiveEditingTests: XCTestCase {
     try editor.read {
       let docText = getRoot()?.getTextContent() ?? "<nil>"
       let childCount = getRoot()?.getChildrenSize() ?? -1
-      if childCount != 1, let root = getRoot() {
-        let types = root.getChildren().map { type(of: $0) }
-        print("🔥 TEST DEBUG: children types=\(types)")
-      }
       XCTAssertEqual(docText, "The qick brown fox", "docText=\(docText) children=\(childCount)")
       if let p = getRoot()?.getFirstChild() as? ParagraphNode,
          let t = p.getFirstChild() as? TextNode {
@@ -214,10 +210,6 @@ final class OptimizedReconcilerLiveEditingTests: XCTestCase {
     try editor.read {
       let docText = getRoot()?.getTextContent() ?? "<nil>"
       let childCount = getRoot()?.getChildrenSize() ?? -1
-      if childCount != 1, let root = getRoot() {
-        let types = root.getChildren().map { type(of: $0) }
-        print("🔥 TEST DEBUG: children types=\(types)")
-      }
       XCTAssertEqual(docText, "Hell World", "docText=\(docText) children=\(childCount)")
       if let p = getRoot()?.getFirstChild() as? ParagraphNode,
          let t = p.getFirstChild() as? TextNode {

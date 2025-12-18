@@ -107,24 +107,6 @@ internal enum DecoratorCacheItem {
 @MainActor
 public class Editor: NSObject {
   internal static var maxUpdateCount = 99
-  private static let enableDFSOrderTreeTraversal: Bool = {
-    guard let raw = ProcessInfo.processInfo.environment["LEXICAL_ENABLE_DFS_ORDER_TREE"] else { return false }
-    switch raw.lowercased() {
-    case "1", "true", "yes", "y":
-      return true
-    default:
-      return false
-    }
-  }()
-  private static let forceDFSOrderSort: Bool = {
-    guard let raw = ProcessInfo.processInfo.environment["LEXICAL_FORCE_DFS_ORDER_SORT"] else { return false }
-    switch raw.lowercased() {
-    case "1", "true", "yes", "y":
-      return true
-    default:
-      return false
-    }
-  }()
 
   private var editorState: EditorState
   private var editorStateVersion: Int
@@ -330,7 +312,7 @@ public class Editor: NSObject {
   ///
   /// > Important: Your code within the `update()` closure must run synchronously on the thread that
   /// Lexical calls it on. Do not dispatch to another thread!
-  public func update(reason: EditorUpdateReason = .update, _ closure: () throws -> Void) throws {
+  public func update(reason: EditorUpdateReason = .update, _ closure: @MainActor () throws -> Void) throws {
     let mode: UpdateBehaviourModificationMode
     if reason == .sync {
       #if canImport(UIKit)
@@ -362,7 +344,7 @@ public class Editor: NSObject {
   ///
   /// This function is syntactic sugar over calling ``getEditorState()`` then ``EditorState/read(closure:)``.
   /// Note if you want to return a value, using the function directly on the ``EditorState`` is better.
-  public func read(_ closure: () throws -> Void) throws {
+  public func read(_ closure: @MainActor () throws -> Void) throws {
     try beginRead(closure)
   }
 
@@ -1019,14 +1001,7 @@ public class Editor: NSObject {
       return (cached, cachedIndex)
     }
 
-    let stateForOrder = pendingEditorState ?? editorState
-    let ordered: [NodeKey]
-    if Editor.enableDFSOrderTreeTraversal && !Editor.forceDFSOrderSort {
-      ordered = nodeKeysByTreeDFSOrder(state: stateForOrder, rangeCache: rangeCache)
-        ?? sortedNodeKeysByLocation(rangeCache: rangeCache)
-    } else {
-      ordered = sortedNodeKeysByLocation(rangeCache: rangeCache)
-    }
+    let ordered = sortedNodeKeysByLocation(rangeCache: rangeCache)
     var index: [NodeKey: Int] = [:]
     index.reserveCapacity(ordered.count)
     for (i, key) in ordered.enumerated() { index[key] = i + 1 }
@@ -1041,7 +1016,7 @@ public class Editor: NSObject {
   }
 
   private func beginUpdate(
-    _ closure: () throws -> Void, mode: UpdateBehaviourModificationMode,
+    _ closure: @MainActor () throws -> Void, mode: UpdateBehaviourModificationMode,
     reason: EditorUpdateReason = .update
   ) throws {
     var editorStateWasCloned = false
@@ -1252,7 +1227,7 @@ public class Editor: NSObject {
     #endif
   }
 
-  private func beginRead(_ closure: () throws -> Void) throws {
+  private func beginRead(_ closure: @MainActor () throws -> Void) throws {
     try runWithStateLexicalScopeProperties(
       activeEditor: self, activeEditorState: getActiveEditorState() ?? editorState,
       readOnlyMode: true, editorUpdateReason: nil, closure: closure)
@@ -1263,7 +1238,7 @@ public class Editor: NSObject {
   // internal Lexical use only, and should only be done if safety can be guaranteed, i.e. the caller of
   // such an update must guarantee that the EditorState will not be left in an inconsistent state when they are finished.
   internal func updateWithCustomBehaviour(
-    mode: UpdateBehaviourModificationMode, reason: EditorUpdateReason, _ closure: () throws -> Void
+    mode: UpdateBehaviourModificationMode, reason: EditorUpdateReason, _ closure: @MainActor () throws -> Void
   ) throws {
     try beginUpdate(closure, mode: mode, reason: reason)
   }

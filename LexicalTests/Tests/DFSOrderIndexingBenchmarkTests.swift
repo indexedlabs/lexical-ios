@@ -44,12 +44,6 @@ final class DFSOrderIndexingBenchmarkTests: XCTestCase {
   }
 
   func testDFSOrderIndexingTreeVsSortBenchmark() throws {
-    let rawBlocks = ProcessInfo.processInfo.environment["LEXICAL_BENCH_BLOCKS"]
-    let rawLoops = ProcessInfo.processInfo.environment["LEXICAL_BENCH_DFS_REBUILDS"]
-    if rawBlocks != nil || rawLoops != nil {
-      print("🔥 DFS-ORDER-ENV LEXICAL_BENCH_BLOCKS=\(rawBlocks ?? "") LEXICAL_BENCH_DFS_REBUILDS=\(rawLoops ?? "")")
-    }
-
     let blockCount = perfEnvInt("LEXICAL_BENCH_BLOCKS", default: 50)
     let loops = perfEnvInt("LEXICAL_BENCH_DFS_REBUILDS", default: 20)
 
@@ -65,8 +59,6 @@ final class DFSOrderIndexingBenchmarkTests: XCTestCase {
     let treeWarm = nodeKeysByTreeDFSOrder(state: state, rangeCache: cache)
     if let treeWarm {
       XCTAssertEqual(treeWarm, sortedWarm)
-    } else {
-      print("🔥 DFS-ORDER-INDEX: treeWarm=nil (rangeCache not canonical in tree order); measuring fallback-to-sort path")
     }
 
     func measureTree() throws -> TimeInterval {
@@ -104,7 +96,6 @@ final class DFSOrderIndexingBenchmarkTests: XCTestCase {
     let dtSort = (dtSort1 + dtSort2) / 2
 
     let empty = ReconcilerMetricsSummary(label: "dfs-order-index", runs: [])
-    print("🔥 DFS-ORDER-INDEX blocks=\(blockCount) nodes=\(cache.count) loops=\(loops) tree=\(dtTree)s sort=\(dtSort)s tree/sort=\(dtSort > 0 ? (dtTree / dtSort) : 0)")
     emitPerfBenchmarkRecord(
       suite: String(describing: Self.self),
       test: #function,

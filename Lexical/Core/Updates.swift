@@ -150,7 +150,7 @@ public func triggerCommandListeners(activeEditor: Editor, type: CommandType, pay
 @MainActor
 internal func runWithStateLexicalScopeProperties(
   activeEditor: Editor?, activeEditorState: EditorState?, readOnlyMode: Bool,
-  editorUpdateReason: EditorUpdateReason?, closure: () throws -> Void
+  editorUpdateReason: EditorUpdateReason?, closure: @MainActor () throws -> Void
 ) throws {
   try EditorContext.withContext(
     editor: activeEditor,

@@ -52,9 +52,19 @@ public class TextViewAppKit: NSTextView {
   /// Range to intercept next selection change with.
   internal var interceptNextSelectionChangeAndReplaceWithRange: NSRange?
 
+  /// If set, ignore the next selection change callback when the native selection matches this range.
+  /// This is used to prevent programmatic selection updates (e.g. reconciler-driven) from being
+  /// fed back into Lexical when AppKit delivers selection-change notifications asynchronously.
+  internal var ignoreNextSelectionChangeIfMatchesRange: NSRange?
+
   /// Cached undo availability from Lexical's history plugin (via `canUndo`/`canRedo` commands).
   internal var lexicalCanUndo: Bool = false
   internal var lexicalCanRedo: Bool = false
+
+  /// Pasteboard used for copy/cut/paste operations.
+  ///
+  /// Defaults to the system general pasteboard, but can be overridden in tests.
+  internal var clipboardPasteboard: NSPasteboard = .general
 
   /// Internal delegate for forwarding events.
   weak var lexicalDelegate: TextViewAppKitDelegate?
@@ -220,6 +230,17 @@ public class TextViewAppKit: NSTextView {
     return result
   }
 
+  public override func hitTest(_ point: NSPoint) -> NSView? {
+    let hit = super.hitTest(point)
+    guard let hit else { return nil }
+
+    if let placeholderTextField, hit === placeholderTextField || hit.isDescendant(of: placeholderTextField) {
+      return self
+    }
+
+    return hit
+  }
+
   // Text input and deletion overrides are in TextView+NSTextInputClient.swift
   // and TextView+Keyboard.swift extensions
 
@@ -229,6 +250,7 @@ public class TextViewAppKit: NSTextView {
     // Handle selection interception if needed
     if let interceptRange = interceptNextSelectionChangeAndReplaceWithRange {
       interceptNextSelectionChangeAndReplaceWithRange = nil
+      ignoreNextSelectionChangeIfMatchesRange = interceptRange
       super.setSelectedRange(interceptRange, affinity: affinity, stillSelecting: stillSelectingFlag)
       return
     }

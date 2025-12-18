@@ -333,6 +333,12 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
       }
     }
 
+    // Ensure the insertion point remains visible when inserting newlines (e.g. pressing Return).
+    // With Lexical's controller-driven text storage, UIKit doesn't always auto-scroll for us.
+    if text.contains("\n") {
+      scrollRangeToVisible(selectedRange)
+    }
+
     // check if we need to send a selectionChanged (i.e. something unexpected happened)
     if selectedRange.length != 0 || selectedRange.location != expectedSelectionLocation {
       inputDelegateProxy.sendSelectionChangedIgnoringSuspended(self)

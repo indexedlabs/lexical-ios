@@ -71,17 +71,13 @@ final class InsertBenchmarkTests: XCTestCase {
     ]
 
     func runForPosition(_ pos: Position, label: String) throws {
-      var best: (String, TimeInterval)? = nil
       for v in variations {
         let (opt, leg) = makeEditors(flags: v.flags)
         try seed(editor: opt.0, paragraphs: 60, width: 24)
         try seed(editor: leg.0, paragraphs: 60, width: 24)
         _ = try timeInserts(editor: leg.0, pos: pos, loops: 10) // warm legacy path similarly
-        let dt = try timeInserts(editor: opt.0, pos: pos, loops: 10)
-        print("🔥 INSERT-BENCH [\(label)] variation=\(v.name) time=\(dt)s")
-        if best == nil || dt < best!.1 { best = (v.name, dt) }
+        _ = try timeInserts(editor: opt.0, pos: pos, loops: 10)
       }
-      if let best { print("🔥 INSERT-BEST [\(label)] variation=\(best.0) time=\(best.1)s") }
     }
 
     try runForPosition(.top, label: "TOP")

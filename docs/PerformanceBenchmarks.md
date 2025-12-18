@@ -56,10 +56,7 @@ Notes:
 
 ## A/B toggles
 
-Some optimizations include environment-variable toggles to compare against the previous behavior:
-
-- `LEXICAL_ENABLE_DFS_ORDER_TREE=1`: enable tree-traversal DFS ordering (falls back to sort if validation fails).
-- `LEXICAL_FORCE_DFS_ORDER_SORT=1`: force sort-by-location DFS ordering (overrides tree traversal).
+Some optimizations may include environment-variable toggles to compare against previous behavior.
 
 ## Debug hangs with timeouts
 

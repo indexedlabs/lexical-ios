@@ -144,6 +144,23 @@ final class AppKitClipboardTests: XCTestCase {
     XCTAssertEqual(out, "Plain")
   }
 
+  func testPaste_FallsBackToLegacyPlainTextType_WhenNoLexicalData() throws {
+    let pasteboard = makeUniquePasteboard()
+    let legacyStringType = NSPasteboard.PasteboardType("NSStringPboardType")
+    pasteboard.declareTypes([legacyStringType], owner: nil)
+    pasteboard.setString("Plain", forType: legacyStringType)
+
+    let dest = createTestEditorView()
+    let editor = dest.editor
+    try editor.update {
+      try onPasteFromTextView(editor: editor, pasteboard: pasteboard)
+    }
+
+    var out = ""
+    try editor.read { out = getRoot()?.getTextContent() ?? "" }
+    XCTAssertEqual(out, "Plain")
+  }
+
   func testPaste_FallsBackToRTF_WhenNoLexicalData() throws {
     let pasteboard = makeUniquePasteboard()
 
@@ -157,6 +174,41 @@ final class AppKitClipboardTests: XCTestCase {
     )
     pasteboard.declareTypes([.rtf], owner: nil)
     pasteboard.setData(data, forType: .rtf)
+
+    let dest = createTestEditorView()
+    let editor = dest.editor
+    try editor.update {
+      try onPasteFromTextView(editor: editor, pasteboard: pasteboard)
+    }
+
+    try editor.read {
+      guard let root = getRoot(),
+            let p = root.getFirstChild() as? ParagraphNode,
+            let t = p.getFirstChild() as? TextNode
+      else {
+        XCTFail("Expected a paragraph with a text node")
+        return
+      }
+      XCTAssertEqual(t.getTextPart(), "Bold")
+      XCTAssertTrue(t.format.bold, "Expected bold formatting to be preserved from RTF")
+    }
+  }
+
+  func testPaste_FallsBackToLegacyRTFType_WhenNoLexicalData() throws {
+    let pasteboard = makeUniquePasteboard()
+
+    let bold = NSAttributedString(
+      string: "Bold",
+      attributes: [.font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)]
+    )
+    let data = try bold.data(
+      from: NSRange(location: 0, length: bold.length),
+      documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
+    )
+
+    let legacyRTFType = NSPasteboard.PasteboardType("NSRTFPboardType")
+    pasteboard.declareTypes([legacyRTFType], owner: nil)
+    pasteboard.setData(data, forType: legacyRTFType)
 
     let dest = createTestEditorView()
     let editor = dest.editor

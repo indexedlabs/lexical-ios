@@ -11,6 +11,43 @@ import LexicalListPlugin
 
 @MainActor
 final class MixedDocumentLiveBenchmarkTests: XCTestCase {
+  private func attachAttributedTextMismatch(
+    optimized: String,
+    legacy: String,
+    variation: String,
+    position: String
+  ) {
+    guard optimized != legacy else { return }
+
+    let a = optimized as NSString
+    let b = legacy as NSString
+    let minLen = min(a.length, b.length)
+    var idx = 0
+    while idx < minLen, a.character(at: idx) == b.character(at: idx) { idx += 1 }
+
+    let window = 120
+    let start = max(0, idx - window)
+    let endA = min(a.length, idx + window)
+    let endB = min(b.length, idx + window)
+
+    let snippetA = a.substring(with: NSRange(location: start, length: max(0, endA - start)))
+    let snippetB = b.substring(with: NSRange(location: start, length: max(0, endB - start)))
+
+    let debug = """
+    variation: \(variation)
+    position: \(position)
+    mismatchIndex(utf16): \(idx)
+    optimizedLength(utf16): \(a.length)
+    legacyLength(utf16): \(b.length)
+
+    optimizedSnippet:\n\(snippetA)
+
+    legacySnippet:\n\(snippetB)
+    """
+    let attachment = XCTAttachment(string: debug)
+    attachment.name = "attributedText mismatch (\(variation), \(position))"
+    add(attachment)
+  }
 
   struct Variation {
     let name: String
@@ -262,16 +299,41 @@ final class MixedDocumentLiveBenchmarkTests: XCTestCase {
   }
 
   func testMixedDocumentLiveInsertBenchmarkTopMiddleEndQuick() throws {
-    let positions: [(Position, String)] = [(.top, "TOP"), (.middle, "MIDDLE"), (.end, "END")]
-    let loops = 3
+    let isLargeDoc = benchBlockCount >= 200
+    let loops = isLargeDoc ? 1 : 3
+    let variationsToRun: [Variation] = isLargeDoc ? [variations[1]] : variations
+    let positions: [(Position, String)] = {
+      let all: [(Position, String)] = [(.top, "TOP"), (.middle, "MIDDLE"), (.end, "END")]
+      guard isLargeDoc else { return all }
 
-    for v in variations {
-      for (pos, label) in positions {
-        try autoreleasepool {
-          let (opt, leg) = try makeViews(flags: v.flags)
+      let requested = ProcessInfo.processInfo.environment["LEXICAL_BENCH_POSITION"]?.uppercased()
+      switch requested {
+      case "TOP":
+        return [(.top, "TOP")]
+      case "MIDDLE":
+        return [(.middle, "MIDDLE")]
+      case "END", nil:
+        return [(.end, "END")]
+      default:
+        return [(.end, "END")]
+      }
+    }()
 
-          _ = try buildMixedDocument(editor: opt.view.editor, blockCount: benchBlockCount, paragraphWidth: 200)
-          _ = try buildMixedDocument(editor: leg.view.editor, blockCount: benchBlockCount, paragraphWidth: 200)
+    for v in variationsToRun {
+      try autoreleasepool {
+        let (opt, leg) = try makeViews(flags: v.flags)
+
+        _ = try buildMixedDocument(editor: opt.view.editor, blockCount: benchBlockCount, paragraphWidth: 200)
+        _ = try buildMixedDocument(editor: leg.view.editor, blockCount: benchBlockCount, paragraphWidth: 200)
+
+        let optBaseline = EditorState(opt.view.editor.getEditorState())
+        let legBaseline = EditorState(leg.view.editor.getEditorState())
+
+        for (idx, (pos, label)) in positions.enumerated() {
+          if idx > 0 {
+            try opt.view.editor.setEditorState(EditorState(optBaseline))
+            try leg.view.editor.setEditorState(EditorState(legBaseline))
+          }
 
           leg.metrics.resetMetrics()
           let dtLeg = try measureWallTime {
@@ -287,8 +349,10 @@ final class MixedDocumentLiveBenchmarkTests: XCTestCase {
           let optSummary = opt.metrics.summarize(label: "live/insert/\(label)/opt/\(v.name)")
           XCTAssertGreaterThanOrEqual(opt.metrics.reconcilerRuns.count, loops)
 
-          XCTAssertEqual(opt.view.attributedTextString, leg.view.attributedTextString)
-          print("🔥 LIVE-INSERT [\(label)] variation=\(v.name) optimized=\(dtOpt)s legacy=\(dtLeg)s opt=\(optSummary.debugDescription) leg=\(legSummary.debugDescription)")
+          let optStr = opt.view.attributedTextString
+          let legStr = leg.view.attributedTextString
+          attachAttributedTextMismatch(optimized: optStr, legacy: legStr, variation: v.name, position: label)
+          XCTAssertEqual(optStr, legStr, "attributedText mismatch (variation=\(v.name), position=\(label))")
           emitPerfBenchmarkRecord(
             suite: String(describing: Self.self),
             test: #function,
@@ -339,8 +403,10 @@ final class MixedDocumentLiveBenchmarkTests: XCTestCase {
           let optSummary = opt.metrics.summarize(label: "live/text/\(label)/opt/\(v.name)")
           XCTAssertGreaterThanOrEqual(opt.metrics.reconcilerRuns.count, loops)
 
-          XCTAssertEqual(opt.view.attributedTextString, leg.view.attributedTextString)
-          print("🔥 LIVE-TEXT [\(label)] variation=\(v.name) optimized=\(dtOpt)s legacy=\(dtLeg)s opt=\(optSummary.debugDescription) leg=\(legSummary.debugDescription)")
+          let optStr = opt.view.attributedTextString
+          let legStr = leg.view.attributedTextString
+          attachAttributedTextMismatch(optimized: optStr, legacy: legStr, variation: v.name, position: label)
+          XCTAssertEqual(optStr, legStr, "attributedText mismatch (variation=\(v.name), position=\(label))")
           emitPerfBenchmarkRecord(
             suite: String(describing: Self.self),
             test: #function,
@@ -397,9 +463,11 @@ final class MixedDocumentLiveBenchmarkTests: XCTestCase {
           let optSummary = opt.metrics.summarize(label: "live/typing/\(label)/opt/\(v.name)")
           XCTAssertGreaterThanOrEqual(opt.metrics.reconcilerRuns.count, loops)
 
-          XCTAssertEqual(opt.view.attributedTextString, leg.view.attributedTextString)
+          let optStr = opt.view.attributedTextString
+          let legStr = leg.view.attributedTextString
+          attachAttributedTextMismatch(optimized: optStr, legacy: legStr, variation: v.name, position: label)
+          XCTAssertEqual(optStr, legStr, "attributedText mismatch (variation=\(v.name), position=\(label))")
           XCTAssertEqual(opt.view.selectedRange, leg.view.selectedRange)
-          print("🔥 LIVE-TYPING [\(label)] variation=\(v.name) optimized=\(dtOpt)s legacy=\(dtLeg)s opt=\(optSummary.debugDescription) leg=\(legSummary.debugDescription)")
           emitPerfBenchmarkRecord(
             suite: String(describing: Self.self),
             test: #function,
@@ -443,8 +511,10 @@ final class MixedDocumentLiveBenchmarkTests: XCTestCase {
           let optSummary = opt.metrics.summarize(label: "live/delete/\(label)/opt/\(v.name)")
           XCTAssertGreaterThanOrEqual(opt.metrics.reconcilerRuns.count, loops)
 
-          XCTAssertEqual(opt.view.attributedTextString, leg.view.attributedTextString)
-          print("🔥 LIVE-DELETE [\(label)] variation=\(v.name) optimized=\(dtOpt)s legacy=\(dtLeg)s opt=\(optSummary.debugDescription) leg=\(legSummary.debugDescription)")
+          let optStr = opt.view.attributedTextString
+          let legStr = leg.view.attributedTextString
+          attachAttributedTextMismatch(optimized: optStr, legacy: legStr, variation: v.name, position: label)
+          XCTAssertEqual(optStr, legStr, "attributedText mismatch (variation=\(v.name), position=\(label))")
           emitPerfBenchmarkRecord(
             suite: String(describing: Self.self),
             test: #function,

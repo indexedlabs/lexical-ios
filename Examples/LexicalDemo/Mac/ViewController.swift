@@ -29,6 +29,25 @@ struct DebugAction: CustomStringConvertible {
     }
 }
 
+@MainActor
+final class DebugMetricsContainer: NSObject, EditorMetricsContainer {
+    private let onReconcilerRun: (ReconcilerMetric) -> Void
+
+    init(onReconcilerRun: @escaping (ReconcilerMetric) -> Void) {
+        self.onReconcilerRun = onReconcilerRun
+    }
+
+    func record(_ metric: EditorMetric) {
+        if case let .reconcilerRun(run) = metric {
+            onReconcilerRun(run)
+        }
+    }
+
+    func resetMetrics() {
+        // No-op: the demo app keeps an external action log.
+    }
+}
+
 final class ViewController: NSViewController, NSSplitViewDelegate {
 
     private var lexicalView: LexicalAppKit.LexicalView!
@@ -37,11 +56,23 @@ final class ViewController: NSViewController, NSSplitViewDelegate {
     private var debugPanel: NSView!
     private var debugTextView: NSTextView!
     private var selectionLabel: NSTextField!
+    private var debugOptionsStack: NSStackView!
+    private var captureTextKitCheckbox: NSButton!
+    private var captureReconcilerCheckbox: NSButton!
+    private var captureLayoutCheckbox: NSButton!
+    private var captureIntegrityCheckbox: NSButton!
+    private var debugMetricsContainer: DebugMetricsContainer?
 
     // Debug state
     private var actionLog: [DebugAction] = []
     private var commandListenerRemovers: [() -> Void] = []
     private var debugPanelVisible = true
+    private var captureTextKitEvents = true
+    private var captureReconcilerMetrics = true
+    private var captureLayoutEvents = true
+    private var captureIntegrityChecks = true
+    private var isDebugUIReady = false
+    private var pendingDebugPanelUpdate: DispatchWorkItem?
 
     override func loadView() {
         // Create a basic view - required for programmatic NSViewController
@@ -173,32 +204,7 @@ final class ViewController: NSViewController, NSSplitViewDelegate {
         let editorContainer = NSView()
         editorContainer.translatesAutoresizingMaskIntoConstraints = false
 
-        // Create Lexical view
-        let theme = Theme()
-        let listPlugin = ListPlugin()
-        let historyPlugin = EditorHistoryPlugin()
-        let inlineImagePlugin = InlineImagePlugin()
-        let editorConfig = EditorConfig(theme: theme, plugins: [listPlugin, historyPlugin, inlineImagePlugin])
-
-        // Enable verbose logging to debug selection sync issues
-        let flags = FeatureFlags(verboseLogging: true)
-        lexicalView = LexicalAppKit.LexicalView(editorConfig: editorConfig, featureFlags: flags)
-        lexicalView.translatesAutoresizingMaskIntoConstraints = false
-        lexicalView.placeholderText = LexicalPlaceholderText(
-            text: "Start typing...",
-            font: .systemFont(ofSize: 16),
-            color: .placeholderTextColor
-        )
-        editorContainer.addSubview(lexicalView)
-
-        NSLayoutConstraint.activate([
-            lexicalView.topAnchor.constraint(equalTo: editorContainer.topAnchor),
-            lexicalView.leadingAnchor.constraint(equalTo: editorContainer.leadingAnchor),
-            lexicalView.trailingAnchor.constraint(equalTo: editorContainer.trailingAnchor),
-            lexicalView.bottomAnchor.constraint(equalTo: editorContainer.bottomAnchor)
-        ])
-
-        // Create debug panel
+        // Create debug panel (build UI before LexicalView init so early metrics can't crash logging)
         debugPanel = NSView()
         debugPanel.translatesAutoresizingMaskIntoConstraints = false
         debugPanel.wantsLayer = true
@@ -214,6 +220,30 @@ final class ViewController: NSViewController, NSSplitViewDelegate {
         selectionLabel.maximumNumberOfLines = 3
         selectionLabel.lineBreakMode = .byWordWrapping
         debugPanel.addSubview(selectionLabel)
+
+        // Debug capture toggles
+        debugOptionsStack = NSStackView()
+        debugOptionsStack.translatesAutoresizingMaskIntoConstraints = false
+        debugOptionsStack.orientation = .horizontal
+        debugOptionsStack.spacing = 8
+
+        captureTextKitCheckbox = NSButton(checkboxWithTitle: "TextKit", target: self, action: #selector(toggleCaptureTextKit))
+        captureTextKitCheckbox.state = captureTextKitEvents ? .on : .off
+        debugOptionsStack.addArrangedSubview(captureTextKitCheckbox)
+
+        captureReconcilerCheckbox = NSButton(checkboxWithTitle: "Reconciler", target: self, action: #selector(toggleCaptureReconciler))
+        captureReconcilerCheckbox.state = captureReconcilerMetrics ? .on : .off
+        debugOptionsStack.addArrangedSubview(captureReconcilerCheckbox)
+
+        captureLayoutCheckbox = NSButton(checkboxWithTitle: "Layout", target: self, action: #selector(toggleCaptureLayout))
+        captureLayoutCheckbox.state = captureLayoutEvents ? .on : .off
+        debugOptionsStack.addArrangedSubview(captureLayoutCheckbox)
+
+        captureIntegrityCheckbox = NSButton(checkboxWithTitle: "Integrity", target: self, action: #selector(toggleCaptureIntegrity))
+        captureIntegrityCheckbox.state = captureIntegrityChecks ? .on : .off
+        debugOptionsStack.addArrangedSubview(captureIntegrityCheckbox)
+
+        debugPanel.addSubview(debugOptionsStack)
 
         // Debug log text view
         let scrollView = NSScrollView()
@@ -243,10 +273,46 @@ final class ViewController: NSViewController, NSSplitViewDelegate {
             selectionLabel.leadingAnchor.constraint(equalTo: debugPanel.leadingAnchor, constant: 8),
             selectionLabel.trailingAnchor.constraint(equalTo: debugPanel.trailingAnchor, constant: -8),
 
-            scrollView.topAnchor.constraint(equalTo: selectionLabel.bottomAnchor, constant: 8),
+            debugOptionsStack.topAnchor.constraint(equalTo: selectionLabel.bottomAnchor, constant: 6),
+            debugOptionsStack.leadingAnchor.constraint(equalTo: debugPanel.leadingAnchor, constant: 8),
+            debugOptionsStack.trailingAnchor.constraint(lessThanOrEqualTo: debugPanel.trailingAnchor, constant: -8),
+
+            scrollView.topAnchor.constraint(equalTo: debugOptionsStack.bottomAnchor, constant: 8),
             scrollView.leadingAnchor.constraint(equalTo: debugPanel.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: debugPanel.trailingAnchor),
             scrollView.bottomAnchor.constraint(equalTo: debugPanel.bottomAnchor)
+        ])
+
+        // Create Lexical view
+        let theme = Theme()
+        let listPlugin = ListPlugin()
+        let historyPlugin = EditorHistoryPlugin()
+        let inlineImagePlugin = InlineImagePlugin()
+        debugMetricsContainer = DebugMetricsContainer(onReconcilerRun: { [weak self] run in
+            self?.logReconcilerRun(run)
+        })
+        let editorConfig = EditorConfig(
+            theme: theme,
+            plugins: [listPlugin, historyPlugin, inlineImagePlugin],
+            metricsContainer: debugMetricsContainer
+        )
+
+        // Enable verbose logging to debug selection sync issues
+        let flags = FeatureFlags(verboseLogging: true)
+        lexicalView = LexicalAppKit.LexicalView(editorConfig: editorConfig, featureFlags: flags)
+        lexicalView.translatesAutoresizingMaskIntoConstraints = false
+        lexicalView.placeholderText = LexicalPlaceholderText(
+            text: "Start typing...",
+            font: .systemFont(ofSize: 16),
+            color: .placeholderTextColor
+        )
+        editorContainer.addSubview(lexicalView)
+
+        NSLayoutConstraint.activate([
+            lexicalView.topAnchor.constraint(equalTo: editorContainer.topAnchor),
+            lexicalView.leadingAnchor.constraint(equalTo: editorContainer.leadingAnchor),
+            lexicalView.trailingAnchor.constraint(equalTo: editorContainer.trailingAnchor),
+            lexicalView.bottomAnchor.constraint(equalTo: editorContainer.bottomAnchor)
         ])
 
         // Add views to split view
@@ -282,6 +348,8 @@ final class ViewController: NSViewController, NSSplitViewDelegate {
 
         // Setup debug logging
         setupDebugLogging()
+        isDebugUIReady = true
+        updateDebugPanel()
     }
 
     // MARK: - NSSplitViewDelegate
@@ -383,6 +451,26 @@ final class ViewController: NSViewController, NSSplitViewDelegate {
     }
 
     // MARK: - Debug Functions
+
+    @objc private func toggleCaptureTextKit() {
+        captureTextKitEvents = (captureTextKitCheckbox.state == .on)
+        logAction("debug", details: "captureTextKitEvents=\(captureTextKitEvents)")
+    }
+
+    @objc private func toggleCaptureReconciler() {
+        captureReconcilerMetrics = (captureReconcilerCheckbox.state == .on)
+        logAction("debug", details: "captureReconcilerMetrics=\(captureReconcilerMetrics)")
+    }
+
+    @objc private func toggleCaptureLayout() {
+        captureLayoutEvents = (captureLayoutCheckbox.state == .on)
+        logAction("debug", details: "captureLayoutEvents=\(captureLayoutEvents)")
+    }
+
+    @objc private func toggleCaptureIntegrity() {
+        captureIntegrityChecks = (captureIntegrityCheckbox.state == .on)
+        logAction("debug", details: "captureIntegrityChecks=\(captureIntegrityChecks)")
+    }
 
     private func setupDebugLogging() {
         let editor = lexicalView.editor
@@ -487,12 +575,38 @@ final class ViewController: NSViewController, NSSplitViewDelegate {
             name: NSTextView.didChangeSelectionNotification,
             object: lexicalView.textView
         )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(nativeTextDidChange),
+            name: NSText.didChangeNotification,
+            object: lexicalView.textView
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(onTextViewDidChangeTypingAttributes),
+            name: NSTextView.didChangeTypingAttributesNotification,
+            object: lexicalView.textView
+        )
+
+        if let ts = lexicalView.textView.textStorage {
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(onTextStorageWillProcessEditingNotification),
+                name: NSTextStorage.willProcessEditingNotification,
+                object: ts
+            )
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(onTextStorageDidProcessEditingNotification),
+                name: NSTextStorage.didProcessEditingNotification,
+                object: ts
+            )
+        }
     }
 
     @objc private func nativeSelectionDidChange(_ notification: Notification) {
-        print("[DEBUG] nativeSelectionDidChange fired")
-        fflush(stdout)
-
         updateSelectionDisplay()
 
         // Log selection change to action log
@@ -509,9 +623,120 @@ final class ViewController: NSViewController, NSSplitViewDelegate {
                 logDetails = "nil lexical, native=(\(nativeRange.location),\(nativeRange.length))"
             }
         }
-        print("[DEBUG] logging selection: \(logDetails)")
-        fflush(stdout)
         logAction("selection", details: logDetails)
+
+        if captureLayoutEvents {
+            logLayoutSnapshot(action: "layout.selection")
+        }
+    }
+
+    @objc private func nativeTextDidChange(_ notification: Notification) {
+        guard captureTextKitEvents else { return }
+        let textView = lexicalView.textView
+        let range = textView.selectedRange()
+        logAction("textKit.textDidChange", details: "nativeSelection=(\(range.location),\(range.length)) length=\(textView.string.count)")
+
+        if captureLayoutEvents {
+            logLayoutSnapshot(action: "layout.textDidChange")
+        }
+
+        guard captureIntegrityChecks else { return }
+        // Only log on mismatch to keep noise down while typing.
+        var lexicalText: String?
+        try? lexicalView.editor.read {
+            if let root = getRoot() {
+                lexicalText = root.getTextContent()
+            }
+        }
+        if let lexicalText, lexicalText != textView.string {
+            let nativePrefix = String(textView.string.prefix(80)).replacingOccurrences(of: "\n", with: "\\n")
+            let lexicalPrefix = String(lexicalText.prefix(80)).replacingOccurrences(of: "\n", with: "\\n")
+            logAction(
+                "integrity.mismatch",
+                details: "nativeLen=\(textView.string.count) lexicalLen=\(lexicalText.count) nativePrefix=\"\(nativePrefix)\" lexicalPrefix=\"\(lexicalPrefix)\""
+            )
+        }
+    }
+
+    @objc private func onTextStorageWillProcessEditingNotification(_ notification: Notification) {
+        guard captureTextKitEvents else { return }
+        guard let ts = notification.object as? NSTextStorage else { return }
+        let editedRange = ts.editedRange
+        let delta = ts.changeInLength
+        logAction(
+            "textKit.willProcessEditing",
+            details: "mask=\(ts.editedMask.rawValue) editedRange=(\(editedRange.location),\(editedRange.length)) delta=\(delta) length=\(ts.length)"
+        )
+    }
+
+    @objc private func onTextStorageDidProcessEditingNotification(_ notification: Notification) {
+        guard captureTextKitEvents else { return }
+        guard let ts = notification.object as? NSTextStorage else { return }
+        let editedRange = ts.editedRange
+        let delta = ts.changeInLength
+        let length = ts.length
+
+        let s = ts.string as NSString
+        let ctx = 40
+        let start = max(0, editedRange.location - ctx)
+        let end = min(length, editedRange.location + editedRange.length + ctx)
+        let snippetRange = NSRange(location: start, length: max(0, end - start))
+        let snippet = (snippetRange.length > 0) ? s.substring(with: snippetRange) : ""
+        let displaySnippet = snippet
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\t", with: "\\t")
+
+        let textView = lexicalView.textView
+        let nativeSel = textView.selectedRange()
+        logAction(
+            "textKit.didProcessEditing",
+            details: "mask=\(ts.editedMask.rawValue) editedRange=(\(editedRange.location),\(editedRange.length)) delta=\(delta) length=\(length) nativeSelection=(\(nativeSel.location),\(nativeSel.length)) snippet=\"\(displaySnippet)\""
+        )
+
+        if captureLayoutEvents {
+            logLayoutSnapshot(action: "layout.didProcessEditing")
+        }
+
+        if length == 0 {
+            logAction("textKit.emptyStorage", details: "editedRange=(\(editedRange.location),\(editedRange.length)) delta=\(delta)")
+        }
+        if editedRange.location == 0 && editedRange.length == length && length > 0 {
+            logAction("textKit.fullEdit", details: "fullRange=(0,\(length)) delta=\(delta)")
+        }
+    }
+
+    private func logLayoutSnapshot(action: String) {
+        guard let layoutManager = lexicalView.textView.layoutManager,
+              let textContainer = lexicalView.textView.textContainer else { return }
+
+        let visible = lexicalView.textView.visibleRect
+        let visibleGlyphRange = layoutManager.glyphRange(forBoundingRect: visible, in: textContainer)
+        let visibleCharRange = layoutManager.characterRange(forGlyphRange: visibleGlyphRange, actualGlyphRange: nil)
+        let nativeSel = lexicalView.textView.selectedRange()
+        logAction(
+            action,
+            details: "visibleGlyph=(\(visibleGlyphRange.location),\(visibleGlyphRange.length)) visibleChar=(\(visibleCharRange.location),\(visibleCharRange.length)) nativeSelection=(\(nativeSel.location),\(nativeSel.length)) totalGlyphs=\(layoutManager.numberOfGlyphs)"
+        )
+    }
+
+    @objc private func onTextViewDidChangeTypingAttributes(_ notification: Notification) {
+        guard captureLayoutEvents else { return }
+        let attrs = lexicalView.textView.typingAttributes
+        let font = (attrs[.font] as? NSFont)?.fontName ?? "nil"
+        let color = (attrs[.foregroundColor] as? NSColor)?.description ?? "nil"
+        logAction("textKit.typingAttrs", details: "font=\(font) color=\(color)")
+    }
+
+    private func logReconcilerRun(_ run: ReconcilerMetric) {
+        guard captureReconcilerMetrics else { return }
+        let label = run.pathLabel ?? "nil"
+        let dur = String(format: "%.4f", run.duration)
+        let planning = String(format: "%.4f", run.planningDuration)
+        let apply = String(format: "%.4f", run.applyDuration)
+        logAction(
+            "reconciler.run",
+            details: "path=\(label) treatedAllNodesAsDirty=\(run.treatedAllNodesAsDirty) dirtyNodes=\(run.dirtyNodes) ranges(+\(run.rangesAdded)/-\(run.rangesDeleted)) movedChildren=\(run.movedChildren) dur=\(dur)s planning=\(planning)s apply=\(apply)s"
+        )
     }
 
     private func updateSelectionDisplay() {
@@ -544,7 +769,20 @@ final class ViewController: NSViewController, NSSplitViewDelegate {
         if actionLog.count > 500 {
             actionLog.removeFirst(100)
         }
-        updateDebugPanel()
+        scheduleDebugPanelUpdate()
+    }
+
+    private func scheduleDebugPanelUpdate() {
+        guard isDebugUIReady else { return }
+        if pendingDebugPanelUpdate != nil { return }
+
+        let work = DispatchWorkItem { [weak self] in
+            self?.pendingDebugPanelUpdate = nil
+            self?.updateDebugPanel()
+        }
+        pendingDebugPanelUpdate = work
+        // Coalesce rapid logs so the debug UI itself doesn't become the bottleneck while typing.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.10, execute: work)
     }
 
     private func logSelectionState() {
@@ -572,6 +810,7 @@ final class ViewController: NSViewController, NSSplitViewDelegate {
     }
 
     private func updateDebugPanel() {
+        guard isDebugUIReady else { return }
         // Update the debug text view with recent actions
         let recentActions = actionLog.suffix(50)
         let logText = recentActions.map { $0.description }.joined(separator: "\n")
@@ -584,6 +823,12 @@ final class ViewController: NSViewController, NSSplitViewDelegate {
     @objc private func copyDebugState() {
         var debugOutput = "=== LEXICAL DEBUG STATE ===\n"
         debugOutput += "Timestamp: \(Date())\n\n"
+        debugOutput += "--- DEBUG CAPTURE ---\n"
+        debugOutput += "captureTextKitEvents: \(captureTextKitEvents)\n"
+        debugOutput += "captureReconcilerMetrics: \(captureReconcilerMetrics)\n"
+        debugOutput += "captureLayoutEvents: \(captureLayoutEvents)\n"
+        debugOutput += "captureIntegrityChecks: \(captureIntegrityChecks)\n"
+        debugOutput += "\n"
 
         // Current selection
         debugOutput += "--- SELECTION ---\n"
@@ -606,6 +851,19 @@ final class ViewController: NSViewController, NSSplitViewDelegate {
         debugOutput += "NSTextView.selectedRange: location=\(selectedRange.location), length=\(selectedRange.length)\n"
         debugOutput += "Text length: \(textView.string.count)\n"
 
+        // Layout snapshot
+        debugOutput += "\n--- LAYOUT ---\n"
+        if let layoutManager = textView.layoutManager, let textContainer = textView.textContainer {
+            let visible = textView.visibleRect
+            let visibleGlyphRange = layoutManager.glyphRange(forBoundingRect: visible, in: textContainer)
+            let visibleCharRange = layoutManager.characterRange(forGlyphRange: visibleGlyphRange, actualGlyphRange: nil)
+            debugOutput += "visibleGlyphRange: location=\(visibleGlyphRange.location), length=\(visibleGlyphRange.length)\n"
+            debugOutput += "visibleCharRange: location=\(visibleCharRange.location), length=\(visibleCharRange.length)\n"
+            debugOutput += "totalGlyphs: \(layoutManager.numberOfGlyphs)\n"
+        } else {
+            debugOutput += "layoutManager/textContainer: nil\n"
+        }
+
         // Editor state as JSON
         debugOutput += "\n--- EDITOR STATE JSON ---\n"
         do {
@@ -615,10 +873,36 @@ final class ViewController: NSViewController, NSSplitViewDelegate {
             debugOutput += "Error serializing state: \(error)\n"
         }
 
+        // RangeCache quick stats (helps debug “flashing” blocks)
+        debugOutput += "\n\n--- RANGE CACHE ---\n"
+        debugOutput += "rangeCache.count: \(lexicalView.editor.rangeCache.count)\n"
+        try? lexicalView.editor.read {
+            if let selection = try? getSelection() as? RangeSelection {
+                let key = selection.anchor.key
+                if let item = lexicalView.editor.rangeCache[key] {
+                    debugOutput += "anchorKey=\(key) range=(\(item.range.location),\(item.range.length)) pre=\(item.preambleLength) text=\(item.textLength) children=\(item.childrenLength) post=\(item.postambleLength)\n"
+                } else {
+                    debugOutput += "anchorKey=\(key) rangeCache: missing\n"
+                }
+            }
+        }
+
         // Action log
         debugOutput += "\n\n--- ACTION LOG (last 100) ---\n"
         let recentActions = actionLog.suffix(100)
         for action in recentActions {
+            debugOutput += "\(action)\n"
+        }
+
+        // Focused views for easier scanning
+        debugOutput += "\n--- RECONCILER RUNS (last 50) ---\n"
+        let reconcilerActions = actionLog.filter { $0.action == "reconciler.run" }.suffix(50)
+        for action in reconcilerActions {
+            debugOutput += "\(action)\n"
+        }
+        debugOutput += "\n--- TEXTKIT EVENTS (last 50) ---\n"
+        let textKitActions = actionLog.filter { $0.action.hasPrefix("textKit.") }.suffix(50)
+        for action in textKitActions {
             debugOutput += "\(action)\n"
         }
 

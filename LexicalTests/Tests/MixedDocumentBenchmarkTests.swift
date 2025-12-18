@@ -243,7 +243,6 @@ final class MixedDocumentBenchmarkTests: XCTestCase {
 
       XCTAssertEqual(opt.1.textStorage.string, leg.1.textStorage.string)
 
-      print("🔥 MIXED-SEED variation=\(v.name) optimized=\(dtOpt)s legacy=\(dtLeg)s opt=\(optSummary.debugDescription) leg=\(legSummary.debugDescription)")
       emitPerfBenchmarkRecord(
         suite: String(describing: Self.self),
         test: #function,
@@ -284,7 +283,6 @@ final class MixedDocumentBenchmarkTests: XCTestCase {
         XCTAssertEqual(opt.2.reconcilerRuns.count, loops)
 
         XCTAssertEqual(opt.1.textStorage.string, leg.1.textStorage.string)
-        print("🔥 MIXED-INSERT [\(label)] variation=\(v.name) optimized=\(dtOpt)s legacy=\(dtLeg)s opt=\(optSummary.debugDescription) leg=\(legSummary.debugDescription)")
         emitPerfBenchmarkRecord(
           suite: String(describing: Self.self),
           test: #function,
@@ -329,7 +327,6 @@ final class MixedDocumentBenchmarkTests: XCTestCase {
       let optTopSummary = opt.2.summarize(label: "text/top/opt/\(v.name)")
       XCTAssertEqual(opt.2.reconcilerRuns.count, loops)
       XCTAssertEqual(opt.1.textStorage.string, leg.1.textStorage.string)
-      print("🔥 MIXED-TEXT [TOP] variation=\(v.name) optimized=\(dtOptTop)s legacy=\(dtLegTop)s opt=\(optTopSummary.debugDescription) leg=\(legTopSummary.debugDescription)")
       emitPerfBenchmarkRecord(
         suite: String(describing: Self.self),
         test: #function,
@@ -362,7 +359,6 @@ final class MixedDocumentBenchmarkTests: XCTestCase {
       let optMidSummary = opt.2.summarize(label: "text/middle/opt/\(v.name)")
       XCTAssertEqual(opt.2.reconcilerRuns.count, loops)
       XCTAssertEqual(opt.1.textStorage.string, leg.1.textStorage.string)
-      print("🔥 MIXED-TEXT [MIDDLE] variation=\(v.name) optimized=\(dtOptMid)s legacy=\(dtLegMid)s opt=\(optMidSummary.debugDescription) leg=\(legMidSummary.debugDescription)")
       emitPerfBenchmarkRecord(
         suite: String(describing: Self.self),
         test: #function,
@@ -395,7 +391,6 @@ final class MixedDocumentBenchmarkTests: XCTestCase {
       let optEndSummary = opt.2.summarize(label: "text/end/opt/\(v.name)")
       XCTAssertEqual(opt.2.reconcilerRuns.count, loops)
       XCTAssertEqual(opt.1.textStorage.string, leg.1.textStorage.string)
-      print("🔥 MIXED-TEXT [END] variation=\(v.name) optimized=\(dtOptEnd)s legacy=\(dtLegEnd)s opt=\(optEndSummary.debugDescription) leg=\(legEndSummary.debugDescription)")
       emitPerfBenchmarkRecord(
         suite: String(describing: Self.self),
         test: #function,

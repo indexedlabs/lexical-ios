@@ -17,7 +17,7 @@ How it works:
      original test selection flags (e.g. -only-testing)
 
 Usage:
-  LEXICAL_BENCH_BLOCKS=5000 LEXICAL_FORCE_DFS_ORDER_SORT=1 \
+  LEXICAL_BENCH_BLOCKS=5000 \
     python3 scripts/xcodebuild-test-with-env.py -- \
       xcodebuild -workspace Playground/LexicalPlayground.xcodeproj/project.xcworkspace \
         -scheme Lexical-Package \

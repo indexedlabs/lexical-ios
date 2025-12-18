@@ -40,7 +40,7 @@ final class EditorContext {
     editorState: EditorState?,
     readOnlyMode: Bool,
     updateReason: EditorUpdateReason?,
-    operation: () throws -> T
+    operation: @MainActor () throws -> T
   ) rethrows -> T {
     let previous = current
     let updateStack = previous?.updateStack ?? []

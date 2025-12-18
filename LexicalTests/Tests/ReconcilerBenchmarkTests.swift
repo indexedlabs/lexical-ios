@@ -87,13 +87,8 @@ final class ReconcilerBenchmarkTests: XCTestCase {
     let dtLeg = try runTyping(leg.0, loops: 30)
     // Parity assertion: resulting strings equal
     XCTAssertEqual(opt.1.textStorage.string, leg.1.textStorage.string)
-    // Note: No hard timing assert; print for diagnostics
-    // Summarize metrics (counts only)
-    let optDeletes = opt.2.runs.reduce(0) { $0 + $1.deleteCount }
-    let optInserts = opt.2.runs.reduce(0) { $0 + $1.insertCount }
-    let legDeletes = leg.2.runs.reduce(0) { $0 + $1.deleteCount }
-    let legInserts = leg.2.runs.reduce(0) { $0 + $1.insertCount }
-    print("🔥 BENCH: typing optimized=\(dtOpt)s legacy=\(dtLeg)s ops(opt del=\(optDeletes) ins=\(optInserts) | leg del=\(legDeletes) ins=\(legInserts))")
+    _ = dtOpt
+    _ = dtLeg
   }
 
   func testOptimizedOperationCountsWithinTolerance() throws {
@@ -195,10 +190,9 @@ final class ReconcilerBenchmarkTests: XCTestCase {
       }
     }
 
-    let t0 = CFAbsoluteTimeGetCurrent(); try toggleAllBold(opt.0); let dtOpt = CFAbsoluteTimeGetCurrent() - t0
-    let t1 = CFAbsoluteTimeGetCurrent(); try toggleAllBold(leg.0); let dtLeg = CFAbsoluteTimeGetCurrent() - t1
+    try toggleAllBold(opt.0)
+    try toggleAllBold(leg.0)
     XCTAssertEqual(opt.1.textStorage.string, leg.1.textStorage.string)
-    print("🔥 BENCH: mass-bold optimized=\(dtOpt)s legacy=\(dtLeg)s")
   }
 
   func testLargeReorderShuffleParity() throws {
@@ -228,10 +222,9 @@ final class ReconcilerBenchmarkTests: XCTestCase {
         }
       }
     }
-    let s0 = CFAbsoluteTimeGetCurrent(); try shuffle(on: opt.0, parentKey: pkOpt); let dtOpt = CFAbsoluteTimeGetCurrent() - s0
-    let s1 = CFAbsoluteTimeGetCurrent(); try shuffle(on: leg.0, parentKey: pkLeg); let dtLeg = CFAbsoluteTimeGetCurrent() - s1
+    try shuffle(on: opt.0, parentKey: pkOpt)
+    try shuffle(on: leg.0, parentKey: pkLeg)
     XCTAssertEqual(opt.1.textStorage.string, leg.1.textStorage.string)
-    print("🔥 BENCH: reorder optimized=\(dtOpt)s legacy=\(dtLeg)s")
   }
 }
 

@@ -256,7 +256,7 @@ public enum NodeContextProvider {
   }
 
   /// Execute a closure with a specific NodeContext
-  public static func withContext<T>(_ context: (any NodeContext)?, operation: () throws -> T) rethrows -> T {
+  public static func withContext<T>(_ context: (any NodeContext)?, operation: @MainActor () throws -> T) rethrows -> T {
     let previous = _current
     _current = context
     defer { _current = previous }
