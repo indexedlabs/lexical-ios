@@ -183,16 +183,24 @@ class ViewController: UIViewController, UIToolbarDelegate {
     theme.indentSize = 40.0
     theme.link = [ .foregroundColor: UIColor.systemBlue ]
 
-    // Feature flags
-    let flags: FeatureFlags = useOptimized ? activeOptimizedFlags : FeatureFlags()
+	    // Feature flags
+	    let flags: FeatureFlags = useOptimized ? activeOptimizedFlags : FeatureFlags()
 
-    let editorConfig = EditorConfig(theme: theme, plugins: [toolbarPlugin, listPlugin, hierarchyPlugin, imagePlugin, linkPlugin, editorHistoryPlugin])
-    let lexicalView = LexicalView(editorConfig: editorConfig, featureFlags: flags)
-    linkPlugin.lexicalView = lexicalView
+	    let debugMetricsContainer = PlaygroundDebugMetricsContainer(onReconcilerRun: { [weak hierarchyPlugin] run in
+	      hierarchyPlugin?.logReconcilerRun(run)
+	    })
+	    let editorConfig = EditorConfig(
+	      theme: theme,
+	      plugins: [toolbarPlugin, listPlugin, hierarchyPlugin, imagePlugin, linkPlugin, editorHistoryPlugin],
+	      metricsContainer: debugMetricsContainer
+	    )
+	    let lexicalView = LexicalView(editorConfig: editorConfig, featureFlags: flags)
+	    linkPlugin.lexicalView = lexicalView
+	    hierarchyPlugin.lexicalView = lexicalView
 
-    self.lexicalView = lexicalView
-    self.toolbar = toolbar
-    self.hierarchyView = hierarchyView
+	    self.lexicalView = lexicalView
+	    self.toolbar = toolbar
+	    self.hierarchyView = hierarchyView
 
     view.addSubview(lexicalView)
     view.addSubview(toolbar)
@@ -279,5 +287,24 @@ class ViewController: UIViewController, UIToolbarDelegate {
       coreToggle("verbose-logging", activeOptimizedFlags.verboseLogging)
     ]
     featuresBarButton.menu = UIMenu(title: "Optimized (profile=\(String(describing: activeProfile)))", children: [profileMenu] + toggles)
+  }
+}
+
+@MainActor
+final class PlaygroundDebugMetricsContainer: NSObject, EditorMetricsContainer {
+  private let onReconcilerRun: (ReconcilerMetric) -> Void
+
+  init(onReconcilerRun: @escaping (ReconcilerMetric) -> Void) {
+    self.onReconcilerRun = onReconcilerRun
+  }
+
+  func record(_ metric: EditorMetric) {
+    if case let .reconcilerRun(run) = metric {
+      onReconcilerRun(run)
+    }
+  }
+
+  func resetMetrics() {
+    // No-op: the Playground debug panel keeps an external action log.
   }
 }
