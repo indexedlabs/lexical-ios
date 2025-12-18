@@ -19,12 +19,7 @@ final class FenwickCentralAggregationTests: XCTestCase {
     let flags = FeatureFlags(
       reconcilerSanityCheck: false,
       proxyTextViewInputDelegate: false,
-      useOptimizedReconciler: true,
-      useReconcilerFenwickDelta: true,
-      useReconcilerKeyedDiff: true,
-      useReconcilerBlockRebuild: true,
-      useOptimizedReconcilerStrictMode: true,
-      useReconcilerFenwickCentralAggregation: true
+      reconcilerStrictMode: true
     )
     let ctx = makeReadOnlyContext(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: flags)
     return (ctx.editor, ctx)

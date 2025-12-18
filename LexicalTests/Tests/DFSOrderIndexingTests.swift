@@ -12,7 +12,7 @@ import XCTest
 final class DFSOrderIndexingTests: XCTestCase {
 
   func testCachedDFSOrderIsCanonicalLocationOrder() throws {
-    let view = createTestEditorView(featureFlags: FeatureFlags.optimizedProfile(.minimal))
+    let view = createTestEditorView(featureFlags: FeatureFlags())
 
     try view.editor.update {
       guard let root = getRoot() else { return }

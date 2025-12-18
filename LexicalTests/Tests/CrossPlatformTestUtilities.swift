@@ -59,15 +59,18 @@ public func makeParityTestEditors() -> (
   opt: (Editor, any ReadOnlyTextKitContextProtocol),
   leg: (Editor, any ReadOnlyTextKitContextProtocol)
 ) {
+  // The runtime no longer supports algorithm selection; keep two independent editors to catch
+  // non-determinism and platform regressions without relying on a legacy reconciler.
   let optFlags = FeatureFlags(
     reconcilerSanityCheck: false,
     proxyTextViewInputDelegate: false,
-    useOptimizedReconciler: true,
-    useReconcilerFenwickDelta: true,
-    useOptimizedReconcilerStrictMode: true,
-    useReconcilerInsertBlockFenwick: true
+    reconcilerStrictMode: true
   )
-  let legFlags = FeatureFlags()
+  let legFlags = FeatureFlags(
+    reconcilerSanityCheck: false,
+    proxyTextViewInputDelegate: false,
+    reconcilerStrictMode: true
+  )
 
   let opt = makeReadOnlyContext(
     editorConfig: EditorConfig(theme: Theme(), plugins: []),
@@ -304,17 +307,12 @@ public func makeParityTestEditorsWithDecorators() -> (
   let optFlags = FeatureFlags(
     reconcilerSanityCheck: false,
     proxyTextViewInputDelegate: false,
-    useOptimizedReconciler: true,
-    useReconcilerFenwickDelta: true,
-    useReconcilerKeyedDiff: true,
-    useReconcilerBlockRebuild: true,
-    useOptimizedReconcilerStrictMode: true,
-    useReconcilerShadowCompare: false
+    reconcilerStrictMode: true
   )
   let legFlags = FeatureFlags(
     reconcilerSanityCheck: false,
     proxyTextViewInputDelegate: false,
-    useOptimizedReconciler: false
+    reconcilerStrictMode: true
   )
 
   let opt = makeReadOnlyContext(

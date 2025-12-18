@@ -47,7 +47,7 @@ final class DFSOrderIndexingBenchmarkTests: XCTestCase {
     let blockCount = perfEnvInt("LEXICAL_BENCH_BLOCKS", default: 50)
     let loops = perfEnvInt("LEXICAL_BENCH_DFS_REBUILDS", default: 20)
 
-    let view = createTestEditorView(featureFlags: FeatureFlags.optimizedProfile(.minimal))
+    let view = createTestEditorView(featureFlags: FeatureFlags())
     view.editor.resetEditor(pendingEditorState: nil)
     try buildParagraphDocument(editor: view.editor, blockCount: blockCount, paragraphWidth: 200)
 

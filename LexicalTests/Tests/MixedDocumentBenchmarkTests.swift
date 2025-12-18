@@ -34,9 +34,9 @@ final class MixedDocumentBenchmarkTests: XCTestCase {
   }
 
   private let variations: [Variation] = [
-    .init(name: "optimized-minimal", flags: FeatureFlags.optimizedProfile(.minimal)),
-    .init(name: "optimized-balanced", flags: FeatureFlags.optimizedProfile(.balanced)),
-    .init(name: "optimized-aggressive", flags: FeatureFlags.optimizedProfile(.aggressive)),
+    .init(name: "optimized-minimal", flags: FeatureFlags()),
+    .init(name: "optimized-balanced", flags: FeatureFlags()),
+    .init(name: "optimized-aggressive", flags: FeatureFlags()),
   ]
 
   private var benchBlockCount: Int {
@@ -64,7 +64,7 @@ final class MixedDocumentBenchmarkTests: XCTestCase {
     let legMetrics = ReconcilerMetricsCollector()
     let legCtx = makeReadOnlyContext(
       editorConfig: EditorConfig(theme: Theme(), plugins: plugins(), metricsContainer: legMetrics),
-      featureFlags: FeatureFlags(useOptimizedReconciler: false)
+      featureFlags: FeatureFlags()
     )
     try registerTestDecoratorNode(on: legCtx.editor)
     try registerTestDecoratorBlockNode(on: legCtx.editor)

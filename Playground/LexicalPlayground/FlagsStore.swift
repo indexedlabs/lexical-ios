@@ -14,9 +14,7 @@ final class FlagsStore {
 
   // Keys
   private enum K: String {
-    case strict, fenwickDelta, centralAgg, keyedDiff, blockRebuild
-    case shadowCompare, insertBlockFenwick, sanityCheck, proxyInputDelegate
-    case prePostAttrsOnly, modernTextKit
+    case strict, sanityCheck, proxyInputDelegate, modernTextKit, verboseLogging
   }
 
   private init() {}
@@ -25,39 +23,24 @@ final class FlagsStore {
   private func set(_ k: K, _ v: Bool) { d.set(v, forKey: k.rawValue); d.synchronize(); notifyChanged() }
 
   var strict: Bool { get { b(.strict) } set { set(.strict, newValue) } }
-  var fenwickDelta: Bool { get { b(.fenwickDelta) } set { set(.fenwickDelta, newValue) } }
-  var centralAgg: Bool { get { b(.centralAgg) } set { set(.centralAgg, newValue) } }
-  var keyedDiff: Bool { get { b(.keyedDiff) } set { set(.keyedDiff, newValue) } }
-  var blockRebuild: Bool { get { b(.blockRebuild) } set { set(.blockRebuild, newValue) } }
-  var shadowCompare: Bool { get { b(.shadowCompare) } set { set(.shadowCompare, newValue) } }
-  var insertBlockFenwick: Bool { get { b(.insertBlockFenwick) } set { set(.insertBlockFenwick, newValue) } }
   var sanityCheck: Bool { get { b(.sanityCheck) } set { set(.sanityCheck, newValue) } }
   var proxyInputDelegate: Bool { get { b(.proxyInputDelegate) } set { set(.proxyInputDelegate, newValue) } }
-  var prePostAttrsOnly: Bool { get { b(.prePostAttrsOnly) } set { set(.prePostAttrsOnly, newValue) } }
   var modernTextKit: Bool { get { b(.modernTextKit) } set { set(.modernTextKit, newValue) } }
+  var verboseLogging: Bool { get { b(.verboseLogging) } set { set(.verboseLogging, newValue) } }
 
   func makeFeatureFlags() -> FeatureFlags {
     FeatureFlags(
       reconcilerSanityCheck: sanityCheck,
       proxyTextViewInputDelegate: proxyInputDelegate,
-      useOptimizedReconciler: true,
-      useReconcilerFenwickDelta: fenwickDelta,
-      useReconcilerKeyedDiff: keyedDiff,
-      useReconcilerBlockRebuild: blockRebuild,
-      useOptimizedReconcilerStrictMode: strict,
-      useReconcilerFenwickCentralAggregation: centralAgg,
-      useReconcilerShadowCompare: shadowCompare,
-      useReconcilerInsertBlockFenwick: insertBlockFenwick,
-      useReconcilerPrePostAttributesOnly: prePostAttrsOnly,
-      useModernTextKitOptimizations: modernTextKit
+      reconcilerStrictMode: strict,
+      useModernTextKitOptimizations: modernTextKit,
+      verboseLogging: verboseLogging
     )
   }
 
   func signature() -> String {
     return [
-      strict, fenwickDelta, centralAgg, keyedDiff, blockRebuild,
-      insertBlockFenwick, shadowCompare, sanityCheck, proxyInputDelegate,
-      prePostAttrsOnly, modernTextKit
+      strict, sanityCheck, proxyInputDelegate, modernTextKit, verboseLogging
     ].map { $0 ? "1" : "0" }.joined()
   }
 

@@ -5,17 +5,96 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-#if canImport(UIKit)
-import UIKit
 import Foundation
 import LexicalCore
 import QuartzCore
+
+#if canImport(UIKit)
+import UIKit
+private typealias PlatformTextAttachment = TextAttachment
+#elseif os(macOS) && !targetEnvironment(macCatalyst)
+import AppKit
+private typealias PlatformTextAttachment = TextAttachmentAppKit
+#endif
 
 // Optimized reconciler entry point. Initially a thin wrapper so we can land
 // the feature flag, metrics, and supporting data structures incrementally.
 
 internal enum OptimizedReconciler {
   struct InstructionApplyStats { let deletes: Int; let inserts: Int; let sets: Int; let fixes: Int; let duration: TimeInterval }
+
+  @MainActor
+  private static func reconcilerTextStorage(_ editor: Editor) -> ReconcilerTextStorage? {
+    #if canImport(UIKit)
+    return editor.textStorage
+    #elseif os(macOS) && !targetEnvironment(macCatalyst)
+    return editor.textStorage as? ReconcilerTextStorage
+    #else
+    return nil
+    #endif
+  }
+
+  @MainActor
+  private static func reconcilerLayoutManager(_ editor: Editor) -> NSLayoutManager? {
+    #if canImport(UIKit)
+    return editor.frontend?.layoutManager
+    #elseif os(macOS) && !targetEnvironment(macCatalyst)
+    return editor.frontendAppKit?.layoutManager
+    #else
+    return nil
+    #endif
+  }
+
+  @MainActor
+  private static func performWithoutAnimation(_ body: () -> Void) {
+    #if canImport(UIKit)
+    UIView.performWithoutAnimation(body)
+    #else
+    body()
+    #endif
+  }
+
+  @MainActor
+  private static func isReadOnlyFrontendContext(_ editor: Editor) -> Bool {
+    #if canImport(UIKit)
+    return editor.frontend is LexicalReadOnlyTextKitContext
+    #elseif os(macOS) && !targetEnvironment(macCatalyst)
+    return editor.isReadOnlyFrontend
+    #else
+    return false
+    #endif
+  }
+
+  @MainActor
+  private static func resetSelectedRange(editor: Editor) {
+    #if canImport(UIKit)
+    editor.frontend?.resetSelectedRange()
+    #elseif os(macOS) && !targetEnvironment(macCatalyst)
+    editor.frontendAppKit?.resetSelectedRange()
+    #endif
+  }
+
+  @MainActor
+  private static func updateNativeSelection(editor: Editor, selection: BaseSelection) throws {
+    #if canImport(UIKit)
+    try editor.frontend?.updateNativeSelection(from: selection)
+    #elseif os(macOS) && !targetEnvironment(macCatalyst)
+    try editor.frontendAppKit?.updateNativeSelection(from: selection)
+    #endif
+  }
+
+  @MainActor
+  private static func setMarkedTextFromReconciler(
+    editor: Editor,
+    markedText: NSAttributedString,
+    selectedRange: NSRange
+  ) {
+    #if canImport(UIKit)
+    editor.frontend?.setMarkedTextFromReconciler(markedText, selectedRange: selectedRange)
+    #elseif os(macOS) && !targetEnvironment(macCatalyst)
+    editor.frontendAppKit?.setMarkedTextFromReconciler(markedText, selectedRange: selectedRange)
+    #endif
+  }
   @MainActor
   private static func fenwickOrderAndIndex(editor: Editor) -> ([NodeKey], [NodeKey: Int]) {
     editor.cachedDFSOrderAndIndex()
@@ -23,7 +102,7 @@ internal enum OptimizedReconciler {
 
   @MainActor
   private static func syncDecoratorPositionCacheWithRangeCache(editor: Editor) {
-    guard let ts = editor.textStorage, !ts.decoratorPositionCache.isEmpty else { return }
+    guard let ts = reconcilerTextStorage(editor), !ts.decoratorPositionCache.isEmpty else { return }
     var movedDecorators: [(NodeKey, Int, Int)] = []
     for (key, oldLoc) in ts.decoratorPositionCache {
       let candidateLoc = editor.rangeCache[key]?.location ?? oldLoc
@@ -32,7 +111,7 @@ internal enum OptimizedReconciler {
       // Prefer the rangeCache location when it actually points at this attachment.
       var resolvedLoc: Int = candidateLoc
       if storageLen > 0, candidateLoc >= 0, candidateLoc < storageLen,
-         let att = ts.attribute(.attachment, at: candidateLoc, effectiveRange: nil) as? TextAttachment,
+         let att = ts.attribute(.attachment, at: candidateLoc, effectiveRange: nil) as? PlatformTextAttachment,
          att.key == key {
         resolvedLoc = candidateLoc
       } else if storageLen > 0 {
@@ -40,7 +119,7 @@ internal enum OptimizedReconciler {
         // during structural delete fast paths and selection-driven edits).
         var foundAt: Int? = nil
         ts.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storageLen)) { value, range, stop in
-          if let att = value as? TextAttachment, att.key == key {
+          if let att = value as? PlatformTextAttachment, att.key == key {
             foundAt = range.location
             stop.pointee = true
           }
@@ -57,8 +136,8 @@ internal enum OptimizedReconciler {
     let editorWeak = editor
     let movedCopy = movedDecorators
     DispatchQueue.main.async {
-      guard let layoutManager = editorWeak.frontend?.layoutManager,
-            let ts = editorWeak.textStorage else { return }
+      guard let layoutManager = reconcilerLayoutManager(editorWeak),
+            let ts = reconcilerTextStorage(editorWeak) else { return }
       for (key, oldLoc, _) in movedCopy {
         if let range = editorWeak.rangeCache[key]?.range {
           layoutManager.invalidateDisplay(forCharacterRange: range)
@@ -89,7 +168,6 @@ internal enum OptimizedReconciler {
     pendingEditorState: EditorState,
     editor: Editor
   ) throws -> (instructions: [Instruction], lengthChanges: [(nodeKey: NodeKey, part: NodePart, delta: Int)], affected: Set<NodeKey>)? {
-    guard editor.featureFlags.useReconcilerFenwickDelta && editor.featureFlags.useReconcilerFenwickCentralAggregation else { return nil }
     // Structural safety: central aggregation text-only planning must not run when the update also
     // adds/removes/reorders nodes. Those operations need either a dedicated structural path or a
     // slow rebuild to keep TextStorage consistent with the pending EditorState.
@@ -153,56 +231,15 @@ internal enum OptimizedReconciler {
     return instructions.isEmpty ? nil : (instructions, lengthChanges, affected)
   }
 
-  // Planner: collect pre/post-only multi instructions without applying
+  // Pre/post attributes-only planning has been retired. The optimized reconciler now uses a single
+  // graduated strategy and does not expose algorithm forks.
   @MainActor
   private static func plan_PreamblePostambleOnly_Multi(
     currentEditorState: EditorState,
     pendingEditorState: EditorState,
     editor: Editor
   ) throws -> (instructions: [Instruction], lengthChanges: [(nodeKey: NodeKey, part: NodePart, delta: Int)], affected: Set<NodeKey>)? {
-    guard editor.featureFlags.useReconcilerFenwickDelta && editor.featureFlags.useReconcilerFenwickCentralAggregation else { return nil }
-    var targets: [NodeKey] = []
-    for key in editor.dirtyNodes.keys {
-      guard let next = pendingEditorState.nodeMap[key], let prevRange = editor.rangeCache[key] else { continue }
-      if next.getTextPart(fromLatest: false).lengthAsNSString() != prevRange.textLength { continue }
-      var computedChildrenLen = 0
-      if let el = next as? ElementNode { for c in el.getChildrenKeys(fromLatest: false) { computedChildrenLen += subtreeTotalLength(nodeKey: c, state: pendingEditorState) } }
-      if computedChildrenLen != prevRange.childrenLength { continue }
-      let np = next.getPreamble().lengthAsNSString(); let npo = next.getPostamble().lengthAsNSString()
-      if np == prevRange.preambleLength && npo == prevRange.postambleLength && (np > 0 || npo > 0) { targets.append(key) }
-    }
-    if targets.isEmpty { return nil }
-    // Threshold-gate attributes-only multi pass to avoid sweeping many nodes.
-    let thresh = editor.featureFlags.prePostAttrsOnlyMaxTargets
-    if thresh > 0 && targets.count > thresh {
-      return nil
-    }
-    var instructions: [Instruction] = []
-    var affected: Set<NodeKey> = []
-    // attributes-only variant: no lengthChanges aggregation
-    let theme = editor.getTheme()
-    for key in targets {
-      guard let next = pendingEditorState.nodeMap[key], let prevRange = editor.rangeCache[key] else { continue }
-      let np = next.getPreamble(); let npo = next.getPostamble()
-      let nextPreLen = np.lengthAsNSString(); let nextPostLen = npo.lengthAsNSString()
-      if nextPostLen > 0 {
-        let postLoc = prevRange.location + prevRange.preambleLength + prevRange.childrenLength + prevRange.textLength
-        let rng = NSRange(location: postLoc, length: nextPostLen)
-        let postAttr = AttributeUtils.attributedStringByAddingStyles(NSAttributedString(string: npo), from: next, state: pendingEditorState, theme: theme)
-        let attrs = postAttr.attributes(at: 0, effectiveRange: nil)
-        instructions.append(.setAttributes(range: rng, attributes: attrs))
-      }
-      if nextPreLen > 0 {
-        let preLoc = prevRange.location
-        let rng = NSRange(location: preLoc, length: nextPreLen)
-        let preAttr = AttributeUtils.attributedStringByAddingStyles(NSAttributedString(string: np), from: next, state: pendingEditorState, theme: theme)
-        let attrs = preAttr.attributes(at: 0, effectiveRange: nil)
-        instructions.append(.setAttributes(range: rng, attributes: attrs))
-      }
-      affected.insert(key)
-    }
-    let lengthChanges: [(nodeKey: NodeKey, part: NodePart, delta: Int)] = []
-    return instructions.isEmpty ? nil : (instructions, lengthChanges, affected)
+    nil
   }
   
   // MARK: - Modern TextKit Optimizations (iOS 16+)
@@ -213,7 +250,7 @@ internal enum OptimizedReconciler {
     editor: Editor,
     fixAttributesEnabled: Bool = true
   ) -> InstructionApplyStats {
-    guard let textStorage = editor.textStorage else {
+    guard let textStorage = reconcilerTextStorage(editor) else {
       return InstructionApplyStats(deletes: 0, inserts: 0, sets: 0, fixes: 0, duration: 0)
     }
     
@@ -319,18 +356,18 @@ internal enum OptimizedReconciler {
     
     // Step 5: Batch decorator operations without animations
     if !decoratorOps.isEmpty {
-      UIView.performWithoutAnimation {
+      performWithoutAnimation {
         for op in decoratorOps {
           switch op {
           case .decoratorAdd(let key):
             if let loc = editor.rangeCache[key]?.location {
-              editor.textStorage?.decoratorPositionCache[key] = loc
+              reconcilerTextStorage(editor)?.decoratorPositionCache[key] = loc
             }
           case .decoratorRemove(let key):
-            editor.textStorage?.decoratorPositionCache[key] = nil
+            reconcilerTextStorage(editor)?.decoratorPositionCache[key] = nil
           case .decoratorDecorate(let key):
             if let loc = editor.rangeCache[key]?.location {
-              editor.textStorage?.decoratorPositionCache[key] = loc
+              reconcilerTextStorage(editor)?.decoratorPositionCache[key] = loc
             }
           default:
             break
@@ -502,7 +539,7 @@ internal enum OptimizedReconciler {
 
   @MainActor
   private static func batchUpdateDecoratorPositions(editor: Editor) {
-    guard let textStorage = editor.textStorage else { return }
+    guard let textStorage = reconcilerTextStorage(editor) else { return }
 
     // Batch update all decorator positions at once
     var updates: [(NodeKey, Int, Int)] = [] // (key, oldLocation, newLocation)
@@ -515,7 +552,7 @@ internal enum OptimizedReconciler {
     }
 
     // Apply all updates in single pass without animations
-    UIView.performWithoutAnimation {
+    performWithoutAnimation {
       for (key, _, newLocation) in updates {
         textStorage.decoratorPositionCache[key] = newLocation
       }
@@ -529,8 +566,8 @@ internal enum OptimizedReconciler {
     if !movedDecorators.isEmpty {
       let editorWeak = editor
       DispatchQueue.main.async {
-        guard let layoutManager = editorWeak.frontend?.layoutManager,
-              let ts = editorWeak.textStorage else {
+        guard let layoutManager = reconcilerLayoutManager(editorWeak),
+              let ts = reconcilerTextStorage(editorWeak) else {
           return
         }
         for (key, oldLocation, _) in movedDecorators {
@@ -557,7 +594,7 @@ internal enum OptimizedReconciler {
       return stats
     }
     
-    guard let textStorage = editor.textStorage else { return InstructionApplyStats(deletes: 0, inserts: 0, sets: 0, fixes: 0, duration: 0) }
+    guard let textStorage = reconcilerTextStorage(editor) else { return InstructionApplyStats(deletes: 0, inserts: 0, sets: 0, fixes: 0, duration: 0) }
 
     // Gather deletes and inserts
     var deletes: [NSRange] = []
@@ -677,7 +714,7 @@ internal enum OptimizedReconciler {
     markedTextOperation: MarkedTextOperation?
   ) throws {
     // Optimized reconciler is always active in tests and app.
-    guard editor.textStorage != nil else { fatalError("Cannot run optimized reconciler on an editor with no text storage") }
+    guard reconcilerTextStorage(editor) != nil else { fatalError("Cannot run optimized reconciler on an editor with no text storage") }
     defer { syncDecoratorPositionCacheWithRangeCache(editor: editor) }
 
     // Composition (marked text) fast path first
@@ -754,7 +791,7 @@ internal enum OptimizedReconciler {
     }
     if didInsertFastPath { editor.invalidateDFSOrderCache() }
     // If insert-block consumed and central aggregation collected deltas, apply them once
-    if editor.featureFlags.useReconcilerFenwickDelta && editor.featureFlags.useReconcilerFenwickCentralAggregation && !fenwickAggregatedDeltas.isEmpty {
+    if !fenwickAggregatedDeltas.isEmpty {
       let (order, positions) = fenwickOrderAndIndex(editor: editor)
       let ranges = fenwickAggregatedDeltas.map { (k, d) in (startKey: k, endKeyExclusive: Optional<NodeKey>.none, delta: d) }
       applyIncrementalLocationShifts(rangeCache: &editor.rangeCache, ranges: ranges, order: order, indexOf: positions, diffScratch: &editor.locationShiftDiffScratch)
@@ -785,7 +822,7 @@ internal enum OptimizedReconciler {
       fenwickAggregatedDeltas: &fenwickAggregatedDeltas
     ) {
       // If central aggregation is enabled, apply aggregated rebuild now
-      if editor.featureFlags.useReconcilerFenwickDelta && editor.featureFlags.useReconcilerFenwickCentralAggregation && !fenwickAggregatedDeltas.isEmpty {
+      if !fenwickAggregatedDeltas.isEmpty {
         let (order, positions) = fenwickOrderAndIndex(editor: editor)
         let ranges = fenwickAggregatedDeltas.map { (k, d) in (startKey: k, endKeyExclusive: Optional<NodeKey>.none, delta: d) }
         applyIncrementalLocationShifts(rangeCache: &editor.rangeCache, ranges: ranges, order: order, indexOf: positions, diffScratch: &editor.locationShiftDiffScratch)
@@ -794,7 +831,7 @@ internal enum OptimizedReconciler {
     }
 
     // Central aggregation: collect both text and pre/post instructions, then apply once
-    if editor.featureFlags.useReconcilerFenwickDelta && editor.featureFlags.useReconcilerFenwickCentralAggregation {
+    if true {
       var aggregatedInstructions: [Instruction] = []
       var aggregatedAffected: Set<NodeKey> = []
       var aggregatedLengthChanges: [(nodeKey: NodeKey, part: NodePart, delta: Int)] = []
@@ -805,8 +842,7 @@ internal enum OptimizedReconciler {
         aggregatedAffected.formUnion(plan.affected)
         aggregatedLengthChanges.append(contentsOf: plan.lengthChanges)
       }
-      if editor.featureFlags.useReconcilerPrePostAttributesOnly,
-         let plan = try plan_PreamblePostambleOnly_Multi(currentEditorState: currentEditorState, pendingEditorState: pendingEditorState, editor: editor) {
+      if let plan = try plan_PreamblePostambleOnly_Multi(currentEditorState: currentEditorState, pendingEditorState: pendingEditorState, editor: editor) {
         aggregatedInstructions.append(contentsOf: plan.instructions)
         aggregatedAffected.formUnion(plan.affected)
         aggregatedLengthChanges.append(contentsOf: plan.lengthChanges)
@@ -845,7 +881,7 @@ internal enum OptimizedReconciler {
         )
         if editor.featureFlags.useModernTextKitOptimizations {
           batchUpdateDecoratorPositions(editor: editor)
-        } else if let ts = editor.textStorage {
+        } else if let ts = reconcilerTextStorage(editor) {
           // Update positions and invalidate display for moved decorators
           var movedDecorators: [(NodeKey, Int, Int)] = []
           for (key, oldLoc) in ts.decoratorPositionCache {
@@ -862,8 +898,8 @@ internal enum OptimizedReconciler {
             let editorWeak = editor
             let movedCopy = movedDecorators
             DispatchQueue.main.async {
-              guard let layoutManager = editorWeak.frontend?.layoutManager,
-                    let ts = editorWeak.textStorage else {
+              guard let layoutManager = reconcilerLayoutManager(editorWeak),
+                    let ts = reconcilerTextStorage(editorWeak) else {
                 return
               }
               for (key, oldLoc, _) in movedCopy {
@@ -896,44 +932,6 @@ internal enum OptimizedReconciler {
           metrics.record(.reconcilerRun(metric))
         }
         return
-      } else {
-        // No aggregated instructions. If pre/post attrs-only was gated and there are no
-        // actual part-length deltas for dirty nodes, treat as a no-op beyond block attrs
-        // and selection. This avoids falling back to a slow full rebuild.
-        if editor.featureFlags.useReconcilerPrePostAttributesOnly {
-          let diffs = computePartDiffs(
-            editor: editor,
-            prevState: currentEditorState,
-            nextState: pendingEditorState,
-            keys: Array(editor.dirtyNodes.keys)
-          )
-          if diffs.isEmpty {
-            // Keep changes local: apply block attributes over current dirty set and reconcile selection
-            applyBlockAttributesPass(editor: editor, pendingEditorState: pendingEditorState, affectedKeys: nil, treatAllNodesAsDirty: false)
-            // Ensure dirty decorator nodes transition to .needsDecorating and positions stay in sync
-            reconcileDecoratorOpsForSubtree(
-              ancestorKey: kRootNodeKey,
-              prevState: currentEditorState,
-              nextState: pendingEditorState,
-              editor: editor
-            )
-            let prevSelection = currentEditorState.selection
-            let nextSelection = pendingEditorState.selection
-            var selectionsAreDifferent = false
-            if let nextSelection, let prevSelection { selectionsAreDifferent = !nextSelection.isSelection(prevSelection) }
-            let needsUpdate = editor.dirtyType != .noDirtyNodes
-            if shouldReconcileSelection && (needsUpdate || nextSelection == nil || selectionsAreDifferent) {
-              try reconcileSelection(prevSelection: prevSelection, nextSelection: nextSelection, editor: editor)
-            }
-            if let metrics = editor.metricsContainer {
-              let metric = ReconcilerMetric(
-                duration: 0, dirtyNodes: editor.dirtyNodes.count, rangesAdded: 0, rangesDeleted: 0,
-                treatedAllNodesAsDirty: false, pathLabel: "prepost-gated-noop")
-              metrics.record(.reconcilerRun(metric))
-            }
-            return
-          }
-        }
       }
     }
 
@@ -945,23 +943,7 @@ internal enum OptimizedReconciler {
       fenwickAggregatedDeltas: &fenwickAggregatedDeltas
     ) {
       // If central aggregation is enabled, apply aggregated rebuild now
-      if editor.featureFlags.useReconcilerFenwickDelta && editor.featureFlags.useReconcilerFenwickCentralAggregation && !fenwickAggregatedDeltas.isEmpty {
-        let (order, positions) = fenwickOrderAndIndex(editor: editor)
-        let ranges = fenwickAggregatedDeltas.map { (k, d) in (startKey: k, endKeyExclusive: Optional<NodeKey>.none, delta: d) }
-        applyIncrementalLocationShifts(rangeCache: &editor.rangeCache, ranges: ranges, order: order, indexOf: positions, diffScratch: &editor.locationShiftDiffScratch)
-      }
-      return
-    }
-
-    if editor.featureFlags.useReconcilerPrePostAttributesOnly,
-       try fastPath_PreamblePostambleOnly(
-      currentEditorState: currentEditorState,
-      pendingEditorState: pendingEditorState,
-      editor: editor,
-      shouldReconcileSelection: shouldReconcileSelection,
-      fenwickAggregatedDeltas: &fenwickAggregatedDeltas
-    ) {
-      if editor.featureFlags.useReconcilerFenwickDelta && editor.featureFlags.useReconcilerFenwickCentralAggregation && !fenwickAggregatedDeltas.isEmpty {
+      if !fenwickAggregatedDeltas.isEmpty {
         let (order, positions) = fenwickOrderAndIndex(editor: editor)
         let ranges = fenwickAggregatedDeltas.map { (k, d) in (startKey: k, endKeyExclusive: Optional<NodeKey>.none, delta: d) }
         applyIncrementalLocationShifts(rangeCache: &editor.rangeCache, ranges: ranges, order: order, indexOf: positions, diffScratch: &editor.locationShiftDiffScratch)
@@ -1008,7 +990,7 @@ internal enum OptimizedReconciler {
   // MARK: - Fresh document hydration (one-pass build)
   @MainActor
   private static func shouldHydrateFreshDocument(pendingState: EditorState, editor: Editor) -> Bool {
-    guard let ts = editor.textStorage else { return false }
+    guard let ts = reconcilerTextStorage(editor) else { return false }
     let storageEmpty = ts.length == 0
     guard storageEmpty else { return false }
     // Avoid hydrating an empty document: if the pending root has no children
@@ -1044,7 +1026,7 @@ internal enum OptimizedReconciler {
 
   @MainActor
   internal static func hydrateFreshDocumentFully(pendingState: EditorState, editor: Editor) throws {
-    guard let ts = editor.textStorage else { return }
+    guard let ts = reconcilerTextStorage(editor) else { return }
     let prevMode = ts.mode
     ts.mode = .controllerMode
     ts.beginEditing()
@@ -1093,7 +1075,7 @@ internal enum OptimizedReconciler {
     editor: Editor,
     shouldReconcileSelection: Bool
   ) throws {
-    guard let textStorage = editor.textStorage else { return }
+    guard let textStorage = reconcilerTextStorage(editor) else { return }
     // Capture prior state to detect no-op string rebuilds (e.g., decorator size-only changes)
     let prevString = textStorage.string
     let prevDecoratorPositions = textStorage.decoratorPositionCache
@@ -1228,7 +1210,7 @@ internal enum OptimizedReconciler {
     let newTextLen = newText.lengthAsNSString()
     if oldTextLen == newTextLen {
       // Attribute-only fast path if underlying string content is identical
-      guard let textStorage = editor.textStorage else {
+      guard let textStorage = reconcilerTextStorage(editor) else {
         debugSkip("textStorage nil (attr-only)")
         return false
       }
@@ -1286,7 +1268,7 @@ internal enum OptimizedReconciler {
     }
 
     // Minimal replace algorithm (LCP/LCS): replace only the changed span
-    guard let textStorage = editor.textStorage else {
+    guard let textStorage = reconcilerTextStorage(editor) else {
       debugSkip("textStorage nil (min-replace)")
       return false
     }
@@ -1364,23 +1346,19 @@ internal enum OptimizedReconciler {
 
     // Location shifts
     if delta != 0 {
-      if editor.featureFlags.useReconcilerFenwickDelta {
-        let (order, positions) = fenwickOrderAndIndex(editor: editor)
-        let ranges = [(startKey: dirtyKey, endKeyExclusive: Optional<NodeKey>.none, delta: delta)]
-        applyIncrementalLocationShifts(rangeCache: &editor.rangeCache, ranges: ranges, order: order, indexOf: positions, diffScratch: &editor.locationShiftDiffScratch)
-      } else {
-        _ = applyLengthDeltasBatch(editor: editor, changes: [(dirtyKey, .text, delta)])
-      }
+      let (order, positions) = fenwickOrderAndIndex(editor: editor)
+      let ranges = [(startKey: dirtyKey, endKeyExclusive: Optional<NodeKey>.none, delta: delta)]
+      applyIncrementalLocationShifts(rangeCache: &editor.rangeCache, ranges: ranges, order: order, indexOf: positions, diffScratch: &editor.locationShiftDiffScratch)
     }
 
     // Update decorator positions
-    if let ts = editor.textStorage {
+    if let ts = reconcilerTextStorage(editor) {
       for (key, _) in ts.decoratorPositionCache { if let loc = editor.rangeCache[key]?.location { ts.decoratorPositionCache[key] = loc } }
     }
 
     // Headless/read-only contexts still need decorator cache state updates for parity
     // (e.g., dirty -> needsDecorating) even when taking the text-only path.
-    if editor.frontend is LexicalReadOnlyTextKitContext {
+    if isReadOnlyFrontendContext(editor) {
       reconcileDecoratorOpsForSubtree(
         ancestorKey: kRootNodeKey,
         prevState: currentEditorState,
@@ -1421,7 +1399,7 @@ internal enum OptimizedReconciler {
     }
     // Read-only contexts (no real TextView) can have different layout/spacing ordering.
     // Keep optimized active but skip this structural fast path in read-only to preserve parity.
-    if editor.frontend is LexicalReadOnlyTextKitContext { return false }
+    if isReadOnlyFrontendContext(editor) { return false }
 
     // Find a parent Element whose children gained exactly one child (no removals)
     // and no other structural deltas.
@@ -1531,7 +1509,7 @@ internal enum OptimizedReconciler {
     var totalShift = 0
     var combinedInsertPrefix: NSAttributedString? = nil
     var deleteOldPostRange: NSRange? = nil
-    if editor.featureFlags.useReconcilerInsertBlockFenwick && insertIndex > 0 {
+    if insertIndex > 0 {
       let prevSiblingKey = nextChildren[insertIndex - 1]
       if let prevSiblingRange = editor.rangeCache[prevSiblingKey],
          let prevSiblingNext = pendingEditorState.nodeMap[prevSiblingKey] {
@@ -1567,8 +1545,8 @@ internal enum OptimizedReconciler {
     if instructions.isEmpty { return false }
 
     var applyDuration: TimeInterval = 0
-    if !editor.featureFlags.useReconcilerInsertBlockFenwick {
-      guard let textStorage = editor.textStorage else { return false }
+    if false {
+      guard let textStorage = reconcilerTextStorage(editor) else { return false }
       let previousMode = textStorage.mode
       textStorage.mode = .controllerMode
       let t0 = CFAbsoluteTimeGetCurrent()
@@ -1659,7 +1637,7 @@ internal enum OptimizedReconciler {
         let editorWeak = editor
         let rangeCopy = range
         DispatchQueue.main.async {
-          guard let layoutManager = editorWeak.frontend?.layoutManager else { return }
+          guard let layoutManager = reconcilerLayoutManager(editorWeak) else { return }
           layoutManager.invalidateLayout(forCharacterRange: rangeCopy, actualCharacterRange: nil)
           layoutManager.invalidateDisplay(forCharacterRange: rangeCopy)
           // Proactively ensure glyph layout to avoid relying on an external draw pass.
@@ -1707,7 +1685,6 @@ internal enum OptimizedReconciler {
     shouldReconcileSelection: Bool,
     fenwickAggregatedDeltas: inout [NodeKey: Int]
   ) throws -> Bool {
-    guard editor.featureFlags.useReconcilerDeleteBlockFenwick else { return false }
     // Safety: do NOT treat this update as a structural block delete if the user's
     // selection is a collapsed caret inside a TextNode (i.e., not at a text boundary).
     // This prevents cases where a single-character delete/backspace inside a line
@@ -1888,8 +1865,7 @@ internal enum OptimizedReconciler {
 
     let stats = applyInstructions(instructions, editor: editor, fixAttributesEnabled: false)
 
-    let prePruneOrderAndIndex: ([NodeKey], [NodeKey: Int])? =
-      editor.featureFlags.useReconcilerFenwickDelta ? fenwickOrderAndIndex(editor: editor) : nil
+    let prePruneOrderAndIndex: ([NodeKey], [NodeKey: Int]) = fenwickOrderAndIndex(editor: editor)
 
     // Prune removed subtrees from range cache without scanning the entire parent subtree.
     let removedRoots: [NodeKey] = removedIndices.map { prevChildren[$0] }
@@ -1914,8 +1890,8 @@ internal enum OptimizedReconciler {
       }
     }
 
-    if editor.featureFlags.useReconcilerFenwickDelta, let pre = prePruneOrderAndIndex {
-      let (order, positions) = pre
+    do {
+      let (order, positions) = prePruneOrderAndIndex
       applyIncrementalLocationShifts(rangeCache: &editor.rangeCache, ranges: rangeShifts, order: order, indexOf: positions, diffScratch: &editor.locationShiftDiffScratch)
     }
     // Always recompute the parent subtree for correctness (decorators, paragraph merges, etc.).
@@ -1974,7 +1950,6 @@ internal enum OptimizedReconciler {
     editor: Editor,
     fenwickAggregatedDeltas: inout [NodeKey: Int]
   ) throws -> Bool {
-    guard editor.featureFlags.useReconcilerFenwickDelta && editor.featureFlags.useReconcilerFenwickCentralAggregation else { return false }
     // Collect all TextNodes whose text changed
     let candidates: [NodeKey] = editor.dirtyNodes.keys.compactMap { key in
       guard let prev = currentEditorState.nodeMap[key] as? TextNode,
@@ -2041,54 +2016,7 @@ internal enum OptimizedReconciler {
     editor: Editor,
     fenwickAggregatedDeltas: inout [NodeKey: Int]
   ) throws -> Bool {
-    guard editor.featureFlags.useReconcilerFenwickDelta && editor.featureFlags.useReconcilerFenwickCentralAggregation else { return false }
-    var targets: [NodeKey] = []
-    for key in editor.dirtyNodes.keys {
-      guard let next = pendingEditorState.nodeMap[key], let prevRange = editor.rangeCache[key] else { continue }
-      // children/text unchanged
-      if next.getTextPart(fromLatest: false).lengthAsNSString() != prevRange.textLength { continue }
-      var computedChildrenLen = 0
-      if let el = next as? ElementNode { for c in el.getChildrenKeys(fromLatest: false) { computedChildrenLen += subtreeTotalLength(nodeKey: c, state: pendingEditorState) } }
-      if computedChildrenLen != prevRange.childrenLength { continue }
-      let np = next.getPreamble().lengthAsNSString(); let npo = next.getPostamble().lengthAsNSString()
-      if np != prevRange.preambleLength || npo != prevRange.postambleLength { targets.append(key) }
-    }
-    if targets.isEmpty { return false }
-    let thresh = editor.featureFlags.prePostAttrsOnlyMaxTargets
-    if thresh > 0 && targets.count > thresh {
-      return false
-    }
-    var instructions: [Instruction] = []
-    var affected: Set<NodeKey> = []
-    let theme = editor.getTheme()
-    for key in targets {
-      guard let next = pendingEditorState.nodeMap[key], let prevRange = editor.rangeCache[key] else { continue }
-      let np = next.getPreamble(); let npo = next.getPostamble()
-      let nextPreLen = np.lengthAsNSString(); let nextPostLen = npo.lengthAsNSString()
-      if nextPostLen > 0 {
-        let postLoc = prevRange.location + prevRange.preambleLength + prevRange.childrenLength + prevRange.textLength
-        let rng = NSRange(location: postLoc, length: nextPostLen)
-        let postAttr = AttributeUtils.attributedStringByAddingStyles(NSAttributedString(string: npo), from: next, state: pendingEditorState, theme: theme)
-        let attrs = postAttr.attributes(at: 0, effectiveRange: nil)
-        instructions.append(.setAttributes(range: rng, attributes: attrs))
-      }
-      if nextPreLen > 0 {
-        let preLoc = prevRange.location
-        let rng = NSRange(location: preLoc, length: nextPreLen)
-        let preAttr = AttributeUtils.attributedStringByAddingStyles(NSAttributedString(string: np), from: next, state: pendingEditorState, theme: theme)
-        let attrs = preAttr.attributes(at: 0, effectiveRange: nil)
-        instructions.append(.setAttributes(range: rng, attributes: attrs))
-      }
-      affected.insert(key)
-    }
-    if instructions.isEmpty { return false }
-    let stats = applyInstructions(instructions, editor: editor)
-    // No cache/ancestor shifts or block attributes in attributes-only variant
-    if let metrics = editor.metricsContainer {
-      let metric = ReconcilerMetric(duration: stats.duration, dirtyNodes: editor.dirtyNodes.count, rangesAdded: 0, rangesDeleted: 0, treatedAllNodesAsDirty: false, pathLabel: "prepost-attrs-only-multi", planningDuration: 0, applyDuration: stats.duration, deleteCount: 0, insertCount: 0, setAttributesCount: 0, fixAttributesCount: 1)
-      metrics.record(.reconcilerRun(metric))
-    }
-    return true
+    false
   }
 
   // MARK: - Fast path: reorder children of a single ElementNode (same keys, new order)
@@ -2156,7 +2084,7 @@ internal enum OptimizedReconciler {
         editor: editor)
     } else {
       // Region rebuild fallback when many moves
-      guard let textStorage = editor.textStorage else { return false }
+      guard let textStorage = reconcilerTextStorage(editor) else { return false }
       let previousMode = textStorage.mode
       textStorage.mode = .controllerMode
       let t0 = CFAbsoluteTimeGetCurrent()
@@ -2204,23 +2132,21 @@ internal enum OptimizedReconciler {
     }
 
     // Shift locations for each direct child subtree via Fenwick range adds
-    if editor.featureFlags.useReconcilerInsertBlockFenwick {
-      var rangeShifts: [(NodeKey, NodeKey?, Int)] = []
+    var rangeShifts: [(NodeKey, NodeKey?, Int)] = []
     let (orderedKeys, indexOf) = fenwickOrderAndIndex(editor: editor)
-      for k in nextChildrenOrder {
-        guard let oldStart = childOldStart[k], let newStart = childNewStart[k] else { continue }
-        let deltaShift = newStart - oldStart
-        if deltaShift == 0 { continue }
-        let subKeys = subtreeKeysDFS(rootKey: k, state: pendingEditorState)
-        var maxIdx = 0
-        for sk in subKeys { if let idx = indexOf[sk], idx > maxIdx { maxIdx = idx } }
-        let endExclusive: NodeKey? = (maxIdx < orderedKeys.count) ? orderedKeys[maxIdx] : nil
-        rangeShifts.append((k, endExclusive, deltaShift))
-      }
-      if !rangeShifts.isEmpty {
-        editor.rangeCache = rebuildLocationsWithRangeDiffs(
-          prev: editor.rangeCache, ranges: rangeShifts, order: orderedKeys, indexOf: indexOf)
-      }
+    for k in nextChildrenOrder {
+      guard let oldStart = childOldStart[k], let newStart = childNewStart[k] else { continue }
+      let deltaShift = newStart - oldStart
+      if deltaShift == 0 { continue }
+      let subKeys = subtreeKeysDFS(rootKey: k, state: pendingEditorState)
+      var maxIdx = 0
+      for sk in subKeys { if let idx = indexOf[sk], idx > maxIdx { maxIdx = idx } }
+      let endExclusive: NodeKey? = (maxIdx < orderedKeys.count) ? orderedKeys[maxIdx] : nil
+      rangeShifts.append((k, endExclusive, deltaShift))
+    }
+    if !rangeShifts.isEmpty {
+      editor.rangeCache = rebuildLocationsWithRangeDiffs(
+        prev: editor.rangeCache, ranges: rangeShifts, order: orderedKeys, indexOf: indexOf)
     }
 
     // Reconcile decorators within this subtree (moves preserve cache; dirty -> needsDecorating)
@@ -2320,10 +2246,10 @@ internal enum OptimizedReconciler {
       if let prevSelection, !prevSelection.dirty {
         return
       }
-      editor.frontend?.resetSelectedRange()
+      resetSelectedRange(editor: editor)
       return
     }
-    try editor.frontend?.updateNativeSelection(from: nextSelection)
+    try updateNativeSelection(editor: editor, selection: nextSelection)
   }
 
   // MARK: - Fast path: preamble/postamble change only for a single node (children & text unchanged)
@@ -2336,7 +2262,7 @@ internal enum OptimizedReconciler {
     fenwickAggregatedDeltas: inout [NodeKey: Int]
   ) throws -> Bool {
     // Skip attributes-only structural path in read-only to avoid spacing/order mismatches.
-    if editor.frontend is LexicalReadOnlyTextKitContext { return false }
+    if isReadOnlyFrontendContext(editor) { return false }
     guard editor.dirtyNodes.count == 1, let dirtyKey = editor.dirtyNodes.keys.first else {
       return false
     }
@@ -2390,7 +2316,7 @@ internal enum OptimizedReconciler {
     let stats = applyInstructions(applied, editor: editor)
 
     // Update decorators positions
-    if let ts = editor.textStorage {
+    if let ts = reconcilerTextStorage(editor) {
       for (key, _) in ts.decoratorPositionCache {
         if let loc = editor.rangeCache[key]?.location {
           ts.decoratorPositionCache[key] = loc
@@ -2430,7 +2356,7 @@ internal enum OptimizedReconciler {
     shouldReconcileSelection: Bool,
     op: MarkedTextOperation
   ) throws -> Bool {
-    guard let textStorage = editor.textStorage else { return false }
+    guard let textStorage = reconcilerTextStorage(editor) else { return false }
     // Only special-handle start of composition. Updates/end are handled by Events via insert/replace
     guard op.createMarkedText else { return false }
 
@@ -2464,9 +2390,12 @@ internal enum OptimizedReconciler {
     if let p = point {
       let startPoint = p
       let endPoint = Point(key: p.key, offset: p.offset + markedAttr.length, type: .text)
-      try editor.frontend?.updateNativeSelection(from: RangeSelection(anchor: startPoint, focus: endPoint, format: TextFormat()))
+      try updateNativeSelection(
+        editor: editor,
+        selection: RangeSelection(anchor: startPoint, focus: endPoint, format: TextFormat())
+      )
     }
-    editor.frontend?.setMarkedTextFromReconciler(markedAttr, selectedRange: op.markedTextInternalSelection)
+    setMarkedTextFromReconciler(editor: editor, markedText: markedAttr, selectedRange: op.markedTextInternalSelection)
 
     // Skip selection reconcile after marked text (legacy behavior)
     if let metrics = editor.metricsContainer {
@@ -2534,7 +2463,7 @@ internal enum OptimizedReconciler {
     for child in nextChildren { built.append(buildAttributedSubtree(nodeKey: child, state: pendingEditorState, theme: theme)) }
 
     // Replace the children region for the ancestor
-    guard let textStorage = editor.textStorage else { return false }
+    guard let textStorage = reconcilerTextStorage(editor) else { return false }
     let previousMode = textStorage.mode
     let childrenStart = ancestorPrevRange.location + ancestorPrevRange.preambleLength
     let childrenRange = NSRange(location: childrenStart, length: ancestorPrevRange.childrenLength)
@@ -2610,7 +2539,7 @@ internal enum OptimizedReconciler {
     affectedKeys: Set<NodeKey>?,
     treatAllNodesAsDirty: Bool
   ) {
-    guard let textStorage = editor.textStorage else { return }
+    guard let textStorage = reconcilerTextStorage(editor) else { return }
     let theme = editor.getTheme()
 
     // Build node set to apply
@@ -2696,7 +2625,7 @@ internal enum OptimizedReconciler {
     nextState: EditorState,
     editor: Editor
   ) {
-    guard let textStorage = editor.textStorage else { return }
+    guard let textStorage = reconcilerTextStorage(editor) else { return }
 
     @inline(__always)
     func isAttached(key: NodeKey, in state: EditorState) -> Bool {
@@ -2714,11 +2643,11 @@ internal enum OptimizedReconciler {
     // robust when rangeCache has not yet been populated for newly inserted
     // decorators within the same update pass (e.g., optimized insert fast path).
     @inline(__always)
-    func fallbackAttachmentLocation(for key: NodeKey, in ts: TextStorage) -> Int? {
+    func fallbackAttachmentLocation(for key: NodeKey, in ts: ReconcilerTextStorage) -> Int? {
       if ts.length == 0 { return nil }
       var found: Int? = nil
       ts.enumerateAttribute(.attachment, in: NSRange(location: 0, length: ts.length)) { value, range, stop in
-        if let att = value as? TextAttachment, att.key == key {
+        if let att = value as? PlatformTextAttachment, att.key == key {
           found = range.location
           stop.pointee = true
         }
@@ -2789,4 +2718,3 @@ internal enum OptimizedReconciler {
     }
   }
 }
-#endif  // canImport(UIKit)

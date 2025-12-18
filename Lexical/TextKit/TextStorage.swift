@@ -11,14 +11,14 @@ import UIKit
 import LexicalCore
 
 @MainActor
-public class TextStorage: NSTextStorage {
+public class TextStorage: NSTextStorage, ReconcilerTextStorage {
 
-  internal typealias CharacterLocation = Int
-  @objc internal var decoratorPositionCache: [NodeKey: CharacterLocation] = [:]
+  public typealias CharacterLocation = Int
+  @objc public var decoratorPositionCache: [NodeKey: CharacterLocation] = [:]
   private var pendingDecoratorCacheRepair = false
 
   private var backingAttributedString: NSMutableAttributedString
-  var mode: TextStorageEditingMode
+  public var mode: TextStorageEditingMode
   private var editingDepth: Int = 0
   weak var editor: Editor?
   /// True while inside `performControllerModeUpdate`, indicating that UIKit's text storage editing

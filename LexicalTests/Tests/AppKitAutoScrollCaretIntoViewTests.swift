@@ -14,7 +14,7 @@ import XCTest
 @MainActor
 final class AppKitAutoScrollCaretIntoViewTests: XCTestCase {
   func testInsertParagraphScrollsCaretIntoViewWhenOffscreen() throws {
-    let testView = createTestEditorView(featureFlags: FeatureFlags.optimizedProfile(.aggressiveEditor))
+    let testView = createTestEditorView(featureFlags: FeatureFlags())
     let editor = testView.editor
 
     let window = NSWindow(

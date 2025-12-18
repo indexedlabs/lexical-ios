@@ -12,10 +12,9 @@ final class InlineImagePersistenceTests: XCTestCase {
   // Keep contexts strongly referenced so editor.frontend/textStorage remain attached
   private var liveContexts: [LexicalReadOnlyTextKitContext] = []
 
-  private func makeEditor(useOptimized: Bool) -> (Editor, LexicalReadOnlyTextKitContext) {
+  private func makeEditor() -> (Editor, LexicalReadOnlyTextKitContext) {
     let cfg = EditorConfig(theme: Theme(), plugins: [InlineImagePlugin()])
-    let flags = useOptimized ? FeatureFlags.optimizedProfile(.aggressiveEditor) : FeatureFlags()
-    let ctx = LexicalReadOnlyTextKitContext(editorConfig: cfg, featureFlags: flags)
+    let ctx = LexicalReadOnlyTextKitContext(editorConfig: cfg, featureFlags: FeatureFlags())
     liveContexts.append(ctx)
     return (ctx.editor, ctx)
   }
@@ -33,7 +32,7 @@ final class InlineImagePersistenceTests: XCTestCase {
   // we cover state restoration in testStateRestoreKeepsImageAcrossEngines.
 
   func testDecoratorPositionCacheSetOnInsert() throws {
-    let (editor, ctx) = makeEditor(useOptimized: true)
+    let (editor, ctx) = makeEditor()
     var key: NodeKey!
     try editor.update {
       guard let root = getRoot() else { return }
@@ -47,7 +46,7 @@ final class InlineImagePersistenceTests: XCTestCase {
   }
 
   func testDecoratorPositionCacheClearedOnDelete_Optimized() throws {
-    let (editor, ctx) = makeEditor(useOptimized: true)
+    let (editor, ctx) = makeEditor()
     var key: NodeKey!
     try editor.update {
       guard let root = getRoot() else { return }
@@ -57,11 +56,11 @@ final class InlineImagePersistenceTests: XCTestCase {
       getActiveEditorState()?.selection = NodeSelection(nodes: [key])
     }
     try editor.update { try (getSelection() as? NodeSelection)?.deleteCharacter(isBackwards: true) }
-    XCTAssertNil(ctx.textStorage.decoratorPositionCache[key], "Position cache must be cleared after delete (optimized)")
+    XCTAssertNil(ctx.textStorage.decoratorPositionCache[key], "Position cache must be cleared after delete")
   }
 
   func testDecoratorPositionCacheClearedOnDelete_Legacy() throws {
-    let (editor, ctx) = makeEditor(useOptimized: false)
+    let (editor, ctx) = makeEditor()
     var key: NodeKey!
     try editor.update {
       guard let root = getRoot() else { return }
@@ -71,33 +70,33 @@ final class InlineImagePersistenceTests: XCTestCase {
       getActiveEditorState()?.selection = NodeSelection(nodes: [key])
     }
     try editor.update { try (getSelection() as? NodeSelection)?.deleteCharacter(isBackwards: true) }
-    XCTAssertNil(ctx.textStorage.decoratorPositionCache[key], "Position cache must be cleared after delete (legacy)")
+    XCTAssertNil(ctx.textStorage.decoratorPositionCache[key], "Position cache must be cleared after delete")
   }
 
   func testStateRestoreKeepsImageAcrossEngines() throws {
-    // Build in legacy, restore in optimized
-    let (legEditor, _) = makeEditor(useOptimized: false)
-    try legEditor.update {
+    // Build in one editor, restore in another.
+    let (sourceEditor, _) = makeEditor()
+    try sourceEditor.update {
       guard let root = getRoot() else { return }
       let p = createParagraphNode(); try root.append([p])
       let img = ImageNode(url: "https://e.com/x.png", size: CGSize(width: 20, height: 10), sourceID: "x")
       try p.append([img])
     }
-    let json = try legEditor.getEditorState().toJSON()
+    let json = try sourceEditor.getEditorState().toJSON()
 
-    let (optEditor, ctx3) = makeEditor(useOptimized: true)
+    let (optEditor, ctx3) = makeEditor()
     _ = ctx3
     let st = try EditorState.fromJSON(json: json, editor: optEditor)
     // Ensure we still have an image in decoded state for the other engine
     guard let key = firstImageKey(in: st) else {
-      XCTFail("No image after restore (opt)")
+      XCTFail("No image after restore")
       return
     }
     XCTAssertNotNil(key)
   }
 
   func testDecoratorPositionCacheShiftsOnPrecedingTextInsert_Optimized() throws {
-    let (editor, ctx) = makeEditor(useOptimized: true)
+    let (editor, ctx) = makeEditor()
     var imageKey: NodeKey!
     try editor.update {
       guard let root = getRoot() else { return }
@@ -115,7 +114,7 @@ final class InlineImagePersistenceTests: XCTestCase {
   }
 
   func testDecoratorPositionCacheShiftsOnPrecedingTextDelete_Optimized() throws {
-    let (editor, ctx) = makeEditor(useOptimized: true)
+    let (editor, ctx) = makeEditor()
     var imageKey: NodeKey!
     try editor.update {
       guard let root = getRoot() else { return }

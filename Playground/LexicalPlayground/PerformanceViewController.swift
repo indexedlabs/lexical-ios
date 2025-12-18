@@ -16,9 +16,9 @@ final class PerformanceViewController: UIViewController {
   private static let iterationsPerTest = 5
 
   // MARK: - UI refs
-  private weak var optimizedView: LexicalView?
-  private weak var optimizedContainerRef: UIView?
-  private weak var optimizedStatus: UILabel?
+  private weak var editorView: LexicalView?
+  private weak var editorContainerRef: UIView?
+  private weak var statusLabel: UILabel?
   private weak var progressLabel: UILabel?
   private weak var resultsText: UITextView?
   private weak var copyButton: UIButton?
@@ -33,17 +33,16 @@ final class PerformanceViewController: UIViewController {
     }
     func resetMetrics() { runs.removeAll() }
   }
-  private var optimizedMetrics = PerfMetricsContainer()
+  private var metrics = PerfMetricsContainer()
 
   // MARK: - Nav controls & flags
   private var toggleBarButton: UIBarButtonItem!
   private var featuresBarButton: UIBarButtonItem!
   private var isRunning = false
   private var runTask: Task<Void, Never>? = nil
-  private var activeOptimizedFlags = FeatureFlags.optimizedProfile(.aggressiveDebug)
-  private var activeProfile: FeatureFlags.OptimizedProfile = .aggressiveDebug
+  private var activeFlags = FlagsStore.shared.makeFeatureFlags()
 
-  private var caseResults: [(name: String, optimized: Double)] = []
+  private var caseResults: [(name: String, seconds: Double)] = []
 
   // MARK: - Lifecycle
   override func viewDidLoad() {
@@ -80,18 +79,18 @@ final class PerformanceViewController: UIViewController {
     ])
 
     let headerRow = UIStackView(); headerRow.axis = .horizontal; headerRow.distribution = .fill; headerRow.spacing = 12
-    let optimizedHeader = makeHeader("Optimized", color: .systemGreen)
-    headerRow.addArrangedSubview(optimizedHeader)
+    let header = makeHeader("Editor", color: .systemGreen)
+    headerRow.addArrangedSubview(header)
 
     let editorsRow = UIStackView(); editorsRow.axis = .horizontal; editorsRow.distribution = .fill; editorsRow.spacing = 12
-    let optimizedContainer = makeEditorContainer()
-    editorsRow.addArrangedSubview(optimizedContainer)
-    self.optimizedContainerRef = optimizedContainer
+    let editorContainer = makeEditorContainer()
+    editorsRow.addArrangedSubview(editorContainer)
+    self.editorContainerRef = editorContainer
 
     let statusRow = UIStackView(); statusRow.axis = .horizontal; statusRow.distribution = .fill; statusRow.spacing = 12
-    let optimizedStatus = makeStatusLabel()
-    statusRow.addArrangedSubview(optimizedStatus)
-    self.optimizedStatus = optimizedStatus
+    let statusLabel = makeStatusLabel()
+    statusRow.addArrangedSubview(statusLabel)
+    self.statusLabel = statusLabel
 
     let progressLabel = UILabel(); progressLabel.font = .systemFont(ofSize: 14, weight: .medium); progressLabel.textAlignment = .center; progressLabel.textColor = .secondaryLabel; progressLabel.text = "Tap Start to begin benchmarks"; self.progressLabel = progressLabel
 
@@ -140,7 +139,7 @@ final class PerformanceViewController: UIViewController {
   }
 
   @objc private func clearTapped() {
-    resultsText?.text = ""; optimizedStatus?.text = "Cleared"; progressLabel?.text = "Idle"
+    resultsText?.text = ""; statusLabel?.text = "Cleared"; progressLabel?.text = "Idle"
     caseResults.removeAll()
   }
 
@@ -153,67 +152,26 @@ final class PerformanceViewController: UIViewController {
   }
 
   private func updateFeaturesMenu() {
-    func toggled(_ f: FeatureFlags, name: String) -> FeatureFlags {
-      let n = name
-      return FeatureFlags(
-        reconcilerSanityCheck: n == "sanity-check" ? !f.reconcilerSanityCheck : f.reconcilerSanityCheck,
-        proxyTextViewInputDelegate: n == "proxy-input-delegate" ? !f.proxyTextViewInputDelegate : f.proxyTextViewInputDelegate,
-        useOptimizedReconciler: true,
-        useReconcilerFenwickDelta: n == "fenwick-delta" ? !f.useReconcilerFenwickDelta : f.useReconcilerFenwickDelta,
-        useReconcilerKeyedDiff: n == "keyed-diff" ? !f.useReconcilerKeyedDiff : f.useReconcilerKeyedDiff,
-        useReconcilerBlockRebuild: n == "block-rebuild" ? !f.useReconcilerBlockRebuild : f.useReconcilerBlockRebuild,
-        useOptimizedReconcilerStrictMode: n == "strict-mode" ? !f.useOptimizedReconcilerStrictMode : f.useOptimizedReconcilerStrictMode,
-        useReconcilerFenwickCentralAggregation: n == "central-aggregation" ? !f.useReconcilerFenwickCentralAggregation : f.useReconcilerFenwickCentralAggregation,
-        useReconcilerShadowCompare: n == "shadow-compare" ? !f.useReconcilerShadowCompare : f.useReconcilerShadowCompare,
-        useReconcilerInsertBlockFenwick: n == "insert-block-fenwick" ? !f.useReconcilerInsertBlockFenwick : f.useReconcilerInsertBlockFenwick,
-        useReconcilerDeleteBlockFenwick: n == "delete-block-fenwick" ? !f.useReconcilerDeleteBlockFenwick : f.useReconcilerDeleteBlockFenwick,
-        useReconcilerPrePostAttributesOnly: n == "pre/post-attrs-only" ? !f.useReconcilerPrePostAttributesOnly : f.useReconcilerPrePostAttributesOnly,
-        useModernTextKitOptimizations: n == "modern-textkit" ? !f.useModernTextKitOptimizations : f.useModernTextKitOptimizations,
-        verboseLogging: n == "verbose-logging" ? !f.verboseLogging : f.verboseLogging,
-        prePostAttrsOnlyMaxTargets: f.prePostAttrsOnlyMaxTargets
-      )
-    }
-
     func coreToggle(_ name: String, _ isOn: Bool) -> UIAction {
       UIAction(title: name, state: isOn ? .on : .off, handler: { [weak self] _ in
         guard let self else { return }
-        let next = toggled(self.activeOptimizedFlags, name: name)
-        self.activeOptimizedFlags = next
+        let store = FlagsStore.shared
+        switch name {
+        case "strict-mode": store.strict.toggle()
+        case "modern-textkit": store.modernTextKit.toggle()
+        case "verbose-logging": store.verboseLogging.toggle()
+        default: break
+        }
+        self.activeFlags = store.makeFeatureFlags()
         self.updateFeaturesMenu()
       })
     }
-
-    func actions(for f: FeatureFlags) -> [UIMenuElement] {
-      // Profile submenu
-      let profiles: [UIAction] = [
-        UIAction(title: "minimal", state: activeProfile == .minimal ? .on : .off, handler: { [weak self] _ in self?.setProfile(.minimal) }),
-        UIAction(title: "minimal (debug)", state: activeProfile == .minimalDebug ? .on : .off, handler: { [weak self] _ in self?.setProfile(.minimalDebug) }),
-        UIAction(title: "balanced", state: activeProfile == .balanced ? .on : .off, handler: { [weak self] _ in self?.setProfile(.balanced) }),
-        UIAction(title: "aggressive", state: activeProfile == .aggressive ? .on : .off, handler: { [weak self] _ in self?.setProfile(.aggressive) }),
-        UIAction(title: "aggressive (debug)", state: activeProfile == .aggressiveDebug ? .on : .off, handler: { [weak self] _ in self?.setProfile(.aggressiveDebug) })
-      ]
-      let profileMenu = UIMenu(title: "Profile", options: .displayInline, children: profiles)
-      // Slim core toggles most relevant to perf cases
-      let toggles: [UIAction] = [
-        coreToggle("strict-mode", f.useOptimizedReconcilerStrictMode),
-        coreToggle("pre/post-attrs-only", f.useReconcilerPrePostAttributesOnly),
-        coreToggle("insert-block-fenwick", f.useReconcilerInsertBlockFenwick),
-        coreToggle("delete-block-fenwick", f.useReconcilerDeleteBlockFenwick),
-        coreToggle("central-aggregation", f.useReconcilerFenwickCentralAggregation),
-        coreToggle("modern-textkit", f.useModernTextKitOptimizations),
-        coreToggle("verbose-logging", f.verboseLogging)
-      ]
-      return [profileMenu] + toggles
-    }
-
-    let menu = UIMenu(title: "Optimized (profile=\(String(describing: activeProfile)))", children: actions(for: activeOptimizedFlags))
-    featuresBarButton.menu = menu
-  }
-
-  private func setProfile(_ p: FeatureFlags.OptimizedProfile) {
-    activeProfile = p
-    activeOptimizedFlags = FeatureFlags.optimizedProfile(p)
-    updateFeaturesMenu()
+    let toggles: [UIAction] = [
+      coreToggle("strict-mode", activeFlags.reconcilerStrictMode),
+      coreToggle("modern-textkit", activeFlags.useModernTextKitOptimizations),
+      coreToggle("verbose-logging", activeFlags.verboseLogging)
+    ]
+    featuresBarButton.menu = UIMenu(title: "Features", children: toggles)
   }
 
   @objc private func onToggleTapped() {
@@ -227,7 +185,7 @@ final class PerformanceViewController: UIViewController {
       // Start the test and rebuild views
       isRunning = true
       toggleBarButton.title = "Stop"
-      _ = rebuildOptimizedView()
+      _ = rebuildEditorView()
       runTask = Task { [weak self] in
         guard let self else { return }
         await self.runAllBenchmarks(resetResults: false)
@@ -246,8 +204,8 @@ final class PerformanceViewController: UIViewController {
     let end = NSRange(location: max(0, tv.text.utf16.count - 1), length: 1); tv.scrollRangeToVisible(end)
   }
 
-  private func addCaseResult(name: String, optimized: Double) {
-    caseResults.append((name: name, optimized: optimized)); renderResults()
+  private func addCaseResult(name: String, seconds: Double) {
+    caseResults.append((name: name, seconds: seconds)); renderResults()
   }
 
   private func renderResults() {
@@ -257,19 +215,19 @@ final class PerformanceViewController: UIViewController {
     let normalAttrs: [NSAttributedString.Key: Any] = [.font: mono, .foregroundColor: UIColor.label]
     let boldAttrs: [NSAttributedString.Key: Any] = [.font: bold, .foregroundColor: UIColor.label]
     let out = NSMutableAttributedString()
-    let header = "📊 Lexical iOS Reconciler Benchmarks — \(DateFormatter.localizedString(from: Date(), dateStyle: .medium, timeStyle: .medium))\n\n"
+    let header = "Lexical iOS Reconciler Benchmarks — \(DateFormatter.localizedString(from: Date(), dateStyle: .medium, timeStyle: .medium))\n\n"
     out.append(NSAttributedString(string: header, attributes: boldAttrs))
-    let headerLine = fixed("Test", 26) + "  " + fixed("Optimized", 12) + "\n"
+    let headerLine = fixed("Test", 26) + "  " + fixed("Time", 12) + "\n"
     out.append(NSAttributedString(string: headerLine, attributes: boldAttrs))
     out.append(NSAttributedString(string: String(repeating: "-", count: 42) + "\n", attributes: normalAttrs))
     for row in caseResults {
-      let lineStr = fixed(row.name, 26) + "  " + fixed(format(ms: row.optimized*1000), 12) + "\n"
+      let lineStr = fixed(row.name, 26) + "  " + fixed(format(ms: row.seconds * 1000), 12) + "\n"
       out.append(NSAttributedString(string: lineStr, attributes: normalAttrs))
     }
     if !caseResults.isEmpty {
-      let avgOpt = caseResults.map { $0.optimized }.reduce(0,+) / Double(caseResults.count)
+      let avg = caseResults.map { $0.seconds }.reduce(0, +) / Double(caseResults.count)
       out.append(NSAttributedString(string: "\n", attributes: normalAttrs))
-      let avgLine = "Average: optimized=\(format(ms: avgOpt*1000))"
+      let avgLine = "Average: \(format(ms: avg * 1000))"
       out.append(NSAttributedString(string: avgLine, attributes: boldAttrs))
     }
     tv.attributedText = out
@@ -277,30 +235,30 @@ final class PerformanceViewController: UIViewController {
   }
 
   private func setProgress(_ s: String) { progressLabel?.text = s }
-  private func setOptimizedStatus(_ s: String) { optimizedStatus?.text = s }
+  private func setStatus(_ s: String) { statusLabel?.text = s }
 
   private func runCase(_ name: String, operation: @escaping (LexicalView) throws -> Void) async -> Double {
-    guard let optimizedView else { return 0 }
-    _ = rebuildOptimizedView()
-    if let ov = self.optimizedView { await generate(paragraphs: Self.paragraphCount, in: ov) }
+    guard let editorView else { return 0 }
+    _ = rebuildEditorView()
+    if let v = self.editorView { await generate(paragraphs: Self.paragraphCount, in: v) }
     setProgress("Running \(name) …")
-    let optimized = await measure(iterations: Self.iterationsPerTest) { try? operation(optimizedView) }
-    setOptimizedStatus("\(name): \(format(ms: optimized * 1000))")
-    addCaseResult(name: name, optimized: optimized)
-    return optimized
+    let seconds = await measure(iterations: Self.iterationsPerTest) { try? operation(editorView) }
+    setStatus("\(name): \(format(ms: seconds * 1000))")
+    addCaseResult(name: name, seconds: seconds)
+    return seconds
   }
 
   private func format(ms: Double) -> String { String(format: "%.1fms", ms) }
 
   private func runWarmUp() async {
     setProgress("Warming up…")
-    _ = rebuildOptimizedView()
-    if let ov = optimizedView { await generate(paragraphs: 10, in: ov) }
+    _ = rebuildEditorView()
+    if let v = editorView { await generate(paragraphs: 10, in: v) }
   }
 
   private func runAllBenchmarks(resetResults: Bool = false) async {
     if resetResults { resultsText?.text = "" }
-    appendResultLine("📊 Lexical iOS Reconciler Benchmarks — \(Date())")
+    appendResultLine("Lexical iOS Reconciler Benchmarks — \(Date())")
     setButtonsEnabled(false); spinner?.startAnimating()
 
     await runWarmUp()
@@ -310,7 +268,7 @@ final class PerformanceViewController: UIViewController {
     if Task.isCancelled { await MainActor.run { self.spinner?.stopAnimating(); self.setButtonsEnabled(true) }; return }
     let gen = await measureGenerate("Generate")
     totals.append(("Generate \(Self.paragraphCount) paragraphs", gen))
-    addCaseResult(name: "Generate \(Self.paragraphCount) paragraphs", optimized: gen)
+    addCaseResult(name: "Generate \(Self.paragraphCount) paragraphs", seconds: gen)
 
     // Core reconciliation cases
     if Task.isCancelled { await MainActor.run { self.spinner?.stopAnimating(); self.setButtonsEnabled(true) }; return }
@@ -357,11 +315,11 @@ final class PerformanceViewController: UIViewController {
     }
     totals.append(("Format change", r4))
 
-    let avgOpt = totals.map { $0.1 }.reduce(0, +) / Double(totals.count)
-    appendResultLine("\nAverage: optimized=\(format(ms: avgOpt*1000))")
+    let avg = totals.map { $0.1 }.reduce(0, +) / Double(totals.count)
+    appendResultLine("\nAverage: \(format(ms: avg * 1000))")
 
     if !Task.isCancelled {
-      setProgress("✅ Benchmarks complete. Use 'Copy Results'.")
+      setProgress("Benchmarks complete. Use 'Copy Results'.")
     }
     spinner?.stopAnimating(); setButtonsEnabled(true)
   }
@@ -370,25 +328,25 @@ final class PerformanceViewController: UIViewController {
     var times: [Double] = []
     for _ in 0..<Self.iterationsPerTest {
       if Task.isCancelled { break }
-      _ = rebuildOptimizedView()
-      let view = self.optimizedView
+      _ = rebuildEditorView()
+      let view = self.editorView
       let start = CFAbsoluteTimeGetCurrent()
       if let v = view { try? self.generateSync(paragraphs: Self.paragraphCount, in: v) }
       let end = CFAbsoluteTimeGetCurrent(); times.append(end - start)
       await Task.yield()
     }
     let t = (times.sorted())[times.count/2]
-    setOptimizedStatus("\(label): \(format(ms: t*1000))")
+    setStatus("\(label): \(format(ms: t * 1000))")
     return t
   }
 
   // MARK: - Helpers
-  private func rebuildOptimizedView() -> LexicalView? {
-    guard let container = optimizedContainerRef else { return nil }
-    optimizedView?.removeFromSuperview()
-    let flags = activeOptimizedFlags
-    optimizedMetrics.resetMetrics()
-    let cfg = EditorConfig(theme: makeBenchTheme(), plugins: [], metricsContainer: optimizedMetrics)
+  private func rebuildEditorView() -> LexicalView? {
+    guard let container = editorContainerRef else { return nil }
+    editorView?.removeFromSuperview()
+    let flags = activeFlags
+    metrics.resetMetrics()
+    let cfg = EditorConfig(theme: makeBenchTheme(), plugins: [], metricsContainer: metrics)
     let v = LexicalView(editorConfig: cfg, featureFlags: flags)
     v.translatesAutoresizingMaskIntoConstraints = false
     container.addSubview(v)
@@ -398,7 +356,7 @@ final class PerformanceViewController: UIViewController {
       v.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 6),
       v.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -6)
     ])
-    optimizedView = v; return v
+    editorView = v; return v
   }
 
   private func makeBenchTheme() -> Theme {

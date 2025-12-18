@@ -14,7 +14,7 @@ final class RapidTypingCaretLayoutTests: XCTestCase {
 
   func testCaretLayoutDoesNotLagAfterRapidInsertText_ModernOptimizations() throws {
     let cfg = EditorConfig(theme: Theme(), plugins: [])
-    let view = TestEditorView(editorConfig: cfg, featureFlags: FeatureFlags.optimizedProfile(.aggressiveEditor))
+    let view = TestEditorView(editorConfig: cfg, featureFlags: FeatureFlags())
     // Use a wide view to keep everything on one line so caret X should move monotonically.
     view.view.frame = CGRect(x: 0, y: 0, width: 2000, height: 200)
     view.view.layoutIfNeeded()

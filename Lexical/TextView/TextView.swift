@@ -81,19 +81,9 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
     let adjustedFlags = FeatureFlags(
       reconcilerSanityCheck: reconcilerSanityCheck,
       proxyTextViewInputDelegate: featureFlags.proxyTextViewInputDelegate,
-      useOptimizedReconciler: true,
-      useReconcilerFenwickDelta: featureFlags.useReconcilerFenwickDelta,
-      useReconcilerKeyedDiff: featureFlags.useReconcilerKeyedDiff,
-      useReconcilerBlockRebuild: featureFlags.useReconcilerBlockRebuild,
-      useOptimizedReconcilerStrictMode: featureFlags.useOptimizedReconcilerStrictMode,
-      useReconcilerFenwickCentralAggregation: featureFlags.useReconcilerFenwickCentralAggregation,
-      useReconcilerShadowCompare: featureFlags.useReconcilerShadowCompare,
-      useReconcilerInsertBlockFenwick: featureFlags.useReconcilerInsertBlockFenwick,
-      useReconcilerDeleteBlockFenwick: featureFlags.useReconcilerDeleteBlockFenwick,
-      useReconcilerPrePostAttributesOnly: featureFlags.useReconcilerPrePostAttributesOnly,
+      reconcilerStrictMode: featureFlags.reconcilerStrictMode,
       useModernTextKitOptimizations: featureFlags.useModernTextKitOptimizations,
-      verboseLogging: featureFlags.verboseLogging,
-      prePostAttrsOnlyMaxTargets: featureFlags.prePostAttrsOnlyMaxTargets
+      verboseLogging: featureFlags.verboseLogging
     )
 
     editor = Editor(

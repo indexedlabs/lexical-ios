@@ -209,6 +209,6 @@ func createOptimizedTestEditorView(
 ) -> TestEditorView {
   return TestEditorView(
     editorConfig: EditorConfig(theme: theme, plugins: plugins),
-    featureFlags: FeatureFlags.optimizedProfile(.aggressiveEditor)
+    featureFlags: FeatureFlags()
   )
 }

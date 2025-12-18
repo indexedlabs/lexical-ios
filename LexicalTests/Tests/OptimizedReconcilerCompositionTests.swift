@@ -8,19 +8,11 @@ import XCTest
 @MainActor
 final class OptimizedReconcilerCompositionTests: XCTestCase {
 
-  private func makeStrictOptimizedContext() -> (editor: Editor, ctx: any ReadOnlyTextKitContextProtocol) {
-    let flags = FeatureFlags(
-      reconcilerSanityCheck: false,
-      proxyTextViewInputDelegate: false,
-      useOptimizedReconciler: true,
-      useReconcilerFenwickDelta: true,
-      useReconcilerKeyedDiff: true,
-      useReconcilerBlockRebuild: true,
-      useOptimizedReconcilerStrictMode: true
-    )
-    let ctx = makeReadOnlyContext(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: flags)
-    return (ctx.editor, ctx)
-  }
+	  private func makeStrictOptimizedContext() -> (editor: Editor, ctx: any ReadOnlyTextKitContextProtocol) {
+	    let flags = FeatureFlags(reconcilerStrictMode: true)
+	    let ctx = makeReadOnlyContext(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: flags)
+	    return (ctx.editor, ctx)
+	  }
 
   #if !os(macOS) || targetEnvironment(macCatalyst)
   // This test uses onInsertTextFromUITextView which is UIKit-specific
@@ -57,17 +49,9 @@ final class OptimizedReconcilerCompositionTests: XCTestCase {
   }
   #endif
 
-  func testCompositionEndUnmarksAndKeepsText() throws {
-    let flags = FeatureFlags(
-      reconcilerSanityCheck: false,
-      proxyTextViewInputDelegate: false,
-      useOptimizedReconciler: true,
-      useReconcilerFenwickDelta: true,
-      useReconcilerKeyedDiff: true,
-      useReconcilerBlockRebuild: true,
-      useOptimizedReconcilerStrictMode: true
-    )
-    let testView = TestEditorView(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: flags)
+	  func testCompositionEndUnmarksAndKeepsText() throws {
+	    let flags = FeatureFlags(reconcilerStrictMode: true)
+	    let testView = TestEditorView(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: flags)
 
     try testView.editor.update {
       guard let root = getRoot() else { return }
@@ -80,29 +64,21 @@ final class OptimizedReconcilerCompositionTests: XCTestCase {
     testView.setSelectedRange(NSRange(location: len, length: 0))
     testView.setMarkedText("漢", selectedRange: NSRange(location: 1, length: 0))
     testView.setMarkedText("漢字", selectedRange: NSRange(location: 2, length: 0))
-    testView.unmarkText()
+	    testView.unmarkText()
 
-    let final = testView.attributedTextString
-    XCTAssertEqual(final.trimmingCharacters(in: .newlines), "Hello漢字")
+	    let final = testView.attributedTextString
+	    XCTAssertEqual(final.trimmingCharacters(in: CharacterSet.newlines), "Hello漢字")
     #if !os(macOS) || targetEnvironment(macCatalyst)
     // On UIKit, we can verify the marked text is cleared
     XCTAssertFalse(testView.hasMarkedText)
     #endif
   }
 
-  func testCompositionEmojiGraphemeCluster() throws {
+	  func testCompositionEmojiGraphemeCluster() throws {
     // Validate that composing a multi-scalar emoji preserves grapheme integrity
     // Example: thumbs up + medium skin tone modifier
-    let flags = FeatureFlags(
-      reconcilerSanityCheck: false,
-      proxyTextViewInputDelegate: false,
-      useOptimizedReconciler: true,
-      useReconcilerFenwickDelta: true,
-      useReconcilerKeyedDiff: true,
-      useReconcilerBlockRebuild: true,
-      useOptimizedReconcilerStrictMode: true
-    )
-    let testView = TestEditorView(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: flags)
+	    let flags = FeatureFlags(reconcilerStrictMode: true)
+	    let testView = TestEditorView(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: flags)
 
     try testView.editor.update {
       guard let root = getRoot() else { return }
@@ -119,24 +95,16 @@ final class OptimizedReconcilerCompositionTests: XCTestCase {
     // Update composition to 👍🏽 (adds skin tone modifier)
     testView.setMarkedText("👍🏽", selectedRange: NSRange(location: 2, length: 0))
     // End composition
-    testView.unmarkText()
+	    testView.unmarkText()
 
-    let final = testView.attributedTextString
-    XCTAssertEqual(final.trimmingCharacters(in: .newlines), "Hello👍🏽")
-  }
+	    let final = testView.attributedTextString
+	    XCTAssertEqual(final.trimmingCharacters(in: CharacterSet.newlines), "Hello👍🏽")
+	  }
 
-  func testCompositionEmojiZWJFamilyCluster() throws {
-    // Validate composing a ZWJ family emoji (multiple emoji joined by U+200D)
-    let flags = FeatureFlags(
-      reconcilerSanityCheck: false,
-      proxyTextViewInputDelegate: false,
-      useOptimizedReconciler: true,
-      useReconcilerFenwickDelta: true,
-      useReconcilerKeyedDiff: true,
-      useReconcilerBlockRebuild: true,
-      useOptimizedReconcilerStrictMode: true
-    )
-    let testView = TestEditorView(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: flags)
+	  func testCompositionEmojiZWJFamilyCluster() throws {
+	    // Validate composing a ZWJ family emoji (multiple emoji joined by U+200D)
+	    let flags = FeatureFlags(reconcilerStrictMode: true)
+	    let testView = TestEditorView(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: flags)
 
     try testView.editor.update {
       guard let root = getRoot() else { return }
@@ -153,9 +121,9 @@ final class OptimizedReconcilerCompositionTests: XCTestCase {
 
     testView.setMarkedText(base, selectedRange: NSRange(location: base.lengthAsNSString(), length: 0))
     testView.setMarkedText(family, selectedRange: NSRange(location: family.lengthAsNSString(), length: 0))
-    testView.unmarkText()
+	    testView.unmarkText()
 
-    let final = testView.attributedTextString
-    XCTAssertEqual(final.trimmingCharacters(in: .newlines), "Hello\(family)")
-  }
+	    let final = testView.attributedTextString
+	    XCTAssertEqual(final.trimmingCharacters(in: CharacterSet.newlines), "Hello\(family)")
+	  }
 }

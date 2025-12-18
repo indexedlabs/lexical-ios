@@ -10,7 +10,7 @@ final class RangeCachePointMappingAfterEditsParityTests: XCTestCase {
 
   private func makeEditors() -> (opt: Editor, leg: Editor, o: any ReadOnlyTextKitContextProtocol, l: any ReadOnlyTextKitContextProtocol) {
     let cfg = EditorConfig(theme: Theme(), plugins: [])
-    let o = makeReadOnlyContext(editorConfig: cfg, featureFlags: FeatureFlags.optimizedProfile(.aggressiveEditor))
+    let o = makeReadOnlyContext(editorConfig: cfg, featureFlags: FeatureFlags())
     let l = makeReadOnlyContext(editorConfig: cfg, featureFlags: FeatureFlags())
     return (o.editor, l.editor, o, l)
   }

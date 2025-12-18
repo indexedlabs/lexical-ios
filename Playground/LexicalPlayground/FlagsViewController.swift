@@ -8,7 +8,7 @@
 import UIKit
 
 final class FlagsViewController: UITableViewController {
-  private enum Section: Int, CaseIterable { case reconciler, fenwick, misc }
+  private enum Section: Int, CaseIterable { case reconciler, input, diagnostics }
   private struct Row { let title: String; let keyPath: WritableKeyPath<FlagsStore, Bool> }
   private var sections: [[Row]] = []
 
@@ -24,20 +24,16 @@ final class FlagsViewController: UITableViewController {
       // Reconciler
       [
         Row(title: "Strict Mode", keyPath: \.strict),
-        Row(title: "Keyed Diff (reorder)", keyPath: \.keyedDiff),
-        Row(title: "Block Rebuild", keyPath: \.blockRebuild),
-        Row(title: "Shadow Compare (debug)", keyPath: \.shadowCompare),
-      ],
-      // Fenwick
-      [
-        Row(title: "Fenwick Delta (locations)", keyPath: \.fenwickDelta),
-        Row(title: "Central Aggregation", keyPath: \.centralAgg),
-        Row(title: "Insert-Block Fenwick", keyPath: \.insertBlockFenwick),
-      ],
-      // Misc
-      [
         Row(title: "Reconciler Sanity Check", keyPath: \.sanityCheck),
+      ],
+      // Input / TextKit
+      [
         Row(title: "Proxy InputDelegate", keyPath: \.proxyInputDelegate),
+        Row(title: "Modern TextKit Optimizations", keyPath: \.modernTextKit),
+      ],
+      // Diagnostics
+      [
+        Row(title: "Verbose Logging", keyPath: \.verboseLogging),
       ]
     ]
   }
@@ -47,8 +43,8 @@ final class FlagsViewController: UITableViewController {
   override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
     switch Section(rawValue: section)! {
     case .reconciler: return "Reconciler"
-    case .fenwick: return "Fenwick / Locations"
-    case .misc: return "Misc"
+    case .input: return "Input / TextKit"
+    case .diagnostics: return "Diagnostics"
     }
   }
 

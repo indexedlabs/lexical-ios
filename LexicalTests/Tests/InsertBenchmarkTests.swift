@@ -64,10 +64,7 @@ final class InsertBenchmarkTests: XCTestCase {
   func testInsertBenchmarksQuick() throws {
     // Quick smoke perf (kept small to avoid long CI runs); detailed runs live in Playground Perf tab.
     let variations: [Variation] = [
-      .init(name: "Optimized (base)", flags: FeatureFlags(useOptimizedReconciler: true, useReconcilerFenwickDelta: true, useOptimizedReconcilerStrictMode: true)),
-      .init(name: "+ Central Aggregation", flags: FeatureFlags(useOptimizedReconciler: true, useReconcilerFenwickDelta: true, useOptimizedReconcilerStrictMode: true, useReconcilerFenwickCentralAggregation: true)),
-      .init(name: "+ Insert-Block Fenwick", flags: FeatureFlags(useOptimizedReconciler: true, useReconcilerFenwickDelta: true, useOptimizedReconcilerStrictMode: true, useReconcilerFenwickCentralAggregation: true, useReconcilerInsertBlockFenwick: true)),
-      .init(name: "All toggles", flags: FeatureFlags(useOptimizedReconciler: true, useReconcilerFenwickDelta: true, useReconcilerKeyedDiff: true, useReconcilerBlockRebuild: true, useOptimizedReconcilerStrictMode: true, useReconcilerFenwickCentralAggregation: true, useReconcilerShadowCompare: false, useReconcilerInsertBlockFenwick: true)),
+      .init(name: "default", flags: FeatureFlags(reconcilerStrictMode: true)),
     ]
 
     func runForPosition(_ pos: Position, label: String) throws {

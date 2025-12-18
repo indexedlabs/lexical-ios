@@ -19,12 +19,9 @@ final class SelectionMappingParityTests: XCTestCase {
     let theme = Theme(); let cfg = EditorConfig(theme: theme, plugins: [])
     let optFlags = FeatureFlags(
       reconcilerSanityCheck: false, proxyTextViewInputDelegate: false,
-      useOptimizedReconciler: true, useReconcilerFenwickDelta: true,
-      useReconcilerKeyedDiff: true, useReconcilerBlockRebuild: true,
-      useOptimizedReconcilerStrictMode: true,
-      useReconcilerFenwickCentralAggregation: true
+      reconcilerStrictMode: true
     )
-    let legFlags = FeatureFlags(reconcilerSanityCheck: false, proxyTextViewInputDelegate: false, useOptimizedReconciler: false)
+    let legFlags = FeatureFlags(reconcilerSanityCheck: false, proxyTextViewInputDelegate: false, reconcilerStrictMode: true)
     let optCtx = makeReadOnlyContext(editorConfig: cfg, featureFlags: optFlags)
     let legCtx = makeReadOnlyContext(editorConfig: cfg, featureFlags: legFlags)
     return ((optCtx.editor, optCtx), (legCtx.editor, legCtx))

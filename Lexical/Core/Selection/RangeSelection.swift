@@ -1099,7 +1099,7 @@ public class RangeSelection: BaseSelection {
         return
       }
     }
-    // Optimized: pre-clamp a single grapheme (composed character) deletion when starting
+    // Pre-clamp a single grapheme (composed character) deletion when starting
     // from a collapsed caret. This avoids relying on native tokenizer behavior that may
     var didPreClampSingleChar = false
     if isBackwards && wasCollapsed,
@@ -1121,7 +1121,7 @@ public class RangeSelection: BaseSelection {
           let caret = anchor.offset
           if caret > 0, caret <= ns.length {
             let localClamp: NSRange
-            if editor.featureFlags.useOptimizedReconcilerStrictMode {
+            if editor.featureFlags.reconcilerStrictMode {
               // Previous Unicode scalar (handle surrogate pairs)
               let i = caret - 1
               if i >= 0 {
@@ -1160,7 +1160,7 @@ public class RangeSelection: BaseSelection {
             }
             if localClamp.length > 0 && localClamp.location != caret {
               focus.updatePoint(key: anchor.key, offset: localClamp.location, type: .text)
-              // Clamp structural fast paths in the optimized reconciler (one-shot)
+              // Clamp structural fast paths in the reconciler (one-shot)
               editor.pendingDeletionClampRange = NSRange(location: start - localClamp.length, length: localClamp.length)
               didPreClampSingleChar = true
             }
@@ -1182,7 +1182,7 @@ public class RangeSelection: BaseSelection {
 
         if !didPreClampSingleChar {
           let clamp: NSRange
-          if let ns = editor.textStorage?.string as NSString?, editor.featureFlags.useOptimizedReconcilerStrictMode {
+          if let ns = editor.textStorage?.string as NSString?, editor.featureFlags.reconcilerStrictMode {
           // Previous Unicode scalar (handle surrogate pairs)
           let i = start - 1
           if i >= 0 {
@@ -1393,7 +1393,7 @@ public class RangeSelection: BaseSelection {
         try modify(alter: .extend, isBackward: isBackwards, granularity: .character)
       }
 
-      // Clamp over-eager native selection expansions (observed with optimized reconciler
+      // Clamp over-eager native selection expansions (observed with reconciler
       // on fast backspaces after typing a new word). If selection started collapsed and
       // the native tokenizer expanded to more than one character (e.g., a whole word),
       // force a single-character deletion to mirror legacy behavior.
@@ -1414,7 +1414,7 @@ public class RangeSelection: BaseSelection {
 	          if len > 1, !includesAttachment {
 	            // Clamp to either a single code unit (strict parity) or the full grapheme cluster
 	            var clamp = NSRange(location: 0, length: 0)
-	            if editor.featureFlags.useOptimizedReconcilerStrictMode {
+	            if editor.featureFlags.reconcilerStrictMode {
 	              let loc = isBackwards ? max(0, start - 1) : start
 	              clamp = NSRange(location: loc, length: 1)
 	            } else if let ns = editor.textStorage?.string as NSString? {
@@ -1425,7 +1425,7 @@ public class RangeSelection: BaseSelection {
 	              }
 	            }
 	            try applySelectionRange(clamp, affinity: isBackwards ? .backward : .forward)
-	            // Additionally clamp structural fast paths in the optimized reconciler (one‑shot)
+	            // Additionally clamp structural fast paths in the reconciler (one‑shot)
 	            editor.pendingDeletionClampRange = clamp
 	          }
 	          }

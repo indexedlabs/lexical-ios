@@ -70,7 +70,7 @@ class InlineImageTests: XCTestCase {
   func testConsecutiveImagesMountAndDeleteSequence_Optimized() throws {
     let v = LexicalView(
       editorConfig: EditorConfig(theme: Theme(), plugins: [InlineImagePlugin()]),
-      featureFlags: FeatureFlags.optimizedProfile(.aggressiveEditor)
+      featureFlags: FeatureFlags()
     )
     v.frame = CGRect(x: 0, y: 0, width: 320, height: 200)
     let ed = v.editor
@@ -104,7 +104,7 @@ class InlineImageTests: XCTestCase {
   func testRangeDeleteSpanningTextAndImage_LexicalView() throws {
     let v = LexicalView(
       editorConfig: EditorConfig(theme: Theme(), plugins: [InlineImagePlugin()]),
-      featureFlags: FeatureFlags.optimizedProfile(.aggressiveEditor)
+      featureFlags: FeatureFlags()
     )
     v.frame = CGRect(x: 0, y: 0, width: 320, height: 200)
     let ed = v.editor
@@ -131,7 +131,7 @@ class InlineImageTests: XCTestCase {
   func testForwardDeleteMergesNextParagraphStartingWithImage() throws {
     let v = LexicalView(
       editorConfig: EditorConfig(theme: Theme(), plugins: [InlineImagePlugin()]),
-      featureFlags: FeatureFlags.optimizedProfile(.aggressiveEditor)
+      featureFlags: FeatureFlags()
     )
     v.frame = CGRect(x: 0, y: 0, width: 320, height: 200)
     let ed = v.editor
@@ -162,7 +162,7 @@ class InlineImageTests: XCTestCase {
   func testBackspaceDeletesOnlyImageKeepsCaretSelection() throws {
     let v = LexicalView(
       editorConfig: EditorConfig(theme: Theme(), plugins: [InlineImagePlugin()]),
-      featureFlags: FeatureFlags.optimizedProfile(.aggressiveEditor)
+      featureFlags: FeatureFlags()
     )
     v.frame = CGRect(x: 0, y: 0, width: 320, height: 200)
     let ed = v.editor
@@ -205,7 +205,7 @@ class InlineImageTests: XCTestCase {
   func testBackspaceMergesPrevParagraphEndingWithImage() throws {
     let v = LexicalView(
       editorConfig: EditorConfig(theme: Theme(), plugins: [InlineImagePlugin()]),
-      featureFlags: FeatureFlags.optimizedProfile(.aggressiveEditor)
+      featureFlags: FeatureFlags()
     )
     v.frame = CGRect(x: 0, y: 0, width: 320, height: 200)
     let ed = v.editor
@@ -233,7 +233,7 @@ class InlineImageTests: XCTestCase {
 
   func testInsertNewlineBeforeImage_SplitsParagraphAndKeepsImage() throws {
     // Use headless context to avoid UI/editor selection quirks
-    let ctx = LexicalReadOnlyTextKitContext(editorConfig: EditorConfig(theme: Theme(), plugins: [InlineImagePlugin()]), featureFlags: FeatureFlags.optimizedProfile(.aggressiveEditor))
+    let ctx = LexicalReadOnlyTextKitContext(editorConfig: EditorConfig(theme: Theme(), plugins: [InlineImagePlugin()]), featureFlags: FeatureFlags())
     let ed = ctx.editor
     var imageKey: NodeKey!
     try ed.update {
@@ -270,7 +270,7 @@ class InlineImageTests: XCTestCase {
   func testCaretAfterImageBackspace_LandsAtCorrectOffset() throws {
     let v = LexicalView(
       editorConfig: EditorConfig(theme: Theme(), plugins: [InlineImagePlugin()]),
-      featureFlags: FeatureFlags.optimizedProfile(.aggressiveEditor)
+      featureFlags: FeatureFlags()
     )
     v.frame = CGRect(x: 0, y: 0, width: 320, height: 200)
     let ed = v.editor
@@ -299,7 +299,7 @@ class InlineImageTests: XCTestCase {
   func testMultipleImagesMountImmediatelyAtStartMiddleEnd_Optimized() throws {
     let v = LexicalView(
       editorConfig: EditorConfig(theme: Theme(), plugins: [InlineImagePlugin()]),
-      featureFlags: FeatureFlags.optimizedProfile(.aggressiveEditor)
+      featureFlags: FeatureFlags()
     )
     v.frame = CGRect(x: 0, y: 0, width: 320, height: 400)
     let ed = v.editor
@@ -333,7 +333,7 @@ class InlineImageTests: XCTestCase {
   func testBackspaceAfterImageDeletesImageOnly() throws {
     let v = LexicalView(
       editorConfig: EditorConfig(theme: Theme(), plugins: [InlineImagePlugin()]),
-      featureFlags: FeatureFlags.optimizedProfile(.aggressiveEditor)
+      featureFlags: FeatureFlags()
     )
     v.frame = CGRect(x: 0, y: 0, width: 320, height: 200)
     let ed = v.editor
@@ -357,7 +357,7 @@ class InlineImageTests: XCTestCase {
   func testForwardDeleteBeforeImageDeletesImageOnly() throws {
     let v = LexicalView(
       editorConfig: EditorConfig(theme: Theme(), plugins: [InlineImagePlugin()]),
-      featureFlags: FeatureFlags.optimizedProfile(.aggressiveEditor)
+      featureFlags: FeatureFlags()
     )
     v.frame = CGRect(x: 0, y: 0, width: 320, height: 200)
     let ed = v.editor
@@ -384,7 +384,7 @@ class InlineImageTests: XCTestCase {
     // Use optimized reconciler so insert-block fast path runs
     let optimizedView = LexicalView(
       editorConfig: EditorConfig(theme: Theme(), plugins: [InlineImagePlugin()]),
-      featureFlags: FeatureFlags.optimizedProfile(.aggressiveEditor)
+      featureFlags: FeatureFlags()
     )
     optimizedView.frame = CGRect(x: 0, y: 0, width: 320, height: 400)
     let editor = optimizedView.editor
@@ -417,7 +417,7 @@ class InlineImageTests: XCTestCase {
   func testImageMountsImmediatelyAtStartOfSecondParagraph_AfterTextNewline() throws {
     let v = LexicalView(
       editorConfig: EditorConfig(theme: Theme(), plugins: [InlineImagePlugin()]),
-      featureFlags: FeatureFlags.optimizedProfile(.aggressiveEditor)
+      featureFlags: FeatureFlags()
     )
     v.frame = CGRect(x: 0, y: 0, width: 320, height: 200)
     let ed = v.editor
@@ -446,7 +446,7 @@ class InlineImageTests: XCTestCase {
     // Optimized reconciler; do NOT draw. We assert internal caches are correct immediately.
     let v = LexicalView(
       editorConfig: EditorConfig(theme: Theme(), plugins: [InlineImagePlugin()]),
-      featureFlags: FeatureFlags.optimizedProfile(.aggressiveEditor)
+      featureFlags: FeatureFlags()
     )
     v.frame = CGRect(x: 0, y: 0, width: 320, height: 200)
     let ed = v.editor
@@ -475,7 +475,7 @@ class InlineImageTests: XCTestCase {
     // Insert two images in one pass; both should mount and be positioned.
     let v = LexicalView(
       editorConfig: EditorConfig(theme: Theme(), plugins: [InlineImagePlugin()]),
-      featureFlags: FeatureFlags.optimizedProfile(.aggressiveEditor)
+      featureFlags: FeatureFlags()
     )
     v.frame = CGRect(x: 0, y: 0, width: 320, height: 240)
     let ed = v.editor
@@ -504,7 +504,7 @@ class InlineImageTests: XCTestCase {
   func testImageInsertAtEndOfDocument_NoDraw_PositionCache() throws {
     let v = LexicalView(
       editorConfig: EditorConfig(theme: Theme(), plugins: [InlineImagePlugin()]),
-      featureFlags: FeatureFlags.optimizedProfile(.aggressiveEditor)
+      featureFlags: FeatureFlags()
     )
     v.frame = CGRect(x: 0, y: 0, width: 320, height: 200)
     let ed = v.editor

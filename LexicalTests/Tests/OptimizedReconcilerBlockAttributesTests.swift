@@ -18,12 +18,7 @@ final class OptimizedReconcilerBlockAttributesTests: XCTestCase {
     let flags = FeatureFlags(
       reconcilerSanityCheck: false,
       proxyTextViewInputDelegate: false,
-      useOptimizedReconciler: true,
-      useReconcilerFenwickDelta: true,
-      useReconcilerKeyedDiff: true,
-      useReconcilerBlockRebuild: true,
-      useOptimizedReconcilerStrictMode: true,
-      useReconcilerShadowCompare: false
+      reconcilerStrictMode: true
     )
     let view = LexicalView(editorConfig: cfg, featureFlags: flags)
     return (view, flags)

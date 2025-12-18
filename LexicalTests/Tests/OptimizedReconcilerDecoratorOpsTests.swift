@@ -7,18 +7,10 @@ import XCTest
 @MainActor
 final class OptimizedReconcilerDecoratorOpsTests: XCTestCase {
 
-  func makeReadOnlyContext() -> LexicalReadOnlyTextKitContext {
-    let flags = FeatureFlags(
-      reconcilerSanityCheck: false,
-      proxyTextViewInputDelegate: false,
-      useOptimizedReconciler: true,
-      useReconcilerFenwickDelta: true,
-      useReconcilerKeyedDiff: true,
-      useReconcilerBlockRebuild: true,
-      useOptimizedReconcilerStrictMode: true
-    )
-    return LexicalReadOnlyTextKitContext(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: flags)
-  }
+	  func makeReadOnlyContext() -> LexicalReadOnlyTextKitContext {
+	    let flags = FeatureFlags(reconcilerStrictMode: true)
+	    return LexicalReadOnlyTextKitContext(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: flags)
+	  }
 
   func testDecoratorAddSetsNeedsCreationAndPosition() throws {
     let ctx = makeReadOnlyContext()

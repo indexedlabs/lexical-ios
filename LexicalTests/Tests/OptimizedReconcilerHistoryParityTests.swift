@@ -19,7 +19,7 @@ final class OptimizedReconcilerHistoryParityTests: XCTestCase {
   private func makeEditorsWithHistory() -> (opt: (Editor, any ReadOnlyTextKitContextProtocol), leg: (Editor, any ReadOnlyTextKitContextProtocol)) {
     let cfgOpt = EditorConfig(theme: Theme(), plugins: [EditorHistoryPlugin()])
     let cfgLeg = EditorConfig(theme: Theme(), plugins: [EditorHistoryPlugin()])
-    let optFlags = FeatureFlags.optimizedProfile(.aggressiveEditor)
+    let optFlags = FeatureFlags()
     let legFlags = FeatureFlags()
     let opt = makeReadOnlyContext(editorConfig: cfgOpt, featureFlags: optFlags)
     let leg = makeReadOnlyContext(editorConfig: cfgLeg, featureFlags: legFlags)

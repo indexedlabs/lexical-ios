@@ -15,7 +15,7 @@ import XCTest
 final class OptimizedReconcilerLiveEditingTests: XCTestCase {
 
   private func makeOptimizedEditor() -> (Editor, any ReadOnlyTextKitContextProtocol) {
-    let flags = FeatureFlags.optimizedProfile(.aggressiveEditor)
+    let flags = FeatureFlags()
     let ctx = makeReadOnlyContext(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: flags)
     return (ctx.editor, ctx)
   }

@@ -27,11 +27,7 @@ final class ReconcilerBenchmarkTests: XCTestCase {
     let optFlags = FeatureFlags(
       reconcilerSanityCheck: false,
       proxyTextViewInputDelegate: false,
-      useOptimizedReconciler: true,
-      useReconcilerFenwickDelta: true,
-      useReconcilerKeyedDiff: true,
-      useReconcilerBlockRebuild: true,
-      useOptimizedReconcilerStrictMode: true
+      reconcilerStrictMode: true
     )
     let optMetrics = TestMetricsContainer()
     let optCtx = makeReadOnlyContext(
@@ -42,7 +38,7 @@ final class ReconcilerBenchmarkTests: XCTestCase {
     let legFlags = FeatureFlags(
       reconcilerSanityCheck: false,
       proxyTextViewInputDelegate: false,
-      useOptimizedReconciler: false
+      reconcilerStrictMode: true
     )
     let legMetrics = TestMetricsContainer()
     let legCtx = makeReadOnlyContext(

@@ -21,8 +21,7 @@ class ViewController: UIViewController, UIToolbarDelegate {
   private let debugPanelVisibilityKey = "debugPanelVisible"
   private var isDebugPanelVisible: Bool = true
   private var featuresBarButton: UIBarButtonItem!
-  private var activeOptimizedFlags: FeatureFlags = FeatureFlags.optimizedProfile(.aggressiveEditor)
-  private var activeProfile: FeatureFlags.OptimizedProfile = .aggressiveEditor
+  private var activeFlags: FeatureFlags = FlagsStore.shared.makeFeatureFlags()
 
   override func viewDidLoad() {
     super.viewDidLoad()
@@ -30,7 +29,7 @@ class ViewController: UIViewController, UIToolbarDelegate {
 
     isDebugPanelVisible = UserDefaults.standard.object(forKey: debugPanelVisibilityKey) as? Bool ?? true
 
-    // Always use the optimized reconciler in the Playground.
+    // Always use the single reconciler in the Playground.
     rebuildEditor()
     // Clear persisted state for debugging (start fresh with just an image)
     UserDefaults.standard.removeObject(forKey: editorStatePersistenceKey)
@@ -171,7 +170,7 @@ class ViewController: UIViewController, UIToolbarDelegate {
     theme.link = [ .foregroundColor: UIColor.systemBlue ]
 
     // Feature flags
-    let flags: FeatureFlags = activeOptimizedFlags
+    let flags: FeatureFlags = activeFlags
 
     let debugMetricsContainer = PlaygroundDebugMetricsContainer(onReconcilerRun: { [weak hierarchyPlugin] run in
       hierarchyPlugin?.logReconcilerRun(run)
@@ -199,73 +198,25 @@ class ViewController: UIViewController, UIToolbarDelegate {
     view.layoutIfNeeded()
   }
 
-  // MARK: - Features menu (optimized flags)
+  // MARK: - Features menu (flags)
   private func updateFeaturesMenu() {
-    func toggled(_ f: FeatureFlags, name: String) -> FeatureFlags {
-      let n = name
-      return FeatureFlags(
-        reconcilerSanityCheck: n == "sanity-check" ? !f.reconcilerSanityCheck : f.reconcilerSanityCheck,
-        proxyTextViewInputDelegate: n == "proxy-input-delegate" ? !f.proxyTextViewInputDelegate : f.proxyTextViewInputDelegate,
-        useOptimizedReconciler: true,
-        useReconcilerFenwickDelta: n == "fenwick-delta" ? !f.useReconcilerFenwickDelta : f.useReconcilerFenwickDelta,
-        useReconcilerKeyedDiff: n == "keyed-diff" ? !f.useReconcilerKeyedDiff : f.useReconcilerKeyedDiff,
-        useReconcilerBlockRebuild: n == "block-rebuild" ? !f.useReconcilerBlockRebuild : f.useReconcilerBlockRebuild,
-        useOptimizedReconcilerStrictMode: n == "strict-mode" ? !f.useOptimizedReconcilerStrictMode : f.useOptimizedReconcilerStrictMode,
-        useReconcilerFenwickCentralAggregation: n == "central-aggregation" ? !f.useReconcilerFenwickCentralAggregation : f.useReconcilerFenwickCentralAggregation,
-        useReconcilerShadowCompare: n == "shadow-compare" ? !f.useReconcilerShadowCompare : f.useReconcilerShadowCompare,
-        useReconcilerInsertBlockFenwick: n == "insert-block-fenwick" ? !f.useReconcilerInsertBlockFenwick : f.useReconcilerInsertBlockFenwick,
-        useReconcilerDeleteBlockFenwick: n == "delete-block-fenwick" ? !f.useReconcilerDeleteBlockFenwick : f.useReconcilerDeleteBlockFenwick,
-        useReconcilerPrePostAttributesOnly: n == "pre/post-attrs-only" ? !f.useReconcilerPrePostAttributesOnly : f.useReconcilerPrePostAttributesOnly,
-        useModernTextKitOptimizations: n == "modern-textkit" ? !f.useModernTextKitOptimizations : f.useModernTextKitOptimizations,
-        verboseLogging: n == "verbose-logging" ? !f.verboseLogging : f.verboseLogging,
-        prePostAttrsOnlyMaxTargets: f.prePostAttrsOnlyMaxTargets
-      )
-    }
-
     func coreToggle(_ name: String, _ isOn: Bool) -> UIAction {
       UIAction(title: name, state: isOn ? .on : .off, handler: { [weak self] _ in
         guard let self else { return }
-        self.activeOptimizedFlags = toggled(self.activeOptimizedFlags, name: name)
+        let store = FlagsStore.shared
+        switch name {
+        case "strict-mode": store.strict.toggle()
+        case "sanity-check": store.sanityCheck.toggle()
+        case "proxy-input-delegate": store.proxyInputDelegate.toggle()
+        case "modern-textkit": store.modernTextKit.toggle()
+        case "verbose-logging": store.verboseLogging.toggle()
+        default: break
+        }
+        self.activeFlags = store.makeFeatureFlags()
         self.updateFeaturesMenu()
         self.persistEditorState(); self.rebuildEditor(); self.restoreEditorState()
       })
     }
-
-    func setProfile(_ p: FeatureFlags.OptimizedProfile) {
-      activeProfile = p
-      var next = FeatureFlags.optimizedProfile(p)
-      // Preserve current threshold setting for live editor safety
-      next = FeatureFlags(
-        reconcilerSanityCheck: next.reconcilerSanityCheck,
-        proxyTextViewInputDelegate: next.proxyTextViewInputDelegate,
-        useOptimizedReconciler: next.useOptimizedReconciler,
-        useReconcilerFenwickDelta: next.useReconcilerFenwickDelta,
-        useReconcilerKeyedDiff: next.useReconcilerKeyedDiff,
-        useReconcilerBlockRebuild: next.useReconcilerBlockRebuild,
-        useOptimizedReconcilerStrictMode: next.useOptimizedReconcilerStrictMode,
-        useReconcilerFenwickCentralAggregation: next.useReconcilerFenwickCentralAggregation,
-        useReconcilerShadowCompare: next.useReconcilerShadowCompare,
-        useReconcilerInsertBlockFenwick: next.useReconcilerInsertBlockFenwick,
-        useReconcilerDeleteBlockFenwick: next.useReconcilerDeleteBlockFenwick,
-        useReconcilerPrePostAttributesOnly: next.useReconcilerPrePostAttributesOnly,
-        useModernTextKitOptimizations: next.useModernTextKitOptimizations,
-        verboseLogging: next.verboseLogging,
-        prePostAttrsOnlyMaxTargets: activeOptimizedFlags.prePostAttrsOnlyMaxTargets
-      )
-      activeOptimizedFlags = next
-      updateFeaturesMenu()
-      persistEditorState(); rebuildEditor(); restoreEditorState()
-    }
-
-    let profiles: [UIAction] = [
-      UIAction(title: "minimal", state: activeProfile == .minimal ? .on : .off, handler: { _ in setProfile(.minimal) }),
-      UIAction(title: "minimal (debug)", state: activeProfile == .minimalDebug ? .on : .off, handler: { _ in setProfile(.minimalDebug) }),
-      UIAction(title: "balanced", state: activeProfile == .balanced ? .on : .off, handler: { _ in setProfile(.balanced) }),
-      UIAction(title: "aggressive", state: activeProfile == .aggressive ? .on : .off, handler: { _ in setProfile(.aggressive) }),
-      UIAction(title: "aggressive (debug)", state: activeProfile == .aggressiveDebug ? .on : .off, handler: { _ in setProfile(.aggressiveDebug) }),
-      UIAction(title: "aggressive (editor)", state: activeProfile == .aggressiveEditor ? .on : .off, handler: { _ in setProfile(.aggressiveEditor) })
-    ]
-    let profileMenu = UIMenu(title: "Profile", options: .displayInline, children: profiles)
     let debugPanelToggle = UIAction(
       title: "Debug panel",
       state: isDebugPanelVisible ? .on : .off,
@@ -282,15 +233,13 @@ class ViewController: UIViewController, UIToolbarDelegate {
     )
     let debugMenu = UIMenu(title: "Debug", options: .displayInline, children: [debugPanelToggle])
     let toggles: [UIAction] = [
-      coreToggle("strict-mode", activeOptimizedFlags.useOptimizedReconcilerStrictMode),
-      coreToggle("pre/post-attrs-only", activeOptimizedFlags.useReconcilerPrePostAttributesOnly),
-      coreToggle("insert-block-fenwick", activeOptimizedFlags.useReconcilerInsertBlockFenwick),
-      coreToggle("delete-block-fenwick", activeOptimizedFlags.useReconcilerDeleteBlockFenwick),
-      coreToggle("central-aggregation", activeOptimizedFlags.useReconcilerFenwickCentralAggregation),
-      coreToggle("modern-textkit", activeOptimizedFlags.useModernTextKitOptimizations),
-      coreToggle("verbose-logging", activeOptimizedFlags.verboseLogging)
+      coreToggle("strict-mode", activeFlags.reconcilerStrictMode),
+      coreToggle("sanity-check", activeFlags.reconcilerSanityCheck),
+      coreToggle("proxy-input-delegate", activeFlags.proxyTextViewInputDelegate),
+      coreToggle("modern-textkit", activeFlags.useModernTextKitOptimizations),
+      coreToggle("verbose-logging", activeFlags.verboseLogging)
     ]
-    featuresBarButton.menu = UIMenu(title: "Optimized (profile=\(String(describing: activeProfile)))", children: [profileMenu, debugMenu] + toggles)
+    featuresBarButton.menu = UIMenu(title: "Features", children: [debugMenu] + toggles)
   }
 }
 

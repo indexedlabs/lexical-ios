@@ -1103,22 +1103,15 @@ public class Editor: NSObject {
             shouldReconcileSelection: !mode.suppressReconcilingSelection,
             markedTextOperation: mode.markedTextOperation
           )
-          if featureFlags.useReconcilerShadowCompare && compositionKey == nil {
-            shadowCompareOptimizedVsBaseline(
-              activeEditor: self,
-              currentEditorState: editorState,
-              pendingEditorState: pendingEditorState
-            )
-          }
         }
         #elseif os(macOS) && !targetEnvironment(macCatalyst)
-        // AppKit reconciliation path - use legacy Reconciler only (no optimized path yet)
+        // AppKit reconciliation path
         if !headless {
           // Prevent selection feedback during reconciliation
           frontendAppKit?.isUpdatingNativeSelection = true
           defer { frontendAppKit?.isUpdatingNativeSelection = false }
 
-          try Reconciler.updateEditorState(
+          try OptimizedReconciler.updateEditorState(
             currentEditorState: editorState,
             pendingEditorState: pendingEditorState,
             editor: self,

@@ -19,7 +19,7 @@ final class OptimizedReconcilerInlineImageParityTests: XCTestCase {
   private func makeEditors() -> (opt: (Editor, LexicalReadOnlyTextKitContext), leg: (Editor, LexicalReadOnlyTextKitContext)) {
     let imagePlugin = InlineImagePlugin()
     let cfg = EditorConfig(theme: Theme(), plugins: [imagePlugin])
-    let opt = LexicalReadOnlyTextKitContext(editorConfig: cfg, featureFlags: FeatureFlags.optimizedProfile(.aggressiveEditor))
+    let opt = LexicalReadOnlyTextKitContext(editorConfig: cfg, featureFlags: FeatureFlags())
     // Use plain legacy flags for baseline
     let leg = LexicalReadOnlyTextKitContext(editorConfig: EditorConfig(theme: Theme(), plugins: [InlineImagePlugin()]), featureFlags: FeatureFlags())
     return ((opt.editor, opt), (leg.editor, leg))

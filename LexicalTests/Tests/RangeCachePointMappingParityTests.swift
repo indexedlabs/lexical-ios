@@ -8,22 +8,17 @@ import XCTest
 @MainActor
 final class RangeCachePointMappingParityTests: XCTestCase {
 
-  private func makeEditors(centralAgg: Bool) -> (opt: Editor, leg: Editor, optCtx: any ReadOnlyTextKitContextProtocol, legCtx: any ReadOnlyTextKitContextProtocol) {
+  private func makeEditors() -> (opt: Editor, leg: Editor, optCtx: any ReadOnlyTextKitContextProtocol, legCtx: any ReadOnlyTextKitContextProtocol) {
     let cfg = EditorConfig(theme: Theme(), plugins: [])
     let optFlags = FeatureFlags(
       reconcilerSanityCheck: false,
       proxyTextViewInputDelegate: false,
-      useOptimizedReconciler: true,
-      useReconcilerFenwickDelta: true,
-      useReconcilerKeyedDiff: true,
-      useReconcilerBlockRebuild: true,
-      useOptimizedReconcilerStrictMode: true,
-      useReconcilerFenwickCentralAggregation: centralAgg
+      reconcilerStrictMode: true
     )
     let legFlags = FeatureFlags(
       reconcilerSanityCheck: false,
       proxyTextViewInputDelegate: false,
-      useOptimizedReconciler: false
+      reconcilerStrictMode: true
     )
     let optCtx = makeReadOnlyContext(editorConfig: cfg, featureFlags: optFlags)
     let legCtx = makeReadOnlyContext(editorConfig: cfg, featureFlags: legFlags)
@@ -31,7 +26,7 @@ final class RangeCachePointMappingParityTests: XCTestCase {
   }
 
   func testRoundTripAcrossAllLocations_Parity() throws {
-    let (opt, leg, optCtx, legCtx) = makeEditors(centralAgg: true); _ = optCtx; _ = legCtx
+    let (opt, leg, optCtx, legCtx) = makeEditors(); _ = optCtx; _ = legCtx
 
     // Build: Root -> [ P1("Hello"), P2("World") ]
     func build(on editor: Editor) throws {

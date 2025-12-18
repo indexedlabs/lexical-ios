@@ -63,7 +63,7 @@ final class OptimizedReconcilerTextFastPathTests: XCTestCase {
 
   func testOptimizedTextEdit_UsesTextOnlyFastPath() throws {
     let metrics = ReconcilerMetricsCollector()
-    let flags = FeatureFlags.optimizedProfile(.minimal)
+    let flags = FeatureFlags()
     let view = try makeView(flags: flags, metrics: metrics)
 
     let key = try buildSmallMixedDoc(editor: view.editor)
@@ -81,7 +81,7 @@ final class OptimizedReconcilerTextFastPathTests: XCTestCase {
 
   func testOptimizedInsertBlock_UsesInsertBlockFastPath_DoesNotGoSlow() throws {
     let metrics = ReconcilerMetricsCollector()
-    let flags = FeatureFlags.optimizedProfile(.minimal)
+    let flags = FeatureFlags()
     let view = try makeView(flags: flags, metrics: metrics)
 
     _ = try buildSmallMixedDoc(editor: view.editor)
@@ -108,11 +108,11 @@ final class OptimizedReconcilerTextFastPathTests: XCTestCase {
 
   func testOptimizedInsertBlock_Aggressive_EndMatchesLegacy_AfterMultipleAppends() throws {
     let optMetrics = ReconcilerMetricsCollector()
-    let optFlags = FeatureFlags.optimizedProfile(.aggressive)
+    let optFlags = FeatureFlags()
     let optView = try makeView(flags: optFlags, metrics: optMetrics)
 
     let legMetrics = ReconcilerMetricsCollector()
-    let legFlags = FeatureFlags(useOptimizedReconciler: false)
+    let legFlags = FeatureFlags()
     let legView = try makeView(flags: legFlags, metrics: legMetrics)
 
     _ = try buildSmallMixedDoc(editor: optView.editor)
@@ -161,11 +161,11 @@ final class OptimizedReconcilerTextFastPathTests: XCTestCase {
 
   func testOptimizedInsertBlock_Aggressive_EndMatchesLegacy_WhenLastBlockIsParagraphWithDecoratorPreamble() throws {
     let optMetrics = ReconcilerMetricsCollector()
-    let optFlags = FeatureFlags.optimizedProfile(.aggressive)
+    let optFlags = FeatureFlags()
     let optView = try makeView(flags: optFlags, metrics: optMetrics)
 
     let legMetrics = ReconcilerMetricsCollector()
-    let legFlags = FeatureFlags(useOptimizedReconciler: false)
+    let legFlags = FeatureFlags()
     let legView = try makeView(flags: legFlags, metrics: legMetrics)
 
     func buildDoc(editor: Editor) throws {

@@ -85,6 +85,14 @@ public class EditorHistory {
 
         editor.dispatchCommand(type: .canUndo, payload: true)
       } else if mergeAction == .discardHistoryCandidate {
+        // Discarding a candidate means "don't create an undo step", not "ignore the new state".
+        // Keep `current` in sync so subsequent edits undo back to the latest committed content.
+        historyState.current = HistoryStateEntry(
+          editor: editor,
+          editorState: editorState,
+          undoSelection: editorState.selection?.clone() as? RangeSelection
+        )
+        externalHistoryState = historyState
         return
       }
 
