@@ -9,20 +9,11 @@ import Foundation
 
 /// Global runtime defaults for Lexical.
 ///
-/// Use this switch to select whether newly created editors/views use the
-/// optimized reconciler (aggressiveEditor profile) or the legacy defaults.
-///
-/// Notes
-/// - This affects only instances created after the flag is changed. Existing
-///   editors are not mutated.
-/// - Tests and advanced callers can still pass a `FeatureFlags` instance
-///   explicitly to override this default per-instance.
+/// Newly created editors/views always use the optimized reconciler profile by
+/// default. Keep per-instance customization via `FeatureFlags` for advanced
+/// tuning/debug, but the legacy reconciler is no longer selectable on UIKit.
 @objc public final class LexicalRuntime: NSObject {
-  /// Toggle optimized reconciler globally for new instances.
-  /// When true, `defaultFeatureFlags` resolves to
-  /// `FeatureFlags.optimizedProfile(.aggressiveEditor)`.
-  /// Enabled by default for production use. Tests can override per-instance
-  /// by passing explicit FeatureFlags, or flip this switch in setUp/tearDown.
+  @available(*, deprecated, message: "Optimized reconciler is the only UIKit reconciler; this toggle is ignored.")
   @objc public static var isOptimizedReconcilerEnabled: Bool = true
 
   /// Optional override for Objective‑C callers to replace the default flags
@@ -40,9 +31,7 @@ import Foundation
   @objc public static var defaultFeatureFlags: FeatureFlags {
     if let override = defaultFeatureFlagsOverride { return override }
     if let provider = defaultFeatureFlagsProvider { return provider() }
-    return isOptimizedReconcilerEnabled
-      ? FeatureFlags.optimizedProfile(.aggressiveEditor)
-      : FeatureFlags()
+    return FeatureFlags.optimizedProfile(.aggressiveEditor)
   }
 
 }

@@ -11,7 +11,7 @@ import Foundation
 import LexicalCore
 
 @MainActor
-internal func shadowCompareOptimizedVsLegacy(
+internal func shadowCompareOptimizedVsBaseline(
   activeEditor: Editor,
   currentEditorState: EditorState,
   pendingEditorState: EditorState
@@ -51,16 +51,8 @@ internal func shadowCompareOptimizedVsLegacy(
     }
   }
 
-  // Build a legacy-only editor + frontend context
-  let legacyFlags = FeatureFlags(
-    reconcilerSanityCheck: false,
-    proxyTextViewInputDelegate: false,
-    useOptimizedReconciler: false,
-    useReconcilerFenwickDelta: false,
-    useReconcilerKeyedDiff: false,
-    useReconcilerBlockRebuild: false,
-    useReconcilerShadowCompare: false
-  )
+  // Build a baseline-optimized editor + frontend context
+  let baselineFlags = FeatureFlags.optimizedBaseline()
   let cfg = EditorConfig(
     theme: activeEditor.getTheme(),
     plugins: [],
@@ -69,20 +61,20 @@ internal func shadowCompareOptimizedVsLegacy(
     keyCommands: nil,
     metricsContainer: nil
   )
-  let ctx = LexicalReadOnlyTextKitContext(editorConfig: cfg, featureFlags: legacyFlags)
-  let legacyEditor = ctx.editor
+  let ctx = LexicalReadOnlyTextKitContext(editorConfig: cfg, featureFlags: baselineFlags)
+  let baselineEditor = ctx.editor
 
-  // Apply pending editor state into legacy editor (triggers legacy reconciler)
-  try? legacyEditor.setEditorState(pendingEditorState)
+  // Apply pending editor state into baseline editor (reconciles with baseline optimized flags)
+  try? baselineEditor.setEditorState(pendingEditorState)
 
-  let legacyText = ctx.textStorage
+  let baselineText = ctx.textStorage
 
-  if optimizedText.string != legacyText.string {
-    activeEditor.log(.reconciler, .error, "SHADOW-COMPARE: mismatch optimized vs legacy (optLen=\(optimizedText.string.lengthAsNSString()) legLen=\(legacyText.string.lengthAsNSString()))")
+  if optimizedText.string != baselineText.string {
+    activeEditor.log(.reconciler, .error, "SHADOW-COMPARE: mismatch optimized vs baseline (optLen=\(optimizedText.string.lengthAsNSString()) baseLen=\(baselineText.string.lengthAsNSString()))")
   }
 
   // Range cache invariants for both editors
   verifyRangeCacheInvariants(editor: activeEditor, label: "optimized")
-  verifyRangeCacheInvariants(editor: legacyEditor, label: "legacy")
+  verifyRangeCacheInvariants(editor: baselineEditor, label: "baseline")
 }
 #endif

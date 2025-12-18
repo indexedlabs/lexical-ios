@@ -23,8 +23,7 @@ final class FlagsViewController: UITableViewController {
     sections = [
       // Reconciler
       [
-        Row(title: "Use Optimized Reconciler", keyPath: \.useOptimized),
-        Row(title: "Strict Mode (no legacy)", keyPath: \.strict),
+        Row(title: "Strict Mode", keyPath: \.strict),
         Row(title: "Keyed Diff (reorder)", keyPath: \.keyedDiff),
         Row(title: "Block Rebuild", keyPath: \.blockRebuild),
         Row(title: "Shadow Compare (debug)", keyPath: \.shadowCompare),

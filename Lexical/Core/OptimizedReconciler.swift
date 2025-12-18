@@ -502,7 +502,7 @@ internal enum OptimizedReconciler {
   @MainActor
   private static func applyInstructions(_ instructions: [Instruction], editor: Editor, fixAttributesEnabled: Bool = true) -> InstructionApplyStats {
     // Use modern optimizations if enabled
-    if editor.featureFlags.useOptimizedReconciler && editor.featureFlags.useModernTextKitOptimizations {
+    if editor.featureFlags.useModernTextKitOptimizations {
       let stats = applyInstructionsWithModernBatching(instructions, editor: editor, fixAttributesEnabled: fixAttributesEnabled)
       return stats
     }
@@ -652,22 +652,38 @@ internal enum OptimizedReconciler {
 	      return
 	    }
 
-	    // Fresh-document fast hydration: build full string + cache in one pass
-	    if shouldHydrateFreshDocument(pendingState: pendingEditorState, editor: editor) {
-	      try hydrateFreshDocumentFully(pendingState: pendingEditorState, editor: editor)
-	      // Also reconcile selection once so the caret lands correctly after
-      // the first user input (e.g., typing into an empty document).
-      if shouldReconcileSelection {
-        let prevSelection = currentEditorState.selection
-        let nextSelection = pendingEditorState.selection
-        var selectionsAreDifferent = false
-        if let nextSelection, let prevSelection { selectionsAreDifferent = !nextSelection.isSelection(prevSelection) }
-        if (editor.dirtyType != .noDirtyNodes) || nextSelection == nil || selectionsAreDifferent {
-          try reconcileSelection(prevSelection: prevSelection, nextSelection: nextSelection, editor: editor)
-        }
-      }
-      return
-    }
+		    // Fresh-document fast hydration: build full string + cache in one pass
+		    if shouldHydrateFreshDocument(pendingState: pendingEditorState, editor: editor) {
+		      let hydrateStart = CFAbsoluteTimeGetCurrent()
+		      let previousRangeCacheCount = editor.rangeCache.count
+		      let dirtyNodeCount = editor.dirtyNodes.count
+		      try hydrateFreshDocumentFully(pendingState: pendingEditorState, editor: editor)
+		      // Also reconcile selection once so the caret lands correctly after
+	      // the first user input (e.g., typing into an empty document).
+	      if shouldReconcileSelection {
+	        let prevSelection = currentEditorState.selection
+	        let nextSelection = pendingEditorState.selection
+	        var selectionsAreDifferent = false
+	        if let nextSelection, let prevSelection { selectionsAreDifferent = !nextSelection.isSelection(prevSelection) }
+	        if (editor.dirtyType != .noDirtyNodes) || nextSelection == nil || selectionsAreDifferent {
+	          try reconcileSelection(prevSelection: prevSelection, nextSelection: nextSelection, editor: editor)
+	        }
+	      }
+		      if let metrics = editor.metricsContainer {
+		        let duration = max(0.000_001, CFAbsoluteTimeGetCurrent() - hydrateStart)
+		        let added = max(0, editor.rangeCache.count - previousRangeCacheCount)
+		        let metric = ReconcilerMetric(
+		          duration: duration,
+		          dirtyNodes: dirtyNodeCount,
+		          rangesAdded: max(1, added),
+		          rangesDeleted: 0,
+		          treatedAllNodesAsDirty: true,
+		          pathLabel: "hydrate-fresh"
+		        )
+		        metrics.record(.reconcilerRun(metric))
+		      }
+	      return
+	    }
 
     // Try optimized fast paths before falling back (even if fullReconcile)
     // Optional central aggregation of Fenwick deltas across paths
@@ -778,7 +794,7 @@ internal enum OptimizedReconciler {
       }
       if !aggregatedInstructions.isEmpty {
         // Wrap in CATransaction when modern optimizations enabled
-        if editor.featureFlags.useOptimizedReconciler && editor.featureFlags.useModernTextKitOptimizations {
+        if editor.featureFlags.useModernTextKitOptimizations {
           CATransaction.begin()
           CATransaction.setDisableActions(true)
         }
@@ -844,7 +860,7 @@ internal enum OptimizedReconciler {
           }
         }
 
-        if editor.featureFlags.useOptimizedReconciler && editor.featureFlags.useModernTextKitOptimizations {
+        if editor.featureFlags.useModernTextKitOptimizations {
           CATransaction.commit()
         }
         // One-time block attribute pass over affected keys

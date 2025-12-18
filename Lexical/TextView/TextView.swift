@@ -80,7 +80,7 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
     let adjustedFlags = FeatureFlags(
       reconcilerSanityCheck: reconcilerSanityCheck,
       proxyTextViewInputDelegate: featureFlags.proxyTextViewInputDelegate,
-      useOptimizedReconciler: featureFlags.useOptimizedReconciler,
+      useOptimizedReconciler: true,
       useReconcilerFenwickDelta: featureFlags.useReconcilerFenwickDelta,
       useReconcilerKeyedDiff: featureFlags.useReconcilerKeyedDiff,
       useReconcilerBlockRebuild: featureFlags.useReconcilerBlockRebuild,
@@ -194,6 +194,10 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
   override public func deleteBackward() {
     editor.log(.UITextView, .verbose, "deleteBackward()")
 
+    // Ensure Lexical selection is synced with the current native selection. In unit tests and
+    // some programmatic selection changes, `textViewDidChangeSelection` may not fire reliably.
+    onSelectionChange(editor: editor)
+
     let previousSelectedRange = selectedRange
     let previousText = text
 
@@ -303,6 +307,10 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
   override public func insertText(_ text: String) {
     editor.log(
       .UITextView, .verbose, "Text view selected range \(String(describing: self.selectedRange))")
+
+    // Ensure Lexical selection is synced with the current native selection. In unit tests and
+    // some programmatic selection changes, `textViewDidChangeSelection` may not fire reliably.
+    onSelectionChange(editor: editor)
 
     let expectedSelectionLocation = selectedRange.location + text.lengthAsNSString()
 

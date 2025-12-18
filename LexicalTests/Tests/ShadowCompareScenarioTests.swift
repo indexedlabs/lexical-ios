@@ -67,7 +67,7 @@ final class ShadowCompareScenarioTests: XCTestCase {
       try t1.setText("Hola")
     }
 
-    // We rely on shadowCompareOptimizedVsLegacy (enabled) to log mismatches if any.
+    // We rely on shadowCompareOptimizedVsBaseline (enabled) to log mismatches if any.
     XCTAssertFalse(frontend.textStorage.string.isEmpty)
   }
 

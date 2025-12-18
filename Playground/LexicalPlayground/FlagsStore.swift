@@ -14,7 +14,7 @@ final class FlagsStore {
 
   // Keys
   private enum K: String {
-    case useOptimized, strict, fenwickDelta, centralAgg, keyedDiff, blockRebuild
+    case strict, fenwickDelta, centralAgg, keyedDiff, blockRebuild
     case shadowCompare, insertBlockFenwick, sanityCheck, proxyInputDelegate
     case prePostAttrsOnly, modernTextKit
   }
@@ -24,7 +24,6 @@ final class FlagsStore {
   private func b(_ k: K, _ def: Bool = false) -> Bool { d.object(forKey: k.rawValue) == nil ? def : d.bool(forKey: k.rawValue) }
   private func set(_ k: K, _ v: Bool) { d.set(v, forKey: k.rawValue); d.synchronize(); notifyChanged() }
 
-  var useOptimized: Bool { get { b(.useOptimized) } set { set(.useOptimized, newValue) } }
   var strict: Bool { get { b(.strict) } set { set(.strict, newValue) } }
   var fenwickDelta: Bool { get { b(.fenwickDelta) } set { set(.fenwickDelta, newValue) } }
   var centralAgg: Bool { get { b(.centralAgg) } set { set(.centralAgg, newValue) } }
@@ -41,7 +40,7 @@ final class FlagsStore {
     FeatureFlags(
       reconcilerSanityCheck: sanityCheck,
       proxyTextViewInputDelegate: proxyInputDelegate,
-      useOptimizedReconciler: useOptimized,
+      useOptimizedReconciler: true,
       useReconcilerFenwickDelta: fenwickDelta,
       useReconcilerKeyedDiff: keyedDiff,
       useReconcilerBlockRebuild: blockRebuild,
@@ -56,7 +55,7 @@ final class FlagsStore {
 
   func signature() -> String {
     return [
-      useOptimized, strict, fenwickDelta, centralAgg, keyedDiff, blockRebuild,
+      strict, fenwickDelta, centralAgg, keyedDiff, blockRebuild,
       insertBlockFenwick, shadowCompare, sanityCheck, proxyInputDelegate,
       prePostAttrsOnly, modernTextKit
     ].map { $0 ? "1" : "0" }.joined()

@@ -1096,28 +1096,18 @@ public class Editor: NSObject {
 
         #if canImport(UIKit)
         if !headless {
-          if featureFlags.useOptimizedReconciler {
-            try OptimizedReconciler.updateEditorState(
+          try OptimizedReconciler.updateEditorState(
+            currentEditorState: editorState,
+            pendingEditorState: pendingEditorState,
+            editor: self,
+            shouldReconcileSelection: !mode.suppressReconcilingSelection,
+            markedTextOperation: mode.markedTextOperation
+          )
+          if featureFlags.useReconcilerShadowCompare && compositionKey == nil {
+            shadowCompareOptimizedVsBaseline(
+              activeEditor: self,
               currentEditorState: editorState,
-              pendingEditorState: pendingEditorState,
-              editor: self,
-              shouldReconcileSelection: !mode.suppressReconcilingSelection,
-              markedTextOperation: mode.markedTextOperation
-            )
-            if featureFlags.useReconcilerShadowCompare && compositionKey == nil {
-              shadowCompareOptimizedVsLegacy(
-                activeEditor: self,
-                currentEditorState: editorState,
-                pendingEditorState: pendingEditorState
-              )
-            }
-          } else {
-            try Reconciler.updateEditorState(
-              currentEditorState: editorState,
-              pendingEditorState: pendingEditorState,
-              editor: self,
-              shouldReconcileSelection: !mode.suppressReconcilingSelection,
-              markedTextOperation: mode.markedTextOperation
+              pendingEditorState: pendingEditorState
             )
           }
         }

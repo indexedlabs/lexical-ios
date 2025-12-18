@@ -44,7 +44,7 @@ final class PerformanceViewController: UIViewController {
   private var featuresBarButton: UIBarButtonItem!
   private var isRunning = false
   private var runTask: Task<Void, Never>? = nil
-  private var activeLegacyFlags = FeatureFlags()
+  private var activeLegacyFlags = FeatureFlags.optimizedBaseline()
   private var activeOptimizedFlags = FeatureFlags.optimizedProfile(.aggressiveDebug)
   private var activeProfile: FeatureFlags.OptimizedProfile = .aggressiveDebug
 
@@ -86,8 +86,8 @@ final class PerformanceViewController: UIViewController {
     ])
 
     let headerRow = UIStackView(); headerRow.axis = .horizontal; headerRow.distribution = .fillEqually; headerRow.spacing = 12
-    let legacyHeader = makeHeader("Legacy Reconciler", color: .systemRed)
-    let optimizedHeader = makeHeader("Optimized Reconciler", color: .systemGreen)
+    let legacyHeader = makeHeader("Baseline", color: .systemRed)
+    let optimizedHeader = makeHeader("Optimized", color: .systemGreen)
     headerRow.addArrangedSubview(legacyHeader)
     headerRow.addArrangedSubview(optimizedHeader)
 
@@ -269,7 +269,7 @@ final class PerformanceViewController: UIViewController {
     let out = NSMutableAttributedString()
     let header = "📊 Lexical iOS Reconciler Benchmarks — \(DateFormatter.localizedString(from: Date(), dateStyle: .medium, timeStyle: .medium))\n\n"
     out.append(NSAttributedString(string: header, attributes: boldAttrs))
-    let headerLine = fixed("Test", 26) + "  " + fixed("Legacy", 12) + "  " + fixed("Optimized", 12) + "  " + fixed("Speedup", 10) + "\n"
+    let headerLine = fixed("Test", 26) + "  " + fixed("Baseline", 12) + "  " + fixed("Optimized", 12) + "  " + fixed("Speedup", 10) + "\n"
     out.append(NSAttributedString(string: headerLine, attributes: boldAttrs))
     out.append(NSAttributedString(string: String(repeating: "-", count: 66) + "\n", attributes: normalAttrs))
     for row in caseResults {
@@ -286,7 +286,7 @@ final class PerformanceViewController: UIViewController {
       let avgOpt = caseResults.map { $0.optimized }.reduce(0,+) / Double(caseResults.count)
       let overall = avgLegacy / max(avgOpt, 1e-9)
       out.append(NSAttributedString(string: "\n", attributes: normalAttrs))
-      let avgLine = "Average: legacy=\(format(ms: avgLegacy*1000)) optimized=\(format(ms: avgOpt*1000))  ➜ \(String(format: "%.2fx", overall)) \(overall >= 1.0 ? "faster" : "slower")"
+      let avgLine = "Average: baseline=\(format(ms: avgLegacy*1000)) optimized=\(format(ms: avgOpt*1000))  ➜ \(String(format: "%.2fx", overall)) \(overall >= 1.0 ? "faster" : "slower")"
       let avgAttr = NSMutableAttributedString(string: avgLine, attributes: boldAttrs)
       if let r = avgLine.range(of: String(format: "%.2fx", overall)) { let nsr = NSRange(r, in: avgLine); avgAttr.addAttributes([.foregroundColor: (overall >= 1.0 ? green : orange)], range: nsr) }
       out.append(avgAttr)
@@ -385,7 +385,7 @@ final class PerformanceViewController: UIViewController {
     let avgLegacy = totals.map { $0.1 }.reduce(0, +) / Double(totals.count)
     let avgOpt = totals.map { $0.2 }.reduce(0, +) / Double(totals.count)
     let overall = avgLegacy / max(avgOpt, 1e-9)
-    appendResultLine("\nAverage: legacy=\(format(ms: avgLegacy*1000)) optimized=\(format(ms: avgOpt*1000))  ➜ \(String(format: "%.2fx", overall)) \(overall >= 1.0 ? "faster" : "slower")")
+    appendResultLine("\nAverage: baseline=\(format(ms: avgLegacy*1000)) optimized=\(format(ms: avgOpt*1000))  ➜ \(String(format: "%.2fx", overall)) \(overall >= 1.0 ? "faster" : "slower")")
 
     if !Task.isCancelled {
       setProgress("✅ Benchmarks complete. Use 'Copy Results'.")
