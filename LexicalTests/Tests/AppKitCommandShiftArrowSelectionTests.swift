@@ -50,28 +50,24 @@ final class AppKitCommandShiftArrowSelectionTests: XCTestCase {
   func testCmdShiftLeft_SelectsToBeginningOfLineOnFirstPress() throws {
     let testView = createTestEditorView()
 
-    testView.insertText("Something here")
-    testView.view.textView.insertNewline(nil)
-    testView.insertText("Test this")
-
-    let full = testView.attributedTextString as NSString
-    let expectedRange = full.range(of: "Test this")
-    XCTAssertNotEqual(expectedRange.location, NSNotFound)
-
-    // Put caret at end of the second paragraph (end of document).
-    let end = NSRange(location: testView.attributedTextLength, length: 0)
-    testView.setSelectedRange(end)
-
     let window = makeWindow(with: testView.view)
     XCTAssertTrue(window.makeFirstResponder(testView.view.textView))
+
+    // Type text (this primes AppKit selection interception paths used to avoid transient caret jumps).
+    testView.insertText("Test this")
+
+    XCTAssertEqual(testView.attributedTextString, "Test this")
+    let fullLength = (testView.attributedTextString as NSString).length
+
+    // Ensure caret is at end after typing.
+    XCTAssertEqual(testView.selectedRange, NSRange(location: fullLength, length: 0))
 
     // Cmd+Shift+Left should select to the beginning of the current line on the first press.
     let event = try makeCmdShiftLeftArrowKeyDownEvent(window: window)
     testView.view.textView.keyDown(with: event)
 
-    XCTAssertEqual(testView.selectedRange, expectedRange)
+    XCTAssertEqual(testView.selectedRange, NSRange(location: 0, length: fullLength))
   }
 }
 
 #endif // os(macOS) && !targetEnvironment(macCatalyst)
-

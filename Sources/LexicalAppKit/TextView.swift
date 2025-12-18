@@ -249,10 +249,33 @@ public class TextViewAppKit: NSTextView {
   public override func setSelectedRange(_ charRange: NSRange, affinity: NSSelectionAffinity, stillSelecting stillSelectingFlag: Bool) {
     // Handle selection interception if needed
     if let interceptRange = interceptNextSelectionChangeAndReplaceWithRange {
+      // Only intercept collapsed caret updates. This is intended to guard against AppKit setting
+      // the caret to a transient location during/after `insertText`, but it should not swallow
+      // user-initiated selection changes (e.g., Cmd+Shift+Arrow).
+      if charRange.length == 0 {
+        // Additionally, don't intercept navigation key-driven selection updates. These can arrive
+        // immediately after typing and should take effect on the first press.
+        if let event = NSApp.currentEvent, event.type == .keyDown {
+          switch event.keyCode {
+          case 123, 124, 125, 126, 115, 119, 116, 121:
+            // Arrow keys, Home, End, Page Up, Page Down
+            interceptNextSelectionChangeAndReplaceWithRange = nil
+            break
+          default:
+            interceptNextSelectionChangeAndReplaceWithRange = nil
+            ignoreNextSelectionChangeIfMatchesRange = interceptRange
+            super.setSelectedRange(interceptRange, affinity: affinity, stillSelecting: stillSelectingFlag)
+            return
+          }
+        } else {
+          interceptNextSelectionChangeAndReplaceWithRange = nil
+          ignoreNextSelectionChangeIfMatchesRange = interceptRange
+          super.setSelectedRange(interceptRange, affinity: affinity, stillSelecting: stillSelectingFlag)
+          return
+        }
+      }
+
       interceptNextSelectionChangeAndReplaceWithRange = nil
-      ignoreNextSelectionChangeIfMatchesRange = interceptRange
-      super.setSelectedRange(interceptRange, affinity: affinity, stillSelecting: stillSelectingFlag)
-      return
     }
 
     super.setSelectedRange(charRange, affinity: affinity, stillSelecting: stillSelectingFlag)
