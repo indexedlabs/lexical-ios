@@ -11,6 +11,7 @@
 
 @testable import Lexical
 @testable import LexicalInlineImagePlugin
+import UIKit
 import XCTest
 
 @MainActor
@@ -261,6 +262,52 @@ class InlineImageTests: XCTestCase {
       // In this scenario the paragraph should remain and contain the inserted text.
       XCTAssertNotNil(getNodeByKey(key: paragraphKey) as ParagraphNode?)
     }
+  }
+
+  func testDeleteInlineImageRestoresTextViewResponder() throws {
+    let window = UIWindow(frame: UIScreen.main.bounds)
+    let vc = UIViewController()
+    window.rootViewController = vc
+    window.makeKeyAndVisible()
+
+    let v = LexicalView(
+      editorConfig: EditorConfig(theme: Theme(), plugins: [InlineImagePlugin()]),
+      featureFlags: FeatureFlags()
+    )
+    v.frame = CGRect(x: 0, y: 0, width: 320, height: 200)
+    vc.view.addSubview(v)
+    vc.view.layoutIfNeeded()
+
+    XCTAssertTrue(v.textViewBecomeFirstResponder())
+    RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+    XCTAssertTrue(v.textViewIsFirstResponder)
+
+    let ed = v.editor
+    var imageKey: NodeKey!
+    try ed.update {
+      guard let root = getRoot() else { return }
+      let p = createParagraphNode()
+      let t = createTextNode(text: "Test ")
+      let img = ImageNode(url: "https://example.com/solo.png", size: CGSize(width: 20, height: 20), sourceID: "solo")
+      imageKey = img.getKey()
+      try p.append([t, img])
+      try root.append([p])
+      _ = try p.select(anchorOffset: 2, focusOffset: 2)
+    }
+
+    v.textView.deleteBackward()
+    RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+    XCTAssertTrue(ed.getNativeSelection().selectionIsNodeOrObject, "First backspace should enter node selection mode")
+
+    v.textView.deleteBackward()
+    RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+
+    try ed.read {
+      XCTAssertNil(getNodeByKey(key: imageKey))
+      XCTAssertTrue(try getSelection() is RangeSelection)
+    }
+    XCTAssertFalse(ed.getNativeSelection().selectionIsNodeOrObject, "Caret should return to UITextView after delete")
+    XCTAssertTrue(v.textViewIsFirstResponder, "UITextView should regain first responder after delete")
   }
 
   func testTextViewBackspaceAfterInlineImage_SelectsNodeSelection() throws {
