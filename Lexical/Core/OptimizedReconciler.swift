@@ -20,6 +20,56 @@ internal enum OptimizedReconciler {
   private static func fenwickOrderAndIndex(editor: Editor) -> ([NodeKey], [NodeKey: Int]) {
     editor.cachedDFSOrderAndIndex()
   }
+
+  @MainActor
+  private static func syncDecoratorPositionCacheWithRangeCache(editor: Editor) {
+    guard let ts = editor.textStorage, !ts.decoratorPositionCache.isEmpty else { return }
+    var movedDecorators: [(NodeKey, Int, Int)] = []
+    for (key, oldLoc) in ts.decoratorPositionCache {
+      let candidateLoc = editor.rangeCache[key]?.location ?? oldLoc
+      let storageLen = ts.length
+
+      // Prefer the rangeCache location when it actually points at this attachment.
+      var resolvedLoc: Int = candidateLoc
+      if storageLen > 0, candidateLoc >= 0, candidateLoc < storageLen,
+         let att = ts.attribute(.attachment, at: candidateLoc, effectiveRange: nil) as? TextAttachment,
+         att.key == key {
+        resolvedLoc = candidateLoc
+      } else if storageLen > 0 {
+        // Fall back to scanning the storage for the attachment key (rangeCache can be stale
+        // during structural delete fast paths and selection-driven edits).
+        var foundAt: Int? = nil
+        ts.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storageLen)) { value, range, stop in
+          if let att = value as? TextAttachment, att.key == key {
+            foundAt = range.location
+            stop.pointee = true
+          }
+        }
+        if let foundAt { resolvedLoc = foundAt }
+      }
+
+      if oldLoc != resolvedLoc {
+        movedDecorators.append((key, oldLoc, resolvedLoc))
+      }
+      ts.decoratorPositionCache[key] = resolvedLoc
+    }
+    if movedDecorators.isEmpty { return }
+    let editorWeak = editor
+    let movedCopy = movedDecorators
+    DispatchQueue.main.async {
+      guard let layoutManager = editorWeak.frontend?.layoutManager,
+            let ts = editorWeak.textStorage else { return }
+      for (key, oldLoc, _) in movedCopy {
+        if let range = editorWeak.rangeCache[key]?.range {
+          layoutManager.invalidateDisplay(forCharacterRange: range)
+        }
+        let oldRange = NSRange(location: oldLoc, length: 1)
+        if oldRange.location < ts.length {
+          layoutManager.invalidateDisplay(forCharacterRange: oldRange)
+        }
+      }
+    }
+  }
   // Instruction set for applying minimal changes to TextStorage
   enum Instruction {
     case delete(range: NSRange)
@@ -619,71 +669,72 @@ internal enum OptimizedReconciler {
   }
 
   @MainActor
-	  internal static func updateEditorState(
-	    currentEditorState: EditorState,
-	    pendingEditorState: EditorState,
-	    editor: Editor,
-	    shouldReconcileSelection: Bool,
-	    markedTextOperation: MarkedTextOperation?
-	  ) throws {
+  internal static func updateEditorState(
+    currentEditorState: EditorState,
+    pendingEditorState: EditorState,
+    editor: Editor,
+    shouldReconcileSelection: Bool,
+    markedTextOperation: MarkedTextOperation?
+  ) throws {
     // Optimized reconciler is always active in tests and app.
     guard editor.textStorage != nil else { fatalError("Cannot run optimized reconciler on an editor with no text storage") }
+    defer { syncDecoratorPositionCacheWithRangeCache(editor: editor) }
 
-	    // Composition (marked text) fast path first
-	    if let mto = markedTextOperation {
-	      if try fastPath_Composition(
-	        currentEditorState: currentEditorState,
-	        pendingEditorState: pendingEditorState,
-	        editor: editor,
-	        shouldReconcileSelection: shouldReconcileSelection,
-	        op: mto
-	      ) { return }
-	    }
+    // Composition (marked text) fast path first
+    if let mto = markedTextOperation {
+      if try fastPath_Composition(
+        currentEditorState: currentEditorState,
+        pendingEditorState: pendingEditorState,
+        editor: editor,
+        shouldReconcileSelection: shouldReconcileSelection,
+        op: mto
+      ) { return }
+    }
 
-	    // Full-editor-state swaps (e.g. `Editor.setEditorState`) must rebuild the entire TextStorage.
-	    // Fast paths are designed for incremental edits and can leave stale content behind.
-	    if editor.dirtyType == .fullReconcile {
-	      try optimizedSlowPath(
-	        currentEditorState: currentEditorState,
-	        pendingEditorState: pendingEditorState,
-	        editor: editor,
-	        shouldReconcileSelection: shouldReconcileSelection
-	      )
-	      return
-	    }
+    // Full-editor-state swaps (e.g. `Editor.setEditorState`) must rebuild the entire TextStorage.
+    // Fast paths are designed for incremental edits and can leave stale content behind.
+    if editor.dirtyType == .fullReconcile {
+      try optimizedSlowPath(
+        currentEditorState: currentEditorState,
+        pendingEditorState: pendingEditorState,
+        editor: editor,
+        shouldReconcileSelection: shouldReconcileSelection
+      )
+      return
+    }
 
-		    // Fresh-document fast hydration: build full string + cache in one pass
-		    if shouldHydrateFreshDocument(pendingState: pendingEditorState, editor: editor) {
-		      let hydrateStart = CFAbsoluteTimeGetCurrent()
-		      let previousRangeCacheCount = editor.rangeCache.count
-		      let dirtyNodeCount = editor.dirtyNodes.count
-		      try hydrateFreshDocumentFully(pendingState: pendingEditorState, editor: editor)
-		      // Also reconcile selection once so the caret lands correctly after
-	      // the first user input (e.g., typing into an empty document).
-	      if shouldReconcileSelection {
-	        let prevSelection = currentEditorState.selection
-	        let nextSelection = pendingEditorState.selection
-	        var selectionsAreDifferent = false
-	        if let nextSelection, let prevSelection { selectionsAreDifferent = !nextSelection.isSelection(prevSelection) }
-	        if (editor.dirtyType != .noDirtyNodes) || nextSelection == nil || selectionsAreDifferent {
-	          try reconcileSelection(prevSelection: prevSelection, nextSelection: nextSelection, editor: editor)
-	        }
-	      }
-		      if let metrics = editor.metricsContainer {
-		        let duration = max(0.000_001, CFAbsoluteTimeGetCurrent() - hydrateStart)
-		        let added = max(0, editor.rangeCache.count - previousRangeCacheCount)
-		        let metric = ReconcilerMetric(
-		          duration: duration,
-		          dirtyNodes: dirtyNodeCount,
-		          rangesAdded: max(1, added),
-		          rangesDeleted: 0,
-		          treatedAllNodesAsDirty: true,
-		          pathLabel: "hydrate-fresh"
-		        )
-		        metrics.record(.reconcilerRun(metric))
-		      }
-	      return
-	    }
+    // Fresh-document fast hydration: build full string + cache in one pass
+    if shouldHydrateFreshDocument(pendingState: pendingEditorState, editor: editor) {
+      let hydrateStart = CFAbsoluteTimeGetCurrent()
+      let previousRangeCacheCount = editor.rangeCache.count
+      let dirtyNodeCount = editor.dirtyNodes.count
+      try hydrateFreshDocumentFully(pendingState: pendingEditorState, editor: editor)
+      // Also reconcile selection once so the caret lands correctly after
+      // the first user input (e.g., typing into an empty document).
+      if shouldReconcileSelection {
+        let prevSelection = currentEditorState.selection
+        let nextSelection = pendingEditorState.selection
+        var selectionsAreDifferent = false
+        if let nextSelection, let prevSelection { selectionsAreDifferent = !nextSelection.isSelection(prevSelection) }
+        if (editor.dirtyType != .noDirtyNodes) || nextSelection == nil || selectionsAreDifferent {
+          try reconcileSelection(prevSelection: prevSelection, nextSelection: nextSelection, editor: editor)
+        }
+      }
+      if let metrics = editor.metricsContainer {
+        let duration = max(0.000_001, CFAbsoluteTimeGetCurrent() - hydrateStart)
+        let added = max(0, editor.rangeCache.count - previousRangeCacheCount)
+        let metric = ReconcilerMetric(
+          duration: duration,
+          dirtyNodes: dirtyNodeCount,
+          rangesAdded: max(1, added),
+          rangesDeleted: 0,
+          treatedAllNodesAsDirty: true,
+          pathLabel: "hydrate-fresh"
+        )
+        metrics.record(.reconcilerRun(metric))
+      }
+      return
+    }
 
     // Try optimized fast paths before falling back (even if fullReconcile)
     // Optional central aggregation of Fenwick deltas across paths
@@ -708,38 +759,6 @@ internal enum OptimizedReconciler {
       let ranges = fenwickAggregatedDeltas.map { (k, d) in (startKey: k, endKeyExclusive: Optional<NodeKey>.none, delta: d) }
       applyIncrementalLocationShifts(rangeCache: &editor.rangeCache, ranges: ranges, order: order, indexOf: positions, diffScratch: &editor.locationShiftDiffScratch)
       fenwickAggregatedDeltas.removeAll(keepingCapacity: true)
-    }
-
-    // ALWAYS update decorator positions if rangeCache has different values than decoratorPositionCache.
-    // This handles all cases: early-out, no dirty nodes, etc.
-    if let ts = editor.textStorage, !ts.decoratorPositionCache.isEmpty {
-      var movedDecorators: [(NodeKey, Int, Int)] = []
-      for (key, oldLoc) in ts.decoratorPositionCache {
-        if let newLoc = editor.rangeCache[key]?.location {
-          if oldLoc != newLoc {
-            movedDecorators.append((key, oldLoc, newLoc))
-          }
-          ts.decoratorPositionCache[key] = newLoc
-        }
-      }
-      // Defer layout invalidation to avoid crash when textStorage is still editing
-      if !movedDecorators.isEmpty {
-        let editorWeak = editor
-        let movedCopy = movedDecorators
-        DispatchQueue.main.async {
-          guard let layoutManager = editorWeak.frontend?.layoutManager,
-                let ts = editorWeak.textStorage else { return }
-          for (key, oldLoc, _) in movedCopy {
-            if let range = editorWeak.rangeCache[key]?.range {
-              layoutManager.invalidateDisplay(forCharacterRange: range)
-            }
-            let oldRange = NSRange(location: oldLoc, length: 1)
-            if oldRange.location < ts.length {
-              layoutManager.invalidateDisplay(forCharacterRange: oldRange)
-            }
-          }
-        }
-      }
     }
 
     if didInsertFastPath { return }
@@ -1898,11 +1917,11 @@ internal enum OptimizedReconciler {
     if editor.featureFlags.useReconcilerFenwickDelta, let pre = prePruneOrderAndIndex {
       let (order, positions) = pre
       applyIncrementalLocationShifts(rangeCache: &editor.rangeCache, ranges: rangeShifts, order: order, indexOf: positions, diffScratch: &editor.locationShiftDiffScratch)
-    } else {
-      // Recompute subtree under parent for correctness
-      if let parentPrevRange = editor.rangeCache[parentKey] {
-        _ = recomputeRangeCacheSubtree(nodeKey: parentKey, state: pendingEditorState, startLocation: parentPrevRange.location, editor: editor)
-      }
+    }
+    // Always recompute the parent subtree for correctness (decorators, paragraph merges, etc.).
+    // Fenwick shifts handle global location deltas; subtree recompute fixes local invariants.
+    if let parentPrevRange = editor.rangeCache[parentKey] {
+      _ = recomputeRangeCacheSubtree(nodeKey: parentKey, state: pendingEditorState, startLocation: parentPrevRange.location, editor: editor)
     }
 
     // Block attributes over parent + neighbors

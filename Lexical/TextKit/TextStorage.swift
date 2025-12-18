@@ -15,6 +15,7 @@ public class TextStorage: NSTextStorage {
 
   internal typealias CharacterLocation = Int
   @objc internal var decoratorPositionCache: [NodeKey: CharacterLocation] = [:]
+  private var pendingDecoratorCacheRepair = false
 
   private var backingAttributedString: NSMutableAttributedString
   var mode: TextStorageEditingMode
@@ -54,6 +55,44 @@ public class TextStorage: NSTextStorage {
   override open func endEditing() {
     super.endEditing()
     editingDepth = max(0, editingDepth - 1)
+    if editingDepth == 0 {
+      scheduleDecoratorPositionCacheRepairIfNeeded()
+    }
+  }
+
+  private func scheduleDecoratorPositionCacheRepairIfNeeded() {
+    guard !pendingDecoratorCacheRepair, !decoratorPositionCache.isEmpty else { return }
+    pendingDecoratorCacheRepair = true
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      self.pendingDecoratorCacheRepair = false
+      self.repairDecoratorPositionCacheIfNeeded()
+    }
+  }
+
+  private func repairDecoratorPositionCacheIfNeeded() {
+    let storageLen = backingAttributedString.length
+    guard storageLen > 0 else { return }
+
+    for (key, cachedLoc) in decoratorPositionCache {
+      if cachedLoc >= 0, cachedLoc < storageLen,
+         let att = backingAttributedString.attribute(.attachment, at: cachedLoc, effectiveRange: nil) as? TextAttachment,
+         att.key == key {
+        continue
+      }
+
+      var foundAt: Int? = nil
+      backingAttributedString.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storageLen)) { value, range, stop in
+        if let att = value as? TextAttachment, att.key == key {
+          foundAt = range.location
+          stop.pointee = true
+        }
+      }
+
+      if let foundAt {
+        decoratorPositionCache[key] = foundAt
+      }
+    }
   }
 
   override open func attributes(
