@@ -16,11 +16,8 @@ final class PerformanceViewController: UIViewController {
   private static let iterationsPerTest = 5
 
   // MARK: - UI refs
-  private weak var legacyView: LexicalView?
   private weak var optimizedView: LexicalView?
-  private weak var legacyContainerRef: UIView?
   private weak var optimizedContainerRef: UIView?
-  private weak var legacyStatus: UILabel?
   private weak var optimizedStatus: UILabel?
   private weak var progressLabel: UILabel?
   private weak var resultsText: UITextView?
@@ -36,7 +33,6 @@ final class PerformanceViewController: UIViewController {
     }
     func resetMetrics() { runs.removeAll() }
   }
-  private var legacyMetrics = PerfMetricsContainer()
   private var optimizedMetrics = PerfMetricsContainer()
 
   // MARK: - Nav controls & flags
@@ -44,12 +40,10 @@ final class PerformanceViewController: UIViewController {
   private var featuresBarButton: UIBarButtonItem!
   private var isRunning = false
   private var runTask: Task<Void, Never>? = nil
-  private var activeLegacyFlags = FeatureFlags.optimizedBaseline()
   private var activeOptimizedFlags = FeatureFlags.optimizedProfile(.aggressiveDebug)
   private var activeProfile: FeatureFlags.OptimizedProfile = .aggressiveDebug
 
-  private var didRunOnce = false
-  private var caseResults: [(name: String, legacy: Double, optimized: Double)] = []
+  private var caseResults: [(name: String, optimized: Double)] = []
 
   // MARK: - Lifecycle
   override func viewDidLoad() {
@@ -85,21 +79,19 @@ final class PerformanceViewController: UIViewController {
       content.widthAnchor.constraint(equalTo: scroll.widthAnchor, constant: -24)
     ])
 
-    let headerRow = UIStackView(); headerRow.axis = .horizontal; headerRow.distribution = .fillEqually; headerRow.spacing = 12
-    let legacyHeader = makeHeader("Baseline", color: .systemRed)
+    let headerRow = UIStackView(); headerRow.axis = .horizontal; headerRow.distribution = .fill; headerRow.spacing = 12
     let optimizedHeader = makeHeader("Optimized", color: .systemGreen)
-    headerRow.addArrangedSubview(legacyHeader)
     headerRow.addArrangedSubview(optimizedHeader)
 
-    let editorsRow = UIStackView(); editorsRow.axis = .horizontal; editorsRow.distribution = .fillEqually; editorsRow.spacing = 12
-    let legacyContainer = makeEditorContainer(); let optimizedContainer = makeEditorContainer()
-    editorsRow.addArrangedSubview(legacyContainer); editorsRow.addArrangedSubview(optimizedContainer)
-    self.legacyContainerRef = legacyContainer; self.optimizedContainerRef = optimizedContainer
+    let editorsRow = UIStackView(); editorsRow.axis = .horizontal; editorsRow.distribution = .fill; editorsRow.spacing = 12
+    let optimizedContainer = makeEditorContainer()
+    editorsRow.addArrangedSubview(optimizedContainer)
+    self.optimizedContainerRef = optimizedContainer
 
-    let statusRow = UIStackView(); statusRow.axis = .horizontal; statusRow.distribution = .fillEqually; statusRow.spacing = 12
-    let legacyStatus = makeStatusLabel(); let optimizedStatus = makeStatusLabel()
-    statusRow.addArrangedSubview(legacyStatus); statusRow.addArrangedSubview(optimizedStatus)
-    self.legacyStatus = legacyStatus; self.optimizedStatus = optimizedStatus
+    let statusRow = UIStackView(); statusRow.axis = .horizontal; statusRow.distribution = .fill; statusRow.spacing = 12
+    let optimizedStatus = makeStatusLabel()
+    statusRow.addArrangedSubview(optimizedStatus)
+    self.optimizedStatus = optimizedStatus
 
     let progressLabel = UILabel(); progressLabel.font = .systemFont(ofSize: 14, weight: .medium); progressLabel.textAlignment = .center; progressLabel.textColor = .secondaryLabel; progressLabel.text = "Tap Start to begin benchmarks"; self.progressLabel = progressLabel
 
@@ -148,7 +140,7 @@ final class PerformanceViewController: UIViewController {
   }
 
   @objc private func clearTapped() {
-    resultsText?.text = ""; legacyStatus?.text = "Cleared"; optimizedStatus?.text = "Cleared"; progressLabel?.text = "Idle"
+    resultsText?.text = ""; optimizedStatus?.text = "Cleared"; progressLabel?.text = "Idle"
     caseResults.removeAll()
   }
 
@@ -235,7 +227,6 @@ final class PerformanceViewController: UIViewController {
       // Start the test and rebuild views
       isRunning = true
       toggleBarButton.title = "Stop"
-      _ = rebuildLegacyView()
       _ = rebuildOptimizedView()
       runTask = Task { [weak self] in
         guard let self else { return }
@@ -255,70 +246,55 @@ final class PerformanceViewController: UIViewController {
     let end = NSRange(location: max(0, tv.text.utf16.count - 1), length: 1); tv.scrollRangeToVisible(end)
   }
 
-  private func addCaseResult(name: String, legacy: Double, optimized: Double) {
-    caseResults.append((name: name, legacy: legacy, optimized: optimized)); renderResults()
+  private func addCaseResult(name: String, optimized: Double) {
+    caseResults.append((name: name, optimized: optimized)); renderResults()
   }
 
   private func renderResults() {
     guard let tv = resultsText else { return }
     let mono = UIFont.monospacedSystemFont(ofSize: 12, weight: .regular)
     let bold = UIFont.monospacedSystemFont(ofSize: 12, weight: .semibold)
-    let green = UIColor.systemGreen; let orange = UIColor.systemOrange
     let normalAttrs: [NSAttributedString.Key: Any] = [.font: mono, .foregroundColor: UIColor.label]
     let boldAttrs: [NSAttributedString.Key: Any] = [.font: bold, .foregroundColor: UIColor.label]
     let out = NSMutableAttributedString()
     let header = "📊 Lexical iOS Reconciler Benchmarks — \(DateFormatter.localizedString(from: Date(), dateStyle: .medium, timeStyle: .medium))\n\n"
     out.append(NSAttributedString(string: header, attributes: boldAttrs))
-    let headerLine = fixed("Test", 26) + "  " + fixed("Baseline", 12) + "  " + fixed("Optimized", 12) + "  " + fixed("Speedup", 10) + "\n"
+    let headerLine = fixed("Test", 26) + "  " + fixed("Optimized", 12) + "\n"
     out.append(NSAttributedString(string: headerLine, attributes: boldAttrs))
-    out.append(NSAttributedString(string: String(repeating: "-", count: 66) + "\n", attributes: normalAttrs))
+    out.append(NSAttributedString(string: String(repeating: "-", count: 42) + "\n", attributes: normalAttrs))
     for row in caseResults {
-      let factor = row.legacy / max(row.optimized, 1e-9)
-      let faster = factor >= 1.0
-      let speedText = String(format: "%.2fx", faster ? factor : 1.0/factor) + (faster ? "" : " slower")
-      let lineStr = fixed(row.name, 26) + "  " + fixed(format(ms: row.legacy*1000), 12) + "  " + fixed(format(ms: row.optimized*1000), 12) + "  " + fixed(speedText, 10) + "\n"
-      let base = NSMutableAttributedString(string: lineStr, attributes: normalAttrs)
-      if let range = lineStr.range(of: speedText) { let ns = NSRange(range, in: lineStr); base.addAttributes([.foregroundColor: (faster ? green : orange), .font: bold], range: ns) }
-      out.append(base)
+      let lineStr = fixed(row.name, 26) + "  " + fixed(format(ms: row.optimized*1000), 12) + "\n"
+      out.append(NSAttributedString(string: lineStr, attributes: normalAttrs))
     }
     if !caseResults.isEmpty {
-      let avgLegacy = caseResults.map { $0.legacy }.reduce(0,+) / Double(caseResults.count)
       let avgOpt = caseResults.map { $0.optimized }.reduce(0,+) / Double(caseResults.count)
-      let overall = avgLegacy / max(avgOpt, 1e-9)
       out.append(NSAttributedString(string: "\n", attributes: normalAttrs))
-      let avgLine = "Average: baseline=\(format(ms: avgLegacy*1000)) optimized=\(format(ms: avgOpt*1000))  ➜ \(String(format: "%.2fx", overall)) \(overall >= 1.0 ? "faster" : "slower")"
-      let avgAttr = NSMutableAttributedString(string: avgLine, attributes: boldAttrs)
-      if let r = avgLine.range(of: String(format: "%.2fx", overall)) { let nsr = NSRange(r, in: avgLine); avgAttr.addAttributes([.foregroundColor: (overall >= 1.0 ? green : orange)], range: nsr) }
-      out.append(avgAttr)
+      let avgLine = "Average: optimized=\(format(ms: avgOpt*1000))"
+      out.append(NSAttributedString(string: avgLine, attributes: boldAttrs))
     }
     tv.attributedText = out
     let end = NSRange(location: max(0, tv.text.utf16.count - 1), length: 1); tv.scrollRangeToVisible(end)
   }
 
   private func setProgress(_ s: String) { progressLabel?.text = s }
-  private func setLegacyStatus(_ s: String) { legacyStatus?.text = s }
   private func setOptimizedStatus(_ s: String) { optimizedStatus?.text = s }
 
-  private func runCase(_ name: String, operation: @escaping (LexicalView) throws -> Void) async -> (legacy: Double, optimized: Double) {
-    guard let legacyView, let optimizedView else { return (0,0) }
-    _ = rebuildLegacyView(); _ = rebuildOptimizedView()
-    if let lv = self.legacyView { await generate(paragraphs: Self.paragraphCount, in: lv) }
+  private func runCase(_ name: String, operation: @escaping (LexicalView) throws -> Void) async -> Double {
+    guard let optimizedView else { return 0 }
+    _ = rebuildOptimizedView()
     if let ov = self.optimizedView { await generate(paragraphs: Self.paragraphCount, in: ov) }
     setProgress("Running \(name) …")
-    let legacy = await measure(iterations: Self.iterationsPerTest) { try? operation(legacyView) }
-    setLegacyStatus("\(name): \(format(ms: legacy * 1000))")
     let optimized = await measure(iterations: Self.iterationsPerTest) { try? operation(optimizedView) }
     setOptimizedStatus("\(name): \(format(ms: optimized * 1000))")
-    addCaseResult(name: name, legacy: legacy, optimized: optimized)
-    return (legacy, optimized)
+    addCaseResult(name: name, optimized: optimized)
+    return optimized
   }
 
   private func format(ms: Double) -> String { String(format: "%.1fms", ms) }
 
   private func runWarmUp() async {
     setProgress("Warming up…")
-    _ = rebuildLegacyView(); _ = rebuildOptimizedView()
-    if let lv = legacyView { await generate(paragraphs: 10, in: lv) }
+    _ = rebuildOptimizedView()
     if let ov = optimizedView { await generate(paragraphs: 10, in: ov) }
   }
 
@@ -328,14 +304,13 @@ final class PerformanceViewController: UIViewController {
     setButtonsEnabled(false); spinner?.startAnimating()
 
     await runWarmUp()
-    var totals: [(String, Double, Double)] = []
+    var totals: [(String, Double)] = []
 
-    // Baseline: generation
+    // Generation
     if Task.isCancelled { await MainActor.run { self.spinner?.stopAnimating(); self.setButtonsEnabled(true) }; return }
-    let genLegacy = await measureGenerate("Generate")
-    let genOpt = await measureGenerate("Generate", optimized: true)
-    totals.append(("Generate \(Self.paragraphCount) paragraphs", genLegacy, genOpt))
-    addCaseResult(name: "Generate \(Self.paragraphCount) paragraphs", legacy: genLegacy, optimized: genOpt)
+    let gen = await measureGenerate("Generate")
+    totals.append(("Generate \(Self.paragraphCount) paragraphs", gen))
+    addCaseResult(name: "Generate \(Self.paragraphCount) paragraphs", optimized: gen)
 
     // Core reconciliation cases
     if Task.isCancelled { await MainActor.run { self.spinner?.stopAnimating(); self.setButtonsEnabled(true) }; return }
@@ -347,7 +322,7 @@ final class PerformanceViewController: UIViewController {
         if let first = root.getFirstChild() { try first.insertBefore(nodeToInsert: p) } else { try root.append([p]) }
       }
     }
-    totals.append(("Top insertion", r1.legacy, r1.optimized))
+    totals.append(("Top insertion", r1))
 
     if Task.isCancelled { await MainActor.run { self.spinner?.stopAnimating(); self.setButtonsEnabled(true) }; return }
     let r2 = await runCase("Middle edit") { view in
@@ -357,7 +332,7 @@ final class PerformanceViewController: UIViewController {
         if let para = children[idx] as? ParagraphNode, let text = para.getChildren().first as? TextNode { try text.setText("EDITED: Modified at \(Date())") }
       }
     }
-    totals.append(("Middle edit", r2.legacy, r2.optimized))
+    totals.append(("Middle edit", r2))
 
     if Task.isCancelled { await MainActor.run { self.spinner?.stopAnimating(); self.setButtonsEnabled(true) }; return }
     let r3 = await runCase("Bulk delete (10)") { view in
@@ -366,7 +341,7 @@ final class PerformanceViewController: UIViewController {
         let children = root.getChildren(); for i in 0..<min(10, children.count) { try children[i].remove() }
       }
     }
-    totals.append(("Bulk delete", r3.legacy, r3.optimized))
+    totals.append(("Bulk delete", r3))
 
     if Task.isCancelled { await MainActor.run { self.spinner?.stopAnimating(); self.setButtonsEnabled(true) }; return }
     let r4 = await runCase("Format change (bold 10)") { view in
@@ -380,12 +355,10 @@ final class PerformanceViewController: UIViewController {
         }
       }
     }
-    totals.append(("Format change", r4.legacy, r4.optimized))
+    totals.append(("Format change", r4))
 
-    let avgLegacy = totals.map { $0.1 }.reduce(0, +) / Double(totals.count)
-    let avgOpt = totals.map { $0.2 }.reduce(0, +) / Double(totals.count)
-    let overall = avgLegacy / max(avgOpt, 1e-9)
-    appendResultLine("\nAverage: baseline=\(format(ms: avgLegacy*1000)) optimized=\(format(ms: avgOpt*1000))  ➜ \(String(format: "%.2fx", overall)) \(overall >= 1.0 ? "faster" : "slower")")
+    let avgOpt = totals.map { $0.1 }.reduce(0, +) / Double(totals.count)
+    appendResultLine("\nAverage: optimized=\(format(ms: avgOpt*1000))")
 
     if !Task.isCancelled {
       setProgress("✅ Benchmarks complete. Use 'Copy Results'.")
@@ -393,41 +366,23 @@ final class PerformanceViewController: UIViewController {
     spinner?.stopAnimating(); setButtonsEnabled(true)
   }
 
-  private func measureGenerate(_ label: String, optimized: Bool = false) async -> Double {
+  private func measureGenerate(_ label: String) async -> Double {
     var times: [Double] = []
     for _ in 0..<Self.iterationsPerTest {
       if Task.isCancelled { break }
-      if optimized { _ = rebuildOptimizedView() } else { _ = rebuildLegacyView() }
-      let view = optimized ? self.optimizedView : self.legacyView
+      _ = rebuildOptimizedView()
+      let view = self.optimizedView
       let start = CFAbsoluteTimeGetCurrent()
       if let v = view { try? self.generateSync(paragraphs: Self.paragraphCount, in: v) }
       let end = CFAbsoluteTimeGetCurrent(); times.append(end - start)
       await Task.yield()
     }
     let t = (times.sorted())[times.count/2]
-    if optimized { setOptimizedStatus("Generate: \(format(ms: t*1000))") } else { setLegacyStatus("Generate: \(format(ms: t*1000))") }
+    setOptimizedStatus("\(label): \(format(ms: t*1000))")
     return t
   }
 
   // MARK: - Helpers
-  private func rebuildLegacyView() -> LexicalView? {
-    guard let container = legacyContainerRef else { return nil }
-    legacyView?.removeFromSuperview()
-    let flags = activeLegacyFlags
-    legacyMetrics.resetMetrics()
-    let cfg = EditorConfig(theme: makeBenchTheme(), plugins: [], metricsContainer: legacyMetrics)
-    let v = LexicalView(editorConfig: cfg, featureFlags: flags)
-    v.translatesAutoresizingMaskIntoConstraints = false
-    container.addSubview(v)
-    NSLayoutConstraint.activate([
-      v.topAnchor.constraint(equalTo: container.topAnchor, constant: 6),
-      v.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -6),
-      v.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 6),
-      v.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -6)
-    ])
-    legacyView = v; return v
-  }
-
   private func rebuildOptimizedView() -> LexicalView? {
     guard let container = optimizedContainerRef else { return nil }
     optimizedView?.removeFromSuperview()
