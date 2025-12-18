@@ -18,6 +18,8 @@ class ViewController: UIViewController, UIToolbarDelegate {
   weak var toolbar: UIToolbar?
   weak var hierarchyView: UIView?
   private let editorStatePersistenceKey = "editorState"
+  private let debugPanelVisibilityKey = "debugPanelVisible"
+  private var isDebugPanelVisible: Bool = true
   private var featuresBarButton: UIBarButtonItem!
   private var activeOptimizedFlags: FeatureFlags = FeatureFlags.optimizedProfile(.aggressiveEditor)
   private var activeProfile: FeatureFlags.OptimizedProfile = .aggressiveEditor
@@ -25,6 +27,8 @@ class ViewController: UIViewController, UIToolbarDelegate {
   override func viewDidLoad() {
     super.viewDidLoad()
     view.backgroundColor = .systemBackground
+
+    isDebugPanelVisible = UserDefaults.standard.object(forKey: debugPanelVisibilityKey) as? Bool ?? true
 
     // Always use the optimized reconciler in the Playground.
     rebuildEditor()
@@ -52,7 +56,8 @@ class ViewController: UIViewController, UIToolbarDelegate {
 
     if let lexicalView, let toolbar, let hierarchyView {
       let safeAreaInsets = self.view.safeAreaInsets
-      let hierarchyViewHeight = 300.0
+      let hierarchyViewHeight = isDebugPanelVisible ? 300.0 : 0.0
+      hierarchyView.isHidden = !isDebugPanelVisible
 
       toolbar.frame = CGRect(x: 0,
                              y: safeAreaInsets.top,
@@ -184,6 +189,8 @@ class ViewController: UIViewController, UIToolbarDelegate {
     self.toolbar = toolbar
     self.hierarchyView = hierarchyView
 
+    hierarchyView.isHidden = !isDebugPanelVisible
+
     view.addSubview(lexicalView)
     view.addSubview(toolbar)
     view.addSubview(hierarchyView)
@@ -259,6 +266,21 @@ class ViewController: UIViewController, UIToolbarDelegate {
       UIAction(title: "aggressive (editor)", state: activeProfile == .aggressiveEditor ? .on : .off, handler: { _ in setProfile(.aggressiveEditor) })
     ]
     let profileMenu = UIMenu(title: "Profile", options: .displayInline, children: profiles)
+    let debugPanelToggle = UIAction(
+      title: "Debug panel",
+      state: isDebugPanelVisible ? .on : .off,
+      handler: { [weak self] _ in
+        guard let self else { return }
+        self.isDebugPanelVisible.toggle()
+        UserDefaults.standard.set(self.isDebugPanelVisible, forKey: self.debugPanelVisibilityKey)
+        self.updateFeaturesMenu()
+        UIView.animate(withDuration: 0.2) {
+          self.view.setNeedsLayout()
+          self.view.layoutIfNeeded()
+        }
+      }
+    )
+    let debugMenu = UIMenu(title: "Debug", options: .displayInline, children: [debugPanelToggle])
     let toggles: [UIAction] = [
       coreToggle("strict-mode", activeOptimizedFlags.useOptimizedReconcilerStrictMode),
       coreToggle("pre/post-attrs-only", activeOptimizedFlags.useReconcilerPrePostAttributesOnly),
@@ -268,7 +290,7 @@ class ViewController: UIViewController, UIToolbarDelegate {
       coreToggle("modern-textkit", activeOptimizedFlags.useModernTextKitOptimizations),
       coreToggle("verbose-logging", activeOptimizedFlags.verboseLogging)
     ]
-    featuresBarButton.menu = UIMenu(title: "Optimized (profile=\(String(describing: activeProfile)))", children: [profileMenu] + toggles)
+    featuresBarButton.menu = UIMenu(title: "Optimized (profile=\(String(describing: activeProfile)))", children: [profileMenu, debugMenu] + toggles)
   }
 }
 
