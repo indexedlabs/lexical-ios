@@ -159,6 +159,49 @@ class InlineImageTests: XCTestCase {
     }
   }
 
+  func testBackspaceDeletesOnlyImageKeepsCaretSelection() throws {
+    let v = LexicalView(
+      editorConfig: EditorConfig(theme: Theme(), plugins: [InlineImagePlugin()]),
+      featureFlags: FeatureFlags.optimizedProfile(.aggressiveEditor)
+    )
+    v.frame = CGRect(x: 0, y: 0, width: 320, height: 200)
+    let ed = v.editor
+
+    var paragraphKey: NodeKey!
+    var imageKey: NodeKey!
+    try ed.update {
+      guard let root = getRoot() else { return }
+      let p = createParagraphNode(); paragraphKey = p.getKey()
+      let img = ImageNode(url: "https://example.com/solo.png", size: CGSize(width: 20, height: 20), sourceID: "solo")
+      imageKey = img.getKey()
+      try p.append([img]); try root.append([p])
+      // Place caret after the image (element selection at offset 1).
+      _ = try p.select(anchorOffset: 1, focusOffset: 1)
+    }
+
+    // Backspace once selects the adjacent inline decorator; backspace again deletes it.
+    try ed.update { try (getSelection() as? RangeSelection)?.deleteCharacter(isBackwards: true) }
+    try ed.update { try getSelection()?.deleteCharacter(isBackwards: true) }
+
+    try ed.read {
+      guard let p = getNodeByKey(key: paragraphKey) as? ParagraphNode else {
+        XCTFail("Expected paragraph to remain after deleting inline image")
+        return
+      }
+      XCTAssertEqual(p.getChildrenSize(), 0)
+      XCTAssertNil(ed.decoratorCache[imageKey])
+
+      guard let sel = try getSelection() as? RangeSelection else {
+        XCTFail("Expected RangeSelection to remain after deleting last inline image")
+        return
+      }
+      XCTAssertTrue(sel.isCollapsed())
+      XCTAssertEqual(sel.anchor.key, paragraphKey)
+      XCTAssertEqual(sel.anchor.type, .element)
+      XCTAssertEqual(sel.anchor.offset, 0)
+    }
+  }
+
   func testBackspaceMergesPrevParagraphEndingWithImage() throws {
     let v = LexicalView(
       editorConfig: EditorConfig(theme: Theme(), plugins: [InlineImagePlugin()]),

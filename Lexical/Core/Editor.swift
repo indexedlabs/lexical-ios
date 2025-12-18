@@ -1147,10 +1147,34 @@ public class Editor: NSObject {
         let anchor = pendingEditorState.nodeMap[pendingSelection.anchor.key]
         let focus = pendingEditorState.nodeMap[pendingSelection.focus.key]
         if anchor == nil || focus == nil {
-          // Parity safeguard: if selection keys were removed during the update, normalize to a safe state
-          // rather than throwing. Legacy reconciler tolerates such transitions by remapping selection.
-          // We reset selection to nil; callers can set a new caret in a follow-up update.
-          pendingEditorState.selection = nil
+          // Parity safeguard: if selection keys were removed during the update, remap to a safe caret
+          // rather than leaving the editor with no selection (which breaks user navigation and input).
+          @MainActor func fallbackSelection(_ state: EditorState) -> RangeSelection? {
+            guard let root = state.getRootNode() else { return nil }
+            // Prefer the first root child (usually a ParagraphNode).
+            if let firstChildKey = root.getChildrenKeys(fromLatest: false).first,
+               state.nodeMap[firstChildKey] is ElementNode {
+              let point = Point(key: firstChildKey, offset: 0, type: .element)
+              let selection = RangeSelection(anchor: point, focus: point, format: TextFormat())
+              selection.dirty = true
+              return selection
+            }
+            // Fallback to root element selection (should be rare).
+            let rootPoint = Point(key: root.getKey(), offset: 0, type: .element)
+            let selection = RangeSelection(anchor: rootPoint, focus: rootPoint, format: TextFormat())
+            selection.dirty = true
+            return selection
+          }
+
+          if let selection = fallbackSelection(pendingEditorState) {
+            pendingEditorState.selection = selection
+            // We already ran reconciliation earlier in this update; update native selection now to keep
+            // frontend + editor state consistent.
+            try? frontend?.updateNativeSelection(from: selection)
+          } else {
+            pendingEditorState.selection = nil
+            frontend?.resetSelectedRange()
+          }
         }
       } else if let pendingSelection = pendingEditorState.selection as? NodeSelection {
         if pendingSelection.nodes.isEmpty {
