@@ -202,6 +202,95 @@ class InlineImageTests: XCTestCase {
     }
   }
 
+  func testDeleteInlineImage_DoesNotLoseNativeCaretOrTyping() throws {
+    let v = LexicalView(
+      editorConfig: EditorConfig(theme: Theme(), plugins: [InlineImagePlugin()]),
+      featureFlags: FeatureFlags()
+    )
+    v.frame = CGRect(x: 0, y: 0, width: 320, height: 200)
+    let ed = v.editor
+
+    var paragraphKey: NodeKey!
+    try ed.update {
+      guard let root = getRoot() else { return }
+      let p = createParagraphNode()
+      paragraphKey = p.getKey()
+      let img = ImageNode(url: "https://example.com/solo.png", size: CGSize(width: 20, height: 20), sourceID: "solo")
+      try p.append([img])
+      try root.append([p])
+      // Place caret after the image (element selection at offset 1).
+      _ = try p.select(anchorOffset: 1, focusOffset: 1)
+    }
+
+    // Ensure the decorator mounts at least once (mirrors real-world editing where it is visible).
+    let lm = v.layoutManager
+    let tc = v.textView.textContainer
+    let gr = lm.glyphRange(for: tc)
+    UIGraphicsBeginImageContextWithOptions(CGSize(width: 320, height: 60), false, 0)
+    lm.drawGlyphs(forGlyphRange: gr, at: .zero)
+    UIGraphicsEndImageContext()
+
+    // Backspace once selects the adjacent inline decorator; backspace again deletes it.
+    // Clear rangeCache before each delete to simulate a temporarily out-of-sync mapping layer (caret would
+    // previously disappear until the user tapped).
+    try ed.update {
+      ed.rangeCache = [:]
+      try (getSelection() as? RangeSelection)?.deleteCharacter(isBackwards: true)
+    }
+    try ed.update {
+      ed.rangeCache = [:]
+      try getSelection()?.deleteCharacter(isBackwards: true)
+    }
+
+    // Native caret should still be a valid collapsed range.
+    XCTAssertEqual(v.textView.selectedRange.length, 0)
+    XCTAssertNotEqual(v.textView.selectedRange.location, NSNotFound)
+    XCTAssertLessThanOrEqual(v.textView.selectedRange.location, v.textView.textStorage.length)
+
+    // Typing should work immediately without requiring a user tap.
+    v.textView.insertText("f")
+    try ed.read {
+      XCTAssertEqual(getRoot()?.getTextContent().trimmingCharacters(in: .whitespacesAndNewlines), "f")
+      guard let sel = try getSelection() as? RangeSelection else {
+        XCTFail("Expected RangeSelection after typing")
+        return
+      }
+      XCTAssertTrue(sel.isCollapsed())
+      // Selection should point to a valid node (usually a new TextNode) without requiring a user tap.
+      XCTAssertNotNil(try? sel.anchor.getNode())
+      // In this scenario the paragraph should remain and contain the inserted text.
+      XCTAssertNotNil(getNodeByKey(key: paragraphKey) as ParagraphNode?)
+    }
+  }
+
+  func testTextViewBackspaceAfterInlineImage_SelectsNodeSelection() throws {
+    let v = LexicalView(
+      editorConfig: EditorConfig(theme: Theme(), plugins: [InlineImagePlugin()]),
+      featureFlags: FeatureFlags()
+    )
+    v.frame = CGRect(x: 0, y: 0, width: 320, height: 200)
+    let ed = v.editor
+
+    var imageKey: NodeKey!
+    try ed.update {
+      guard let root = getRoot() else { return }
+      let p = createParagraphNode()
+      let img = ImageNode(url: "https://example.com/solo.png", size: CGSize(width: 20, height: 20), sourceID: "solo")
+      imageKey = img.getKey()
+      try p.append([img])
+      try root.append([p])
+      _ = try p.select(anchorOffset: 1, focusOffset: 1)
+    }
+
+    v.textView.deleteBackward()
+
+    try ed.read {
+      let selection = try getSelection()
+      XCTAssertTrue(selection is NodeSelection, "First backspace should select the image")
+      XCTAssertNotNil(getNodeByKey(key: imageKey), "Image should not be deleted on first backspace")
+    }
+  }
+
   func testBackspaceMergesPrevParagraphEndingWithImage() throws {
     let v = LexicalView(
       editorConfig: EditorConfig(theme: Theme(), plugins: [InlineImagePlugin()]),

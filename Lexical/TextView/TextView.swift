@@ -199,8 +199,17 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
 
     editor.dispatchCommand(type: .deleteCharacter, payload: true)
 
+    var handledByNonRangeSelection = false
+    do {
+      try editor.read {
+        if let selection = try? getSelection() {
+          handledByNonRangeSelection = selection is NodeSelection || selection is GridSelection
+        }
+      }
+    } catch {}
+
     // Fallback: if nothing changed (text and selection), delegate to UIKit's default handling
-    if text == previousText && selectedRange == previousSelectedRange {
+    if text == previousText && selectedRange == previousSelectedRange && !handledByNonRangeSelection {
       super.deleteBackward()
       resetTypingAttributes(for: selectedRange)
       return
@@ -487,6 +496,14 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
 
     if let range = nativeSelection.range {
       selectedRange = range
+      requestScrollSelectionToVisible()
+    } else {
+      // If we can't map the Lexical selection back to a native range (usually because the range cache
+      // is temporarily out of sync after a structural edit), ensure we still set a valid caret.
+      // Otherwise UIKit can end up with an invalid/hidden caret until the user taps to force a selection change.
+      let len = textStorage.length
+      let clampedLoc = min(max(0, selectedRange.location), len)
+      selectedRange = NSRange(location: clampedLoc, length: 0)
       requestScrollSelectionToVisible()
     }
   }

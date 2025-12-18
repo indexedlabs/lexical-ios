@@ -112,6 +112,79 @@ final class DecoratorDeletionBehaviorTests: XCTestCase {
     }
   }
 
+  func testStaleNodeSelectionAfterDecoratorRemoval_RemapsToRangeSelectionAndAllowsTyping() throws {
+    let view = makeView()
+    let ed = view.editor
+
+    var decoratorKey: NodeKey = ""
+
+    // Setup: paragraph with [decorator] and NodeSelection on that decorator.
+    try ed.update {
+      guard let root = getRoot() else { return }
+      let p = createParagraphNode()
+      let deco = TestDecoratorNodeCrossplatform()
+      decoratorKey = deco.key
+      try p.append([deco])
+      try root.append([p])
+      try setSelection(NodeSelection(nodes: Set([decoratorKey])))
+    }
+
+    // Simulate a native/side-effect deletion where the selected node disappears without updating the selection.
+    try ed.update {
+      try getNodeByKey(key: decoratorKey)?.remove()
+      // Intentionally do not touch selection.
+    }
+
+    // Verify: selection should have been remapped to a RangeSelection (so typing works).
+    try ed.read {
+      XCTAssertTrue(try getSelection() is RangeSelection, "Expected RangeSelection after selected decorator was removed")
+    }
+
+    // Type "f" - should be inserted.
+    try ed.update {
+      try getSelection()?.insertText("f")
+    }
+
+    try ed.read {
+      guard let root = getRoot() else {
+        XCTFail("Missing root")
+        return
+      }
+      XCTAssertEqual(root.getTextContent(), "f")
+    }
+  }
+
+  #if canImport(UIKit)
+  func testUpdateNativeSelection_WhenSelectionMappingFails_SetsValidCaretRange() throws {
+    let view = makeView()
+    let ed = view.editor
+
+    var selection: RangeSelection?
+    try ed.update {
+      guard let root = getRoot() else { return }
+      let p = createParagraphNode()
+      try root.append([p])
+      let point = Point(key: p.getKey(), offset: 0, type: .element)
+      selection = RangeSelection(anchor: point, focus: point, format: TextFormat())
+    }
+    guard let selection else {
+      XCTFail("Missing selection")
+      return
+    }
+
+    // Simulate a temporarily out-of-sync range cache so selection->string mapping fails.
+    ed.rangeCache = [:]
+
+    // This should still result in a valid native caret range (so the cursor stays visible).
+    try ed.read {
+      try view.view.textView.updateNativeSelection(from: selection)
+    }
+
+    XCTAssertEqual(view.selectedRange.location, 0)
+    XCTAssertEqual(view.selectedRange.length, 0)
+  }
+  #endif
+
   // MARK: - Forward delete from element position before decorator
 
   func testForwardDeleteAtElementOffsetZero_WithDecoratorAsFirstChild_SelectsDecorator() throws {

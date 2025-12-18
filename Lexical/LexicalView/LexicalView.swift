@@ -253,7 +253,11 @@ extension LexicalViewDelegate {
       _ = responderForNodeSelection.becomeFirstResponder()
       return
     }
+    let restoreTextViewResponder = responderForNodeSelection.isFirstResponder
     try textView.updateNativeSelection(from: selection)
+    if restoreTextViewResponder {
+      _ = textView.becomeFirstResponder()
+    }
   }
 
   func setMarkedTextFromReconciler(_ markedText: NSAttributedString, selectedRange: NSRange) {

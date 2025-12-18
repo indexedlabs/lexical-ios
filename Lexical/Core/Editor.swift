@@ -1136,29 +1136,29 @@ public class Editor: NSObject {
         return
       }
 
+      @MainActor func fallbackSelection(_ state: EditorState) -> RangeSelection? {
+        guard let root = state.getRootNode() else { return nil }
+        // Prefer the first root child (usually a ParagraphNode).
+        if let firstChildKey = root.getChildrenKeys(fromLatest: false).first,
+           state.nodeMap[firstChildKey] is ElementNode {
+          let point = Point(key: firstChildKey, offset: 0, type: .element)
+          let selection = RangeSelection(anchor: point, focus: point, format: TextFormat())
+          selection.dirty = true
+          return selection
+        }
+        // Fallback to root element selection (should be rare).
+        let rootPoint = Point(key: root.getKey(), offset: 0, type: .element)
+        let selection = RangeSelection(anchor: rootPoint, focus: rootPoint, format: TextFormat())
+        selection.dirty = true
+        return selection
+      }
+
       if let pendingSelection = pendingEditorState.selection as? RangeSelection {
         let anchor = pendingEditorState.nodeMap[pendingSelection.anchor.key]
         let focus = pendingEditorState.nodeMap[pendingSelection.focus.key]
         if anchor == nil || focus == nil {
           // Parity safeguard: if selection keys were removed during the update, remap to a safe caret
           // rather than leaving the editor with no selection (which breaks user navigation and input).
-          @MainActor func fallbackSelection(_ state: EditorState) -> RangeSelection? {
-            guard let root = state.getRootNode() else { return nil }
-            // Prefer the first root child (usually a ParagraphNode).
-            if let firstChildKey = root.getChildrenKeys(fromLatest: false).first,
-               state.nodeMap[firstChildKey] is ElementNode {
-              let point = Point(key: firstChildKey, offset: 0, type: .element)
-              let selection = RangeSelection(anchor: point, focus: point, format: TextFormat())
-              selection.dirty = true
-              return selection
-            }
-            // Fallback to root element selection (should be rare).
-            let rootPoint = Point(key: root.getKey(), offset: 0, type: .element)
-            let selection = RangeSelection(anchor: rootPoint, focus: rootPoint, format: TextFormat())
-            selection.dirty = true
-            return selection
-          }
-
           if let selection = fallbackSelection(pendingEditorState) {
             pendingEditorState.selection = selection
             // We already ran reconciliation earlier in this update; update native selection now to keep
@@ -1178,8 +1178,31 @@ public class Editor: NSObject {
           }
         }
       } else if let pendingSelection = pendingEditorState.selection as? NodeSelection {
+        // Safeguard: NodeSelection can become stale if its nodes are deleted outside of
+        // NodeSelection.deleteCharacter (e.g., native attachment deletion). A stale NodeSelection
+        // breaks input because insertText becomes a no-op (no resolvable nodes).
+        let existingKeys = pendingSelection.nodes.filter { pendingEditorState.nodeMap[$0] != nil }
+        if existingKeys.count != pendingSelection.nodes.count {
+          pendingSelection.nodes = Set(existingKeys)
+          pendingSelection.dirty = true
+        }
+
         if pendingSelection.nodes.isEmpty {
-          pendingEditorState.selection = nil
+          if let selection = fallbackSelection(pendingEditorState) {
+            pendingEditorState.selection = selection
+            #if canImport(UIKit)
+            try? self.frontend?.updateNativeSelection(from: selection)
+            #elseif os(macOS)
+            try? self.frontendAppKit?.updateNativeSelection(from: selection)
+            #endif
+          } else {
+            pendingEditorState.selection = nil
+            #if canImport(UIKit)
+            self.frontend?.resetSelectedRange()
+            #elseif os(macOS)
+            self.frontendAppKit?.resetSelectedRange()
+            #endif
+          }
         }
       }
 
