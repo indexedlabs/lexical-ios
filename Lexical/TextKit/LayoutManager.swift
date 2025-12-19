@@ -222,7 +222,7 @@ public class LayoutManager: NSLayoutManager, @unchecked Sendable {
         as? TextAttachment
     }
 
-    guard let attr = attribute, let attrKey = attr.key, let editor = attr.editor else {
+    guard let attr = attribute, let editor = attr.editor else {
       // Try to find where this attachment actually is - cache may be stale
       var foundAt: Int? = nil
       textStorage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: textStorage.length)) { value, range, stop in
@@ -267,7 +267,6 @@ public class LayoutManager: NSLayoutManager, @unchecked Sendable {
 
       decoratorOrigin.y += (glyphBoundingRect.height - attr.bounds.height)  // bottom left now!
 
-      let oldFrame = decoratorView.frame
       decoratorView.frame = CGRect(origin: decoratorOrigin, size: attr.bounds.size)
     }
   }

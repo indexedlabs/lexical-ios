@@ -270,6 +270,13 @@ let package = Package(
         "EditorHistoryPlugin",
         .target(name: "LexicalAppKit", condition: .when(platforms: [.macOS])),
       ],
-      path: "Examples/LexicalDemo.SwiftUI"),
+      path: "Examples/LexicalDemo.SwiftUI",
+      exclude: [
+        "Info.plist",
+        "LexicalDemo.SwiftUI.entitlements",
+      ],
+      resources: [
+        .process("Assets.xcassets"),
+      ]),
   ]
 )

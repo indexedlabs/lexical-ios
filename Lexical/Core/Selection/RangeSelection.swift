@@ -1048,7 +1048,7 @@ public class RangeSelection: BaseSelection {
     }
     // Universal no-op: backspace at absolute document start should do nothing (parity with legacy)
     if isBackwards && wasCollapsed {
-      if let editor = getActiveEditor() {
+      if getActiveEditor() != nil {
         func hasPreviousSiblingInAncestorChain(startingFrom node: Node) -> Bool {
           var current: Node? = node
           while let cur = current {
@@ -1511,9 +1511,9 @@ public class RangeSelection: BaseSelection {
          anchor.offset == textNode.getTextContentSize(),
          let nextDecorator = textNode.getNextSibling() as? DecoratorNode,
          nextDecorator.isInline(),
-         let parent = textNode.getParent() as? ElementNode,
+         let parent = textNode.getParent(),
          let index = textNode.getIndexWithinParent() {
-        try? parent.select(anchorOffset: index + 1, focusOffset: index + 1)
+        _ = try? parent.select(anchorOffset: index + 1, focusOffset: index + 1)
       } else if startedInEmptyElement,
                 anchor.type == .element,
                 let element = try? anchor.getNode() as? ElementNode,
@@ -1524,12 +1524,12 @@ public class RangeSelection: BaseSelection {
         while let node = prev {
           if let prevText = node as? TextNode {
             let end = prevText.getTextContentSize()
-            try? prevText.select(anchorOffset: end, focusOffset: end)
+            _ = try? prevText.select(anchorOffset: end, focusOffset: end)
             break
           }
           if let prevElement = node as? ElementNode, let desc = prevElement.getLastDescendant() as? TextNode {
             let end = desc.getTextContentSize()
-            try? desc.select(anchorOffset: end, focusOffset: end)
+            _ = try? desc.select(anchorOffset: end, focusOffset: end)
             break
           }
           prev = node.getPreviousSibling()
