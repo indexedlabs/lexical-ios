@@ -325,6 +325,7 @@ public class TextStorageAppKit: NSTextStorage, ReconcilerTextStorageAppKit {
 
   /// Cache of decorator node positions for the layout manager.
   @objc public var decoratorPositionCache: [NodeKey: Int] = [:]
+  public var decoratorPositionCacheDirtyKeys: Set<NodeKey> = []
 
   /// The backing store for the attributed string.
   private var backingAttributedString: NSMutableAttributedString

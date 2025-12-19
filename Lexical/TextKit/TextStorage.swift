@@ -15,6 +15,7 @@ public class TextStorage: NSTextStorage, ReconcilerTextStorage {
 
   public typealias CharacterLocation = Int
   @objc public var decoratorPositionCache: [NodeKey: CharacterLocation] = [:]
+  public var decoratorPositionCacheDirtyKeys: Set<NodeKey> = []
   private var pendingDecoratorCacheRepair = false
 
   private var backingAttributedString: NSMutableAttributedString
@@ -74,6 +75,8 @@ public class TextStorage: NSTextStorage, ReconcilerTextStorage {
     let storageLen = backingAttributedString.length
     guard storageLen > 0 else { return }
 
+    var attachmentLocations: [NodeKey: Int]? = nil
+
     for (key, cachedLoc) in decoratorPositionCache {
       if cachedLoc >= 0, cachedLoc < storageLen,
          let att = backingAttributedString.attribute(.attachment, at: cachedLoc, effectiveRange: nil) as? TextAttachment,
@@ -81,16 +84,19 @@ public class TextStorage: NSTextStorage, ReconcilerTextStorage {
         continue
       }
 
-      var foundAt: Int? = nil
-      backingAttributedString.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storageLen)) { value, range, stop in
-        if let att = value as? TextAttachment, att.key == key {
-          foundAt = range.location
-          stop.pointee = true
+      if attachmentLocations == nil {
+        var locations: [NodeKey: Int] = [:]
+        backingAttributedString.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storageLen)) { value, range, _ in
+          if let att = value as? TextAttachment, let attKey = att.key {
+            locations[attKey] = range.location
+          }
         }
+        attachmentLocations = locations
       }
 
-      if let foundAt {
+      if let foundAt = attachmentLocations?[key] {
         decoratorPositionCache[key] = foundAt
+        decoratorPositionCacheDirtyKeys.insert(key)
       }
     }
   }

@@ -101,9 +101,23 @@ internal enum OptimizedReconciler {
   }
 
   @MainActor
+  private static func attachmentLocationsByKey(textStorage: ReconcilerTextStorage) -> [NodeKey: Int] {
+    let storageLen = textStorage.length
+    guard storageLen > 0 else { return [:] }
+    var locations: [NodeKey: Int] = [:]
+    textStorage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storageLen)) { value, range, _ in
+      if let att = value as? PlatformTextAttachment, let key = att.key {
+        locations[key] = range.location
+      }
+    }
+    return locations
+  }
+
+  @MainActor
   private static func syncDecoratorPositionCacheWithRangeCache(editor: Editor) {
     guard let ts = reconcilerTextStorage(editor), !ts.decoratorPositionCache.isEmpty else { return }
     var movedDecorators: [(NodeKey, Int, Int)] = []
+    var attachmentLocations: [NodeKey: Int]? = nil
     for (key, oldLoc) in ts.decoratorPositionCache {
       let candidateLoc = editor.rangeCache[key]?.location ?? oldLoc
       let storageLen = ts.length
@@ -117,20 +131,21 @@ internal enum OptimizedReconciler {
       } else if storageLen > 0 {
         // Fall back to scanning the storage for the attachment key (rangeCache can be stale
         // during structural delete fast paths and selection-driven edits).
-        var foundAt: Int? = nil
-        ts.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storageLen)) { value, range, stop in
-          if let att = value as? PlatformTextAttachment, att.key == key {
-            foundAt = range.location
-            stop.pointee = true
-          }
+        if attachmentLocations == nil {
+          attachmentLocations = attachmentLocationsByKey(textStorage: ts)
         }
-        if let foundAt { resolvedLoc = foundAt }
+        if let foundAt = attachmentLocations?[key] { resolvedLoc = foundAt }
       }
 
       if oldLoc != resolvedLoc {
         movedDecorators.append((key, oldLoc, resolvedLoc))
       }
       ts.decoratorPositionCache[key] = resolvedLoc
+    }
+    if !movedDecorators.isEmpty {
+      for (key, _, _) in movedDecorators {
+        ts.decoratorPositionCacheDirtyKeys.insert(key)
+      }
     }
     if movedDecorators.isEmpty { return }
     let editorWeak = editor
@@ -378,14 +393,21 @@ internal enum OptimizedReconciler {
         for op in decoratorOps {
           switch op {
           case .decoratorAdd(let key):
-            if let loc = editor.rangeCache[key]?.location {
-              reconcilerTextStorage(editor)?.decoratorPositionCache[key] = loc
+            if let loc = editor.rangeCache[key]?.location,
+               let ts = reconcilerTextStorage(editor) {
+              ts.decoratorPositionCache[key] = loc
+              ts.decoratorPositionCacheDirtyKeys.insert(key)
             }
           case .decoratorRemove(let key):
-            reconcilerTextStorage(editor)?.decoratorPositionCache[key] = nil
+            if let ts = reconcilerTextStorage(editor) {
+              ts.decoratorPositionCache[key] = nil
+              ts.decoratorPositionCacheDirtyKeys.insert(key)
+            }
           case .decoratorDecorate(let key):
-            if let loc = editor.rangeCache[key]?.location {
-              reconcilerTextStorage(editor)?.decoratorPositionCache[key] = loc
+            if let loc = editor.rangeCache[key]?.location,
+               let ts = reconcilerTextStorage(editor) {
+              ts.decoratorPositionCache[key] = loc
+              ts.decoratorPositionCacheDirtyKeys.insert(key)
             }
           default:
             break
@@ -564,7 +586,7 @@ internal enum OptimizedReconciler {
     updates.reserveCapacity(textStorage.decoratorPositionCache.count)
 
     for (key, oldLocation) in textStorage.decoratorPositionCache {
-      if let newLocation = editor.rangeCache[key]?.location {
+      if let newLocation = editor.rangeCache[key]?.location, newLocation != oldLocation {
         updates.append((key, oldLocation, newLocation))
       }
     }
@@ -573,6 +595,7 @@ internal enum OptimizedReconciler {
     performWithoutAnimation {
       for (key, _, newLocation) in updates {
         textStorage.decoratorPositionCache[key] = newLocation
+        textStorage.decoratorPositionCacheDirtyKeys.insert(key)
       }
     }
 
@@ -580,15 +603,14 @@ internal enum OptimizedReconciler {
     // during the next draw pass. Without this, decorator views won't move when content
     // is inserted above them (e.g., pressing Enter before an image).
     // IMPORTANT: Defer invalidation to next run loop to avoid crash when textStorage is editing.
-    let movedDecorators = updates.filter { $0.1 != $0.2 }
-    if !movedDecorators.isEmpty {
+    if !updates.isEmpty {
       let editorWeak = editor
       DispatchQueue.main.async {
         guard let layoutManager = reconcilerLayoutManager(editorWeak),
               let ts = reconcilerTextStorage(editorWeak) else {
           return
         }
-        for (key, oldLocation, _) in movedDecorators {
+        for (key, oldLocation, _) in updates {
           // Invalidate both old and new positions to ensure the view moves
           if let range = editorWeak.rangeCache[key]?.range {
             layoutManager.invalidateDisplay(forCharacterRange: range)
@@ -739,7 +761,6 @@ internal enum OptimizedReconciler {
       var aggregatedInstructions: [Instruction] = []
       var aggregatedAffected: Set<NodeKey> = []
       var aggregatedLengthChanges: [(nodeKey: NodeKey, part: NodePart, delta: Int)] = []
-
       if !didInsertFastPath,
          let plan = try plan_TextOnly_Multi(currentEditorState: currentEditorState, pendingEditorState: pendingEditorState, editor: editor) {
         aggregatedInstructions.append(contentsOf: plan.instructions)
@@ -776,8 +797,21 @@ internal enum OptimizedReconciler {
         )
         batchUpdateDecoratorPositions(editor: editor)
         CATransaction.commit()
-        // One-time block attribute pass over affected keys
-        applyBlockAttributesPass(editor: editor, pendingEditorState: pendingEditorState, affectedKeys: aggregatedAffected, treatAllNodesAsDirty: false)
+        // One-time block attribute pass over affected keys (skip for pure text edits)
+        if shouldApplyBlockAttributesPass(
+          currentEditorState: currentEditorState,
+          pendingEditorState: pendingEditorState,
+          editor: editor,
+          affectedKeys: aggregatedAffected,
+          treatAllNodesAsDirty: false
+        ) {
+          applyBlockAttributesPass(
+            editor: editor,
+            pendingEditorState: pendingEditorState,
+            affectedKeys: aggregatedAffected,
+            treatAllNodesAsDirty: false
+          )
+        }
         // One-time selection reconcile
         if shouldReconcileSelection {
           let prevSelection = currentEditorState.selection
@@ -920,8 +954,11 @@ internal enum OptimizedReconciler {
     )
 
     // Decorator positions align with new locations
-    for (key, _) in ts.decoratorPositionCache {
-      if let loc = editor.rangeCache[key]?.location { ts.decoratorPositionCache[key] = loc }
+    for (key, oldLoc) in ts.decoratorPositionCache {
+      if let loc = editor.rangeCache[key]?.location, loc != oldLoc {
+        ts.decoratorPositionCache[key] = loc
+        ts.decoratorPositionCacheDirtyKeys.insert(key)
+      }
     }
   }
 
@@ -1091,9 +1128,10 @@ internal enum OptimizedReconciler {
           let applyDur = CFAbsoluteTimeGetCurrent() - t0
 
           // No length delta, but re-apply decorator positions for safety
-          for (key, _) in textStorage.decoratorPositionCache {
-            if let loc = editor.rangeCache[key]?.location {
+          for (key, oldLoc) in textStorage.decoratorPositionCache {
+            if let loc = editor.rangeCache[key]?.location, loc != oldLoc {
               textStorage.decoratorPositionCache[key] = loc
+              textStorage.decoratorPositionCacheDirtyKeys.insert(key)
             }
           }
 
@@ -1211,7 +1249,12 @@ internal enum OptimizedReconciler {
 
     // Update decorator positions
     if let ts = reconcilerTextStorage(editor) {
-      for (key, _) in ts.decoratorPositionCache { if let loc = editor.rangeCache[key]?.location { ts.decoratorPositionCache[key] = loc } }
+      for (key, oldLoc) in ts.decoratorPositionCache {
+        if let loc = editor.rangeCache[key]?.location, loc != oldLoc {
+          ts.decoratorPositionCache[key] = loc
+          ts.decoratorPositionCacheDirtyKeys.insert(key)
+        }
+      }
     }
 
     // Headless/read-only contexts still need decorator cache state updates for parity
@@ -1856,8 +1899,21 @@ internal enum OptimizedReconciler {
     }
 
     // Update decorator positions after location rebuild at end (done in caller)
-    // Apply block-level attributes scoped to affected nodes
-    applyBlockAttributesPass(editor: editor, pendingEditorState: pendingEditorState, affectedKeys: affected, treatAllNodesAsDirty: false)
+    // Apply block-level attributes scoped to affected nodes (skip for pure text edits)
+    if shouldApplyBlockAttributesPass(
+      currentEditorState: currentEditorState,
+      pendingEditorState: pendingEditorState,
+      editor: editor,
+      affectedKeys: affected,
+      treatAllNodesAsDirty: false
+    ) {
+      applyBlockAttributesPass(
+        editor: editor,
+        pendingEditorState: pendingEditorState,
+        affectedKeys: affected,
+        treatAllNodesAsDirty: false
+      )
+    }
 
     if let metrics = editor.metricsContainer {
       let metric = ReconcilerMetric(duration: stats.duration, dirtyNodes: editor.dirtyNodes.count, rangesAdded: 0, rangesDeleted: 0, treatedAllNodesAsDirty: false, pathLabel: "text-only-multi", planningDuration: 0, applyDuration: stats.duration, deleteCount: 0, insertCount: 0, setAttributesCount: 0, fixAttributesCount: 1)
@@ -2175,9 +2231,10 @@ internal enum OptimizedReconciler {
 
     // Update decorators positions
     if let ts = reconcilerTextStorage(editor) {
-      for (key, _) in ts.decoratorPositionCache {
-        if let loc = editor.rangeCache[key]?.location {
+      for (key, oldLoc) in ts.decoratorPositionCache {
+        if let loc = editor.rangeCache[key]?.location, loc != oldLoc {
           ts.decoratorPositionCache[key] = loc
+          ts.decoratorPositionCacheDirtyKeys.insert(key)
         }
       }
     }
@@ -2391,6 +2448,48 @@ internal enum OptimizedReconciler {
 
   // MARK: - Block-level attributes pass (parity with legacy)
   @MainActor
+  private static func shouldApplyBlockAttributesPass(
+    currentEditorState: EditorState,
+    pendingEditorState: EditorState,
+    editor: Editor,
+    affectedKeys: Set<NodeKey>?,
+    treatAllNodesAsDirty: Bool
+  ) -> Bool {
+    if treatAllNodesAsDirty { return true }
+
+    let theme = editor.getTheme()
+    var nodesToCheck: Set<NodeKey> = Set(editor.dirtyNodes.keys)
+    for k in editor.dirtyNodes.keys {
+      if let n = pendingEditorState.nodeMap[k] {
+        for p in n.getParents() { nodesToCheck.insert(p.getKey()) }
+      }
+    }
+    if let affectedKeys { nodesToCheck.formUnion(affectedKeys) }
+
+    @inline(__always)
+    func differs(_ a: BlockLevelAttributes?, _ b: BlockLevelAttributes?) -> Bool {
+      switch (a, b) {
+      case (nil, nil):
+        return false
+      case (let lhs?, let rhs?):
+        return !lhs.isEqual(rhs)
+      default:
+        return true
+      }
+    }
+
+    for key in nodesToCheck {
+      let prevAttrs = currentEditorState.nodeMap[key]?.getBlockLevelAttributes(theme: theme)
+      let nextNode = pendingEditorState.nodeMap[key]
+      let nextAttrs = nextNode?.getBlockLevelAttributes(theme: theme)
+      if nextNode == nil && prevAttrs != nil { return true }
+      if differs(prevAttrs, nextAttrs) { return true }
+    }
+
+    return false
+  }
+
+  @MainActor
   private static func applyBlockAttributesPass(
     editor: Editor,
     pendingEditorState: EditorState,
@@ -2496,21 +2595,14 @@ internal enum OptimizedReconciler {
       return false
     }
 
-    // Helper: derive a fallback character location for a decorator by scanning
-    // TextStorage for the TextAttachment carrying the same node key. This is
-    // robust when rangeCache has not yet been populated for newly inserted
-    // decorators within the same update pass (e.g., optimized insert fast path).
+    var attachmentLocations: [NodeKey: Int]? = nil
     @inline(__always)
-    func fallbackAttachmentLocation(for key: NodeKey, in ts: ReconcilerTextStorage) -> Int? {
-      if ts.length == 0 { return nil }
-      var found: Int? = nil
-      ts.enumerateAttribute(.attachment, in: NSRange(location: 0, length: ts.length)) { value, range, stop in
-        if let att = value as? PlatformTextAttachment, att.key == key {
-          found = range.location
-          stop.pointee = true
-        }
+    func attachmentLocation(for key: NodeKey) -> Int? {
+      if let loc = editor.rangeCache[key]?.location { return loc }
+      if attachmentLocations == nil {
+        attachmentLocations = attachmentLocationsByKey(textStorage: textStorage)
       }
-      return found
+      return attachmentLocations?[key]
     }
 
     func decoratorKeys(in state: EditorState, under root: NodeKey) -> Set<NodeKey> {
@@ -2544,6 +2636,7 @@ internal enum OptimizedReconciler {
       decoratorView(forKey: k, createIfNecessary: false)?.removeFromSuperview()
       destroyCachedDecoratorView(forKey: k)
       textStorage.decoratorPositionCache[k] = nil
+      textStorage.decoratorPositionCacheDirtyKeys.insert(k)
     }
 
     // Additions: ensure cache entry exists and set position
@@ -2552,8 +2645,9 @@ internal enum OptimizedReconciler {
       if editor.decoratorCache[k] == nil { editor.decoratorCache[k] = .needsCreation }
       // Prefer rangeCache if available; otherwise fall back to scanning the
       // TextStorage for the newly inserted attachment run.
-      if let loc = editor.rangeCache[k]?.location ?? fallbackAttachmentLocation(for: k, in: textStorage) {
+      if let loc = attachmentLocation(for: k) {
         textStorage.decoratorPositionCache[k] = loc
+        textStorage.decoratorPositionCacheDirtyKeys.insert(k)
         // Ensure TextKit recognizes attachment attributes immediately at the new location
         // to avoid first-frame flicker. Fix attributes over the single-character attachment run.
         let safe = NSIntersectionRange(NSRange(location: loc, length: 1), NSRange(location: 0, length: textStorage.length))
@@ -2563,8 +2657,12 @@ internal enum OptimizedReconciler {
 
     // Persist positions for all present decorators in next subtree and mark dirty ones for decorating
     for k in nextDecos {
-      if let loc = editor.rangeCache[k]?.location ?? fallbackAttachmentLocation(for: k, in: textStorage) {
-        textStorage.decoratorPositionCache[k] = loc
+      if let loc = attachmentLocation(for: k) {
+        let oldLoc = textStorage.decoratorPositionCache[k]
+        if oldLoc != loc {
+          textStorage.decoratorPositionCache[k] = loc
+          textStorage.decoratorPositionCacheDirtyKeys.insert(k)
+        }
         let safe = NSIntersectionRange(NSRange(location: loc, length: 1), NSRange(location: 0, length: textStorage.length))
         if safe.length > 0 { textStorage.fixAttributes(in: safe) }
       }

@@ -23,5 +23,6 @@ import AppKit
 public protocol ReconcilerTextStorage: NSTextStorage {
   var mode: TextStorageEditingMode { get set }
   var decoratorPositionCache: [NodeKey: Int] { get set }
+  var decoratorPositionCacheDirtyKeys: Set<NodeKey> { get set }
   var extraLineFragmentAttributes: [NSAttributedString.Key: Any]? { get set }
 }

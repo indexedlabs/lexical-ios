@@ -270,6 +270,7 @@ internal enum Reconciler {
       decoratorView(forKey: key, createIfNecessary: false)?.removeFromSuperview()
       destroyCachedDecoratorView(forKey: key)
       textStorage.decoratorPositionCache[key] = nil
+      textStorage.decoratorPositionCacheDirtyKeys.insert(key)
     }
     reconcilerState.decoratorsToAdd.forEach { key in
       if editor.decoratorCache[key] == nil {
@@ -278,6 +279,7 @@ internal enum Reconciler {
       }
       guard let rangeCacheItem = reconcilerState.nextRangeCache[key] else { return }
       textStorage.decoratorPositionCache[key] = rangeCacheItem.location
+      textStorage.decoratorPositionCacheDirtyKeys.insert(key)
       editor.log(.reconciler, .verbose, "DEC: pos key=\(key) loc=\(rangeCacheItem.location)")
     }
     decoratorsToDecorate.forEach { key in
@@ -287,6 +289,7 @@ internal enum Reconciler {
       }
       guard let rangeCacheItem = reconcilerState.nextRangeCache[key] else { return }
       textStorage.decoratorPositionCache[key] = rangeCacheItem.location
+      textStorage.decoratorPositionCacheDirtyKeys.insert(key)
       editor.log(.reconciler, .verbose, "DEC: pos key=\(key) loc=\(rangeCacheItem.location)")
     }
     // Update positions for ALL decorators (not just dirty ones) and invalidate display for moved ones.
@@ -297,6 +300,7 @@ internal enum Reconciler {
         if oldLoc != newLoc {
           movedDecorators.append((key, oldLoc, newLoc))
           textStorage.decoratorPositionCache[key] = newLoc
+          textStorage.decoratorPositionCacheDirtyKeys.insert(key)
         }
       }
     }
@@ -331,6 +335,7 @@ internal enum Reconciler {
         decoratorView(forKey: key, createIfNecessary: false)?.removeFromSuperview()
         destroyCachedDecoratorView(forKey: key)
         appKitStorage.decoratorPositionCache[key] = nil
+        appKitStorage.decoratorPositionCacheDirtyKeys.insert(key)
       }
       reconcilerState.decoratorsToAdd.forEach { key in
         if editor.decoratorCache[key] == nil {
@@ -339,6 +344,7 @@ internal enum Reconciler {
         }
         guard let rangeCacheItem = reconcilerState.nextRangeCache[key] else { return }
         appKitStorage.decoratorPositionCache[key] = rangeCacheItem.location
+        appKitStorage.decoratorPositionCacheDirtyKeys.insert(key)
         editor.log(.reconciler, .verbose, "DEC: pos key=\(key) loc=\(rangeCacheItem.location)")
       }
       decoratorsToDecorate.forEach { key in
@@ -348,6 +354,7 @@ internal enum Reconciler {
         }
         guard let rangeCacheItem = reconcilerState.nextRangeCache[key] else { return }
         appKitStorage.decoratorPositionCache[key] = rangeCacheItem.location
+        appKitStorage.decoratorPositionCacheDirtyKeys.insert(key)
         editor.log(.reconciler, .verbose, "DEC: pos key=\(key) loc=\(rangeCacheItem.location)")
       }
       // Update positions for ALL decorators (not just dirty ones) and invalidate display for moved ones.
@@ -357,6 +364,7 @@ internal enum Reconciler {
           if oldLoc != newLoc {
             movedDecorators.append((key, oldLoc, newLoc))
             appKitStorage.decoratorPositionCache[key] = newLoc
+            appKitStorage.decoratorPositionCacheDirtyKeys.insert(key)
           }
         }
       }
