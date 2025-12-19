@@ -19,7 +19,7 @@ final class DecoratorPositionCacheTests: XCTestCase {
   /// newly inserted decorator without requiring an explicit draw pass.
   func testPositionCachePopulates_AfterInsertAtStartOfNewline() throws {
     let cfg = EditorConfig(theme: Theme(), plugins: [])
-    let ctx = LexicalReadOnlyTextKitContext(editorConfig: cfg, featureFlags: FeatureFlags.optimizedProfile(.aggressiveEditor))
+    let ctx = LexicalReadOnlyTextKitContext(editorConfig: cfg, featureFlags: FeatureFlags())
     let editor = ctx.editor
 
     var decoKey: NodeKey = ""
@@ -53,7 +53,7 @@ final class DecoratorPositionCacheTests: XCTestCase {
 
   func testPositionCachePopulates_MultipleDecoratorsSingleUpdate_MixedPositions() throws {
     let cfg = EditorConfig(theme: Theme(), plugins: [])
-    let ctx = LexicalReadOnlyTextKitContext(editorConfig: cfg, featureFlags: FeatureFlags.optimizedProfile(.aggressiveEditor))
+    let ctx = LexicalReadOnlyTextKitContext(editorConfig: cfg, featureFlags: FeatureFlags())
     let editor = ctx.editor
     var k1 = ""; var k2 = ""; var k3 = ""
     try editor.update {
@@ -75,7 +75,7 @@ final class DecoratorPositionCacheTests: XCTestCase {
 
   func testPositionCachePopulates_InsertAtDocumentStart() throws {
     let cfg = EditorConfig(theme: Theme(), plugins: [])
-    let ctx = LexicalReadOnlyTextKitContext(editorConfig: cfg, featureFlags: FeatureFlags.optimizedProfile(.aggressiveEditor))
+    let ctx = LexicalReadOnlyTextKitContext(editorConfig: cfg, featureFlags: FeatureFlags())
     let editor = ctx.editor
     var k = ""
     try editor.update {
@@ -88,7 +88,7 @@ final class DecoratorPositionCacheTests: XCTestCase {
 
   func testPositionCachePopulates_InsertAtDocumentEnd() throws {
     let cfg = EditorConfig(theme: Theme(), plugins: [])
-    let ctx = LexicalReadOnlyTextKitContext(editorConfig: cfg, featureFlags: FeatureFlags.optimizedProfile(.aggressiveEditor))
+    let ctx = LexicalReadOnlyTextKitContext(editorConfig: cfg, featureFlags: FeatureFlags())
     let editor = ctx.editor
     var k = ""
     try editor.update {

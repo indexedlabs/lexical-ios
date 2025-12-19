@@ -16,7 +16,7 @@ import XCTest
 final class MetricsTests: XCTestCase {
 
   func testReconcilerRecordsMetricsForLargeDocument() throws {
-    let metrics = TestMetricsContainer()
+    let metrics = ReconcilerMetricsCollector()
     let editorConfig = EditorConfig(theme: Theme(), plugins: [], metricsContainer: metrics)
     let textKitContext = makeReadOnlyContext(editorConfig: editorConfig, featureFlags: FeatureFlags())
     let editor = textKitContext.editor
@@ -46,21 +46,5 @@ final class MetricsTests: XCTestCase {
     XCTAssertGreaterThan(metric.dirtyNodes, 0)
     XCTAssertGreaterThan(metric.rangesAdded, 0)
     XCTAssertGreaterThanOrEqual(metric.rangesDeleted, 0)
-  }
-}
-
-@MainActor
-final class TestMetricsContainer: EditorMetricsContainer {
-  private(set) var reconcilerRuns: [ReconcilerMetric] = []
-
-  func record(_ metric: EditorMetric) {
-    switch metric {
-    case .reconcilerRun(let data):
-      reconcilerRuns.append(data)
-    }
-  }
-
-  func resetMetrics() {
-    reconcilerRuns.removeAll()
   }
 }

@@ -105,8 +105,6 @@ extension LexicalViewDelegate {
   }
 
   /// Convenience initializer that uses the global runtime default feature flags.
-  /// When `LexicalRuntime.isOptimizedReconcilerEnabled == true`, this maps to
-  /// `FeatureFlags.optimizedProfile(.aggressiveEditor)`.
   @objc public convenience init(
     editorConfig: EditorConfig,
     placeholderText: LexicalPlaceholderText? = nil
@@ -255,7 +253,11 @@ extension LexicalViewDelegate {
       _ = responderForNodeSelection.becomeFirstResponder()
       return
     }
+    let restoreTextViewResponder = responderForNodeSelection.isFirstResponder
     try textView.updateNativeSelection(from: selection)
+    if restoreTextViewResponder {
+      _ = textView.becomeFirstResponder()
+    }
   }
 
   func setMarkedTextFromReconciler(_ markedText: NSAttributedString, selectedRange: NSRange) {

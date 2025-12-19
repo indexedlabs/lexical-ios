@@ -48,7 +48,7 @@ public class LayoutManagerAppKit: NSLayoutManager, @unchecked Sendable {
   public override func drawGlyphs(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
     super.drawGlyphs(forGlyphRange: glyphsToShow, at: origin)
     draw(forGlyphRange: glyphsToShow, at: origin, handlers: customDrawingText)
-    positionAllDecorators()
+    positionDecorators(forGlyphRange: glyphsToShow)
   }
 
   private func draw(
@@ -152,10 +152,31 @@ public class LayoutManagerAppKit: NSLayoutManager, @unchecked Sendable {
 
   // MARK: - Decorator Positioning
 
-  private func positionAllDecorators() {
+  private func positionDecorators(forGlyphRange drawingGlyphRange: NSRange) {
     guard let textStorage = textStorage as? TextStorageAppKit else { return }
+    if textStorage.decoratorPositionCache.isEmpty
+      && textStorage.decoratorPositionCacheDirtyKeys.isEmpty
+    {
+      return
+    }
 
-    for (key, location) in textStorage.decoratorPositionCache {
+    let characterRange = characterRange(forGlyphRange: drawingGlyphRange, actualGlyphRange: nil)
+    var keysToPosition = textStorage.decoratorPositionCacheDirtyKeys
+    textStorage.decoratorPositionCacheDirtyKeys.removeAll(keepingCapacity: true)
+
+    if characterRange.length > 0 {
+      textStorage.enumerateAttribute(.attachment, in: characterRange) { value, range, _ in
+        if let att = value as? TextAttachmentAppKit, let key = att.key {
+          keysToPosition.insert(key)
+          if textStorage.decoratorPositionCache[key] != range.location {
+            textStorage.decoratorPositionCache[key] = range.location
+          }
+        }
+      }
+    }
+
+    for key in keysToPosition {
+      guard let location = textStorage.decoratorPositionCache[key] else { continue }
       positionDecorator(forKey: key, characterIndex: location)
     }
   }

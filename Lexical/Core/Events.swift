@@ -874,6 +874,10 @@ private let lexicalNodesPasteboardTypesAppKit: [NSPasteboard.PasteboardType] = [
   NSPasteboard.PasteboardType("com.meta.lexical.nodes"),
 ]
 
+private let legacyPlainTextPasteboardTypeAppKit = NSPasteboard.PasteboardType("NSStringPboardType")
+private let legacyRTFPasteboardTypeAppKit = NSPasteboard.PasteboardType("NSRTFPboardType")
+private let legacyRTFDPasteboardTypeAppKit = NSPasteboard.PasteboardType("NSRTFDPboardType")
+
 /// Set the pasteboard content for AppKit.
 @MainActor
 func setPasteboardAppKit(selection: BaseSelection, pasteboard: NSPasteboard) throws {
@@ -938,7 +942,7 @@ func insertDataTransferForRichTextAppKit(selection: RangeSelection, pasteboard: 
   }
 
   // Fall back to RTF (best-effort) for pastes from other apps
-  if let pasteboardRTFData = pasteboard.data(forType: .rtf) {
+  if let pasteboardRTFData = pasteboard.data(forType: .rtf) ?? pasteboard.data(forType: legacyRTFPasteboardTypeAppKit) {
     let attributedString = try NSAttributedString(
       data: pasteboardRTFData,
       options: [.documentType: NSAttributedString.DocumentType.rtf],
@@ -947,7 +951,7 @@ func insertDataTransferForRichTextAppKit(selection: RangeSelection, pasteboard: 
     try insertRTFAppKit(selection: selection, attributedString: attributedString)
     return
   }
-  if let pasteboardRTFDData = pasteboard.data(forType: .rtfd) {
+  if let pasteboardRTFDData = pasteboard.data(forType: .rtfd) ?? pasteboard.data(forType: legacyRTFDPasteboardTypeAppKit) {
     let attributedString = try NSAttributedString(
       data: pasteboardRTFDData,
       options: [.documentType: NSAttributedString.DocumentType.rtfd],
@@ -958,7 +962,7 @@ func insertDataTransferForRichTextAppKit(selection: RangeSelection, pasteboard: 
   }
 
   // Finally, plain text
-  if let string = pasteboard.string(forType: .string) {
+  if let string = pasteboard.string(forType: .string) ?? pasteboard.string(forType: legacyPlainTextPasteboardTypeAppKit) {
     try insertPlainText(selection: selection, text: string)
   }
 }

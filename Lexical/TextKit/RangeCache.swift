@@ -94,6 +94,7 @@ private func evaluateNode(
 
   if let parentKey = node.parent, let parentRangeCacheItem = rangeCache[parentKey] {
     if stringLocation == parentRangeCacheItem.location
+      && rangeCacheItem.location == parentRangeCacheItem.location
       && parentRangeCacheItem.preambleSpecialCharacterLength - parentRangeCacheItem.preambleLength
         == 0
     {

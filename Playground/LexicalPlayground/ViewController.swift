@@ -18,25 +18,19 @@ class ViewController: UIViewController, UIToolbarDelegate {
   weak var toolbar: UIToolbar?
   weak var hierarchyView: UIView?
   private let editorStatePersistenceKey = "editorState"
-  private let reconcilerPreferenceKey = "useOptimizedInPlayground"
-  private var reconcilerControl: UISegmentedControl!
+  private let debugPanelVisibilityKey = "debugPanelVisible"
+  private var isDebugPanelVisible: Bool = true
   private var featuresBarButton: UIBarButtonItem!
-  private var activeOptimizedFlags: FeatureFlags = FeatureFlags.optimizedProfile(.aggressiveEditor)
-  private var activeProfile: FeatureFlags.OptimizedProfile = .aggressiveEditor
+  private var activeFlags: FeatureFlags = FlagsStore.shared.makeFeatureFlags()
 
   override func viewDidLoad() {
     super.viewDidLoad()
     view.backgroundColor = .systemBackground
 
-    // Toggle (Legacy | Optimized)
-    let control = UISegmentedControl(items: ["Legacy", "Optimized"])
-    control.selectedSegmentIndex = UserDefaults.standard.bool(forKey: reconcilerPreferenceKey) ? 1 : 0
-    control.addTarget(self, action: #selector(onReconcilerToggleChanged), for: .valueChanged)
-    self.reconcilerControl = control
-    navigationItem.titleView = control
+    isDebugPanelVisible = UserDefaults.standard.object(forKey: debugPanelVisibilityKey) as? Bool ?? true
 
-    // Initial build for selected reconciler
-    rebuildEditor(useOptimized: control.selectedSegmentIndex == 1)
+    // Always use the single reconciler in the Playground.
+    rebuildEditor()
     // Clear persisted state for debugging (start fresh with just an image)
     UserDefaults.standard.removeObject(forKey: editorStatePersistenceKey)
     // Immediately restore any persisted editor state to avoid a first-cycle
@@ -61,7 +55,8 @@ class ViewController: UIViewController, UIToolbarDelegate {
 
     if let lexicalView, let toolbar, let hierarchyView {
       let safeAreaInsets = self.view.safeAreaInsets
-      let hierarchyViewHeight = 300.0
+      let hierarchyViewHeight = isDebugPanelVisible ? 300.0 : 0.0
+      hierarchyView.isHidden = !isDebugPanelVisible
 
       toolbar.frame = CGRect(x: 0,
                              y: safeAreaInsets.top,
@@ -151,16 +146,7 @@ class ViewController: UIViewController, UIToolbarDelegate {
     return .top
   }
 
-  @objc private func onReconcilerToggleChanged() {
-    let useOptimized = reconcilerControl.selectedSegmentIndex == 1
-    // Persist current state and rebuild the editor with new flags
-    persistEditorState()
-    UserDefaults.standard.set(useOptimized, forKey: reconcilerPreferenceKey)
-    rebuildEditor(useOptimized: useOptimized)
-    restoreEditorState()
-  }
-
-  private func rebuildEditor(useOptimized: Bool) {
+  private func rebuildEditor() {
     // Clean old views
     lexicalView?.removeFromSuperview()
     toolbar?.removeFromSuperview()
@@ -184,15 +170,25 @@ class ViewController: UIViewController, UIToolbarDelegate {
     theme.link = [ .foregroundColor: UIColor.systemBlue ]
 
     // Feature flags
-    let flags: FeatureFlags = useOptimized ? activeOptimizedFlags : FeatureFlags()
+    let flags: FeatureFlags = activeFlags
 
-    let editorConfig = EditorConfig(theme: theme, plugins: [toolbarPlugin, listPlugin, hierarchyPlugin, imagePlugin, linkPlugin, editorHistoryPlugin])
+    let debugMetricsContainer = PlaygroundDebugMetricsContainer(onReconcilerRun: { [weak hierarchyPlugin] run in
+      hierarchyPlugin?.logReconcilerRun(run)
+    })
+    let editorConfig = EditorConfig(
+      theme: theme,
+      plugins: [toolbarPlugin, listPlugin, hierarchyPlugin, imagePlugin, linkPlugin, editorHistoryPlugin],
+      metricsContainer: debugMetricsContainer
+    )
     let lexicalView = LexicalView(editorConfig: editorConfig, featureFlags: flags)
     linkPlugin.lexicalView = lexicalView
+    hierarchyPlugin.lexicalView = lexicalView
 
     self.lexicalView = lexicalView
     self.toolbar = toolbar
     self.hierarchyView = hierarchyView
+
+    hierarchyView.isHidden = !isDebugPanelVisible
 
     view.addSubview(lexicalView)
     view.addSubview(toolbar)
@@ -202,82 +198,64 @@ class ViewController: UIViewController, UIToolbarDelegate {
     view.layoutIfNeeded()
   }
 
-  // MARK: - Features menu (optimized flags)
+  // MARK: - Features menu (flags)
   private func updateFeaturesMenu() {
-    func toggled(_ f: FeatureFlags, name: String) -> FeatureFlags {
-      let n = name
-      return FeatureFlags(
-        reconcilerSanityCheck: n == "sanity-check" ? !f.reconcilerSanityCheck : f.reconcilerSanityCheck,
-        proxyTextViewInputDelegate: n == "proxy-input-delegate" ? !f.proxyTextViewInputDelegate : f.proxyTextViewInputDelegate,
-        useOptimizedReconciler: true,
-        useReconcilerFenwickDelta: n == "fenwick-delta" ? !f.useReconcilerFenwickDelta : f.useReconcilerFenwickDelta,
-        useReconcilerKeyedDiff: n == "keyed-diff" ? !f.useReconcilerKeyedDiff : f.useReconcilerKeyedDiff,
-        useReconcilerBlockRebuild: n == "block-rebuild" ? !f.useReconcilerBlockRebuild : f.useReconcilerBlockRebuild,
-        useOptimizedReconcilerStrictMode: n == "strict-mode" ? !f.useOptimizedReconcilerStrictMode : f.useOptimizedReconcilerStrictMode,
-        useReconcilerFenwickCentralAggregation: n == "central-aggregation" ? !f.useReconcilerFenwickCentralAggregation : f.useReconcilerFenwickCentralAggregation,
-        useReconcilerShadowCompare: n == "shadow-compare" ? !f.useReconcilerShadowCompare : f.useReconcilerShadowCompare,
-        useReconcilerInsertBlockFenwick: n == "insert-block-fenwick" ? !f.useReconcilerInsertBlockFenwick : f.useReconcilerInsertBlockFenwick,
-        useReconcilerDeleteBlockFenwick: n == "delete-block-fenwick" ? !f.useReconcilerDeleteBlockFenwick : f.useReconcilerDeleteBlockFenwick,
-        useReconcilerPrePostAttributesOnly: n == "pre/post-attrs-only" ? !f.useReconcilerPrePostAttributesOnly : f.useReconcilerPrePostAttributesOnly,
-        useModernTextKitOptimizations: n == "modern-textkit" ? !f.useModernTextKitOptimizations : f.useModernTextKitOptimizations,
-        verboseLogging: n == "verbose-logging" ? !f.verboseLogging : f.verboseLogging,
-        prePostAttrsOnlyMaxTargets: f.prePostAttrsOnlyMaxTargets
-      )
-    }
-
     func coreToggle(_ name: String, _ isOn: Bool) -> UIAction {
       UIAction(title: name, state: isOn ? .on : .off, handler: { [weak self] _ in
         guard let self else { return }
-        self.activeOptimizedFlags = toggled(self.activeOptimizedFlags, name: name)
+        let store = FlagsStore.shared
+        switch name {
+        case "strict-mode": store.strict.toggle()
+        case "sanity-check": store.sanityCheck.toggle()
+        case "proxy-input-delegate": store.proxyInputDelegate.toggle()
+        case "verbose-logging": store.verboseLogging.toggle()
+        default: break
+        }
+        self.activeFlags = store.makeFeatureFlags()
         self.updateFeaturesMenu()
-        self.persistEditorState(); self.rebuildEditor(useOptimized: true); self.restoreEditorState()
+        self.persistEditorState(); self.rebuildEditor(); self.restoreEditorState()
       })
     }
-
-    func setProfile(_ p: FeatureFlags.OptimizedProfile) {
-      activeProfile = p
-      var next = FeatureFlags.optimizedProfile(p)
-      // Preserve current threshold setting for live editor safety
-      next = FeatureFlags(
-        reconcilerSanityCheck: next.reconcilerSanityCheck,
-        proxyTextViewInputDelegate: next.proxyTextViewInputDelegate,
-        useOptimizedReconciler: next.useOptimizedReconciler,
-        useReconcilerFenwickDelta: next.useReconcilerFenwickDelta,
-        useReconcilerKeyedDiff: next.useReconcilerKeyedDiff,
-        useReconcilerBlockRebuild: next.useReconcilerBlockRebuild,
-        useOptimizedReconcilerStrictMode: next.useOptimizedReconcilerStrictMode,
-        useReconcilerFenwickCentralAggregation: next.useReconcilerFenwickCentralAggregation,
-        useReconcilerShadowCompare: next.useReconcilerShadowCompare,
-        useReconcilerInsertBlockFenwick: next.useReconcilerInsertBlockFenwick,
-        useReconcilerDeleteBlockFenwick: next.useReconcilerDeleteBlockFenwick,
-        useReconcilerPrePostAttributesOnly: next.useReconcilerPrePostAttributesOnly,
-        useModernTextKitOptimizations: next.useModernTextKitOptimizations,
-        verboseLogging: next.verboseLogging,
-        prePostAttrsOnlyMaxTargets: activeOptimizedFlags.prePostAttrsOnlyMaxTargets
-      )
-      activeOptimizedFlags = next
-      updateFeaturesMenu()
-      persistEditorState(); rebuildEditor(useOptimized: true); restoreEditorState()
-    }
-
-    let profiles: [UIAction] = [
-      UIAction(title: "minimal", state: activeProfile == .minimal ? .on : .off, handler: { _ in setProfile(.minimal) }),
-      UIAction(title: "minimal (debug)", state: activeProfile == .minimalDebug ? .on : .off, handler: { _ in setProfile(.minimalDebug) }),
-      UIAction(title: "balanced", state: activeProfile == .balanced ? .on : .off, handler: { _ in setProfile(.balanced) }),
-      UIAction(title: "aggressive", state: activeProfile == .aggressive ? .on : .off, handler: { _ in setProfile(.aggressive) }),
-      UIAction(title: "aggressive (debug)", state: activeProfile == .aggressiveDebug ? .on : .off, handler: { _ in setProfile(.aggressiveDebug) }),
-      UIAction(title: "aggressive (editor)", state: activeProfile == .aggressiveEditor ? .on : .off, handler: { _ in setProfile(.aggressiveEditor) })
-    ]
-    let profileMenu = UIMenu(title: "Profile", options: .displayInline, children: profiles)
+    let debugPanelToggle = UIAction(
+      title: "Debug panel",
+      state: isDebugPanelVisible ? .on : .off,
+      handler: { [weak self] _ in
+        guard let self else { return }
+        self.isDebugPanelVisible.toggle()
+        UserDefaults.standard.set(self.isDebugPanelVisible, forKey: self.debugPanelVisibilityKey)
+        self.updateFeaturesMenu()
+        UIView.animate(withDuration: 0.2) {
+          self.view.setNeedsLayout()
+          self.view.layoutIfNeeded()
+        }
+      }
+    )
+    let debugMenu = UIMenu(title: "Debug", options: .displayInline, children: [debugPanelToggle])
     let toggles: [UIAction] = [
-      coreToggle("strict-mode", activeOptimizedFlags.useOptimizedReconcilerStrictMode),
-      coreToggle("pre/post-attrs-only", activeOptimizedFlags.useReconcilerPrePostAttributesOnly),
-      coreToggle("insert-block-fenwick", activeOptimizedFlags.useReconcilerInsertBlockFenwick),
-      coreToggle("delete-block-fenwick", activeOptimizedFlags.useReconcilerDeleteBlockFenwick),
-      coreToggle("central-aggregation", activeOptimizedFlags.useReconcilerFenwickCentralAggregation),
-      coreToggle("modern-textkit", activeOptimizedFlags.useModernTextKitOptimizations),
-      coreToggle("verbose-logging", activeOptimizedFlags.verboseLogging)
+      coreToggle("strict-mode", activeFlags.reconcilerStrictMode),
+      coreToggle("sanity-check", activeFlags.reconcilerSanityCheck),
+      coreToggle("proxy-input-delegate", activeFlags.proxyTextViewInputDelegate),
+      coreToggle("verbose-logging", activeFlags.verboseLogging)
     ]
-    featuresBarButton.menu = UIMenu(title: "Optimized (profile=\(String(describing: activeProfile)))", children: [profileMenu] + toggles)
+    featuresBarButton.menu = UIMenu(title: "Features", children: [debugMenu] + toggles)
+  }
+}
+
+@MainActor
+final class PlaygroundDebugMetricsContainer: NSObject, EditorMetricsContainer {
+  private let onReconcilerRun: (ReconcilerMetric) -> Void
+
+  init(onReconcilerRun: @escaping (ReconcilerMetric) -> Void) {
+    self.onReconcilerRun = onReconcilerRun
+  }
+
+  func record(_ metric: EditorMetric) {
+    if case let .reconcilerRun(run) = metric {
+      onReconcilerRun(run)
+    }
+  }
+
+  func resetMetrics() {
+    // No-op: the Playground debug panel keeps an external action log.
   }
 }

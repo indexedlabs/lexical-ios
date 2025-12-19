@@ -34,19 +34,14 @@ final class ResizableTestDecoratorNode: DecoratorNode {
 @MainActor
 final class OptimizedReconcilerDecoratorDynamicSizeParityTests: XCTestCase {
 
-  private func makeEditors() -> (opt: (Editor, LexicalReadOnlyTextKitContext), leg: (Editor, LexicalReadOnlyTextKitContext)) {
-    let theme = Theme(); let cfg = EditorConfig(theme: theme, plugins: [])
-    let optFlags = FeatureFlags(
-      reconcilerSanityCheck: false, proxyTextViewInputDelegate: false,
-      useOptimizedReconciler: true, useReconcilerFenwickDelta: true,
-      useReconcilerKeyedDiff: true, useReconcilerBlockRebuild: true,
-      useOptimizedReconcilerStrictMode: true
-    )
-    let legFlags = FeatureFlags(reconcilerSanityCheck: false, proxyTextViewInputDelegate: false, useOptimizedReconciler: false)
-    let optCtx = LexicalReadOnlyTextKitContext(editorConfig: cfg, featureFlags: optFlags)
-    let legCtx = LexicalReadOnlyTextKitContext(editorConfig: cfg, featureFlags: legFlags)
-    return ((optCtx.editor, optCtx), (legCtx.editor, legCtx))
-  }
+	  private func makeEditors() -> (opt: (Editor, LexicalReadOnlyTextKitContext), leg: (Editor, LexicalReadOnlyTextKitContext)) {
+	    let theme = Theme(); let cfg = EditorConfig(theme: theme, plugins: [])
+	    let optFlags = FeatureFlags(reconcilerStrictMode: true)
+	    let legFlags = FeatureFlags(reconcilerStrictMode: true)
+	    let optCtx = LexicalReadOnlyTextKitContext(editorConfig: cfg, featureFlags: optFlags)
+	    let legCtx = LexicalReadOnlyTextKitContext(editorConfig: cfg, featureFlags: legFlags)
+	    return ((optCtx.editor, optCtx), (legCtx.editor, legCtx))
+	  }
 
   func testDynamicSizeChangeKeepsPositionAndStringParity() throws {
     let (opt, leg) = makeEditors()

@@ -216,6 +216,101 @@ class TextViewTests: XCTestCase {
   //    }
   //  }
 
+  func testCopy_ActionUsesCustomPasteboard() throws {
+    let view = LexicalView(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: FeatureFlags())
+    let textView = view.textView
+    let editor = view.editor
+
+    guard let (pasteboard, pasteboardName) = makeUniquePasteboard() else {
+      XCTFail("Could not create a unique pasteboard")
+      return
+    }
+    defer { UIPasteboard.remove(withName: pasteboardName) }
+    textView.pasteboard = pasteboard
+
+    textView.insertText("Hello world")
+
+    let full = textView.textStorage.string as NSString
+    let worldRange = full.range(of: "world")
+    XCTAssertNotEqual(worldRange.location, NSNotFound, "Should find 'world' in text storage")
+
+    textView.selectedRange = worldRange
+
+    try editor.update {
+      guard let selection = try getSelection() as? RangeSelection else {
+        XCTFail("Expected RangeSelection")
+        return
+      }
+      try selection.applySelectionRange(worldRange, affinity: .forward)
+      textView.copy(nil)
+    }
+
+    guard let itemSet = pasteboard.itemSet(withPasteboardTypes: [LexicalConstants.pasteboardIdentifier]),
+          let data = pasteboard.data(
+            forPasteboardType: LexicalConstants.pasteboardIdentifier,
+            inItemSet: itemSet
+          )?.last
+    else {
+      XCTFail("No lexical data on pasteboard")
+      return
+    }
+
+    try editor.read {
+      let json = try JSONDecoder().decode(SerializedNodeArray.self, from: data)
+      let copiedText = json.nodeArray.compactMap { ($0 as? TextNode)?.getText_dangerousPropertyAccess() }.joined()
+      XCTAssertEqual(copiedText, "world")
+    }
+  }
+
+  func testCut_ActionUsesCustomPasteboardAndDeletesSelection() throws {
+    let view = LexicalView(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: FeatureFlags())
+    let textView = view.textView
+    let editor = view.editor
+
+    guard let (pasteboard, pasteboardName) = makeUniquePasteboard() else {
+      XCTFail("Could not create a unique pasteboard")
+      return
+    }
+    defer { UIPasteboard.remove(withName: pasteboardName) }
+    textView.pasteboard = pasteboard
+
+    textView.insertText("Hello world")
+
+    let full = textView.textStorage.string as NSString
+    let worldRange = full.range(of: "world")
+    XCTAssertNotEqual(worldRange.location, NSNotFound, "Should find 'world' in text storage")
+
+    textView.selectedRange = worldRange
+
+    try editor.update {
+      guard let selection = try getSelection() as? RangeSelection else {
+        XCTFail("Expected RangeSelection")
+        return
+      }
+      try selection.applySelectionRange(worldRange, affinity: .forward)
+      textView.cut(nil)
+    }
+
+    guard let itemSet = pasteboard.itemSet(withPasteboardTypes: [LexicalConstants.pasteboardIdentifier]),
+          let data = pasteboard.data(
+            forPasteboardType: LexicalConstants.pasteboardIdentifier,
+            inItemSet: itemSet
+          )?.last
+    else {
+      XCTFail("No lexical data on pasteboard")
+      return
+    }
+
+    var out = ""
+    try editor.read {
+      let json = try JSONDecoder().decode(SerializedNodeArray.self, from: data)
+      let cutText = json.nodeArray.compactMap { ($0 as? TextNode)?.getText_dangerousPropertyAccess() }.joined()
+      XCTAssertEqual(cutText, "world")
+      out = getRoot()?.getTextContent() ?? ""
+    }
+    XCTAssertEqual(out, "Hello ", "Cut should remove the selected text from the editor")
+  }
+
   func testCopy_WritesLexicalNodesToCustomPasteboard() throws {
     let view = LexicalView(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: FeatureFlags())
     let textView = view.textView

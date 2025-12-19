@@ -102,7 +102,7 @@ let package = Package(
     .target(
       name: "LexicalSwiftUI",
       dependencies: [
-        .target(name: "LexicalSwiftUIUIKit", condition: .when(platforms: [.iOS, .macCatalyst])),
+        "LexicalSwiftUIUIKit",
         .target(name: "LexicalSwiftUIAppKit", condition: .when(platforms: [.macOS])),
       ],
       path: "Sources/LexicalSwiftUI"),
@@ -138,7 +138,10 @@ let package = Package(
 
     .target(
       name: "LexicalListPlugin",
-      dependencies: ["Lexical"],
+      dependencies: [
+        "Lexical",
+        .target(name: "LexicalAppKit", condition: .when(platforms: [.macOS])),
+      ],
       path: "./Plugins/LexicalListPlugin/LexicalListPlugin"),
     .testTarget(
       name: "LexicalListPluginTests",
@@ -267,6 +270,13 @@ let package = Package(
         "EditorHistoryPlugin",
         .target(name: "LexicalAppKit", condition: .when(platforms: [.macOS])),
       ],
-      path: "Examples/LexicalDemo.SwiftUI"),
+      path: "Examples/LexicalDemo.SwiftUI",
+      exclude: [
+        "Info.plist",
+        "LexicalDemo.SwiftUI.entitlements",
+      ],
+      resources: [
+        .process("Assets.xcassets"),
+      ]),
   ]
 )

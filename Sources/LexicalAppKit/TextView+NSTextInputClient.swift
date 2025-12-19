@@ -8,6 +8,7 @@
 #if os(macOS) && !targetEnvironment(macCatalyst)
 import AppKit
 import Lexical
+import LexicalCore
 
 // MARK: - NSTextInputClient Extensions
 
@@ -18,6 +19,11 @@ import Lexical
 extension TextViewAppKit {
 
   // MARK: - Text Insertion
+  private func makeEmptyRangeSelection() -> RangeSelection {
+    let anchor = Point(key: kRootNodeKey, offset: 0, type: .element)
+    let focus = Point(key: kRootNodeKey, offset: 0, type: .element)
+    return RangeSelection(anchor: anchor, focus: focus, format: TextFormat())
+  }
 
   /// Override insertText to integrate with Lexical's text handling.
   ///
@@ -43,15 +49,43 @@ extension TextViewAppKit {
       return
     }
 
+    // AppKit may set the selection during/after `insertText` based on internal state.
+    // Prime an interception with the expected caret position to avoid transient jumps.
+    let expectedCaretLocation = range.location + (text as NSString).length
+    interceptNextSelectionChangeAndReplaceWithRange = NSRange(location: expectedCaretLocation, length: 0)
+
     // Ensure Lexical selection matches the native replacement range before dispatching insertText.
-    // This is particularly important when committing IME text, where AppKit provides a replacementRange.
-    try? editor.update {
-      guard let selection = try getSelection() as? RangeSelection else { return }
-      try selection.applySelectionRange(range, affinity: .forward)
+    // This is particularly important for:
+    // - programmatic selection changes (NSTextView doesn't always call delegate callbacks synchronously)
+    // - rapid typing (avoid inserting at a stale Lexical selection)
+    do {
+      try editor.update {
+        let selection = (try getSelection() as? RangeSelection) ?? makeEmptyRangeSelection()
+        try selection.applySelectionRange(range, affinity: .forward)
+        try setSelection(selection)
+      }
+    } catch {
+      // Best-effort: if selection sync fails, continue and let command handlers decide how to proceed.
     }
 
     // Dispatch Lexical command for text insertion
     editor.dispatchCommand(type: .insertText, payload: text)
+
+    // AppKit / TextKit can defer layout updates, especially under rapid typing. When layout is
+    // non-contiguous, this can present as “content flickering/disappearing” until the next layout pass.
+    // Force layout in a tiny range around the expected caret.
+    if let layoutManager = layoutManager, let textStorage = textStorage {
+      let len = textStorage.length
+      if len > 0 {
+        let caret = min(max(0, expectedCaretLocation), len)
+        let ensureLoc = min(max(0, (caret == len) ? (caret - 1) : caret), len - 1)
+        layoutManager.ensureLayout(forCharacterRange: NSRange(location: ensureLoc, length: 1))
+      }
+    }
+
+    // AppKit may attempt to update selection again after `insertText` returns (using internal state
+    // that can drift during rapid typing). Intercept that next selection set and keep the current one.
+    interceptNextSelectionChangeAndReplaceWithRange = selectedRange()
 
     // Update placeholder visibility
     updatePlaceholderVisibility()
@@ -164,15 +198,19 @@ extension TextViewAppKit {
   ///
   /// Used by the input system to get context for IME and other input methods.
   public override func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?) -> NSAttributedString? {
-    // Validate range
     guard range.location != NSNotFound,
-          let textStorage = textStorage,
-          range.location + range.length <= textStorage.length else {
+          let textStorage = textStorage
+    else {
       return nil
     }
 
-    actualRange?.pointee = range
-    return textStorage.attributedSubstring(from: range)
+    let length = textStorage.length
+    let start = min(max(0, range.location), length)
+    let end = min(max(start, range.location + range.length), length)
+    let clampedRange = NSRange(location: start, length: end - start)
+
+    actualRange?.pointee = clampedRange
+    return textStorage.attributedSubstring(from: clampedRange)
   }
 
   /// Returns the valid attributes for marked text.
@@ -183,7 +221,9 @@ extension TextViewAppKit {
       .underlineStyle,
       .underlineColor,
       .backgroundColor,
-      .foregroundColor
+      .foregroundColor,
+      .markedClauseSegment,
+      NSAttributedString.Key("NSTextInputReplacementRangeAttributeName")
     ]
   }
 

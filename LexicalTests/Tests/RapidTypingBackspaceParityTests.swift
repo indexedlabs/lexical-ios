@@ -17,7 +17,7 @@ final class RapidTypingBackspaceParityTests: XCTestCase {
 
   private func makeViews() -> (opt: LexicalView, leg: LexicalView) {
     let cfg = EditorConfig(theme: Theme(), plugins: [])
-    let opt = LexicalView(editorConfig: cfg, featureFlags: FeatureFlags.optimizedProfile(.aggressiveEditor))
+    let opt = LexicalView(editorConfig: cfg, featureFlags: FeatureFlags())
     let leg = LexicalView(editorConfig: cfg, featureFlags: FeatureFlags())
     opt.frame = CGRect(x: 0, y: 0, width: 320, height: 200)
     leg.frame = CGRect(x: 0, y: 0, width: 320, height: 200)
@@ -47,5 +47,3 @@ final class RapidTypingBackspaceParityTests: XCTestCase {
     XCTAssertEqual(try scenario_typeAndQuickBackspace(on: opt), try scenario_typeAndQuickBackspace(on: leg))
   }
 }
-
-

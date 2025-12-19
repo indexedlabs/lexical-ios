@@ -17,10 +17,7 @@ final class OptimizedReconcilerTests: XCTestCase {
     let flags = FeatureFlags(
       reconcilerSanityCheck: false,
       proxyTextViewInputDelegate: false,
-      useOptimizedReconciler: true,
-      useReconcilerFenwickDelta: true,
-      useReconcilerKeyedDiff: false,
-      useReconcilerBlockRebuild: false
+      reconcilerStrictMode: true
     )
     #if os(macOS) && !targetEnvironment(macCatalyst)
     let ctx = LexicalReadOnlyTextKitContextAppKit(
@@ -135,10 +132,7 @@ final class OptimizedReconcilerTests: XCTestCase {
     let flags = FeatureFlags(
       reconcilerSanityCheck: false,
       proxyTextViewInputDelegate: false,
-      useOptimizedReconciler: true,
-      useReconcilerFenwickDelta: true,
-      useReconcilerKeyedDiff: false,
-      useReconcilerBlockRebuild: false
+      reconcilerStrictMode: true
     )
     let ctx = LexicalReadOnlyTextKitContext(
       editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: flags)
@@ -189,11 +183,7 @@ final class OptimizedReconcilerTests: XCTestCase {
     let flags = FeatureFlags(
       reconcilerSanityCheck: false,
       proxyTextViewInputDelegate: false,
-      useOptimizedReconciler: true,
-      useReconcilerFenwickDelta: true,
-      useReconcilerKeyedDiff: true,
-      useReconcilerBlockRebuild: true,
-      useOptimizedReconcilerStrictMode: true
+      reconcilerStrictMode: true
     )
     let ctx = LexicalReadOnlyTextKitContext(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: flags)
     let editor = ctx.editor

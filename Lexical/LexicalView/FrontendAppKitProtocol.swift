@@ -88,10 +88,7 @@ public protocol FrontendAppKit: AnyObject {
 /// TextStorageAppKit conforms to this to allow the Reconciler to set mode without
 /// directly importing LexicalAppKit (which would cause circular dependency).
 @MainActor
-public protocol ReconcilerTextStorageAppKit: NSTextStorage {
-  var mode: TextStorageEditingMode { get set }
-  var decoratorPositionCache: [NodeKey: Int] { get set }
-}
+public protocol ReconcilerTextStorageAppKit: ReconcilerTextStorage {}
 
 // MARK: - Supporting Types
 

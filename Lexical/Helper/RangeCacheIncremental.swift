@@ -26,11 +26,11 @@ internal func applyLengthDelta(
   }
   // Propagate childrenLength change to all parents
   if let node = getNodeByKey(key: nodeKey) {
-    let parents = node.getParents().map { $0.getKey() }
-    if delta != 0 {
-      for pk in parents {
-        if var it = editor.rangeCache[pk] { it.childrenLength &+= delta; editor.rangeCache[pk] = it }
-      }
+    var parent = node.getParent()
+    while let p = parent {
+      let pk = p.getKey()
+      if var it = editor.rangeCache[pk] { it.childrenLength &+= delta; editor.rangeCache[pk] = it }
+      parent = p.getParent()
     }
   }
 }
@@ -45,32 +45,68 @@ internal func applyIncrementalLocationShifts(
   order: [NodeKey],
   indexOf: [NodeKey: Int]
 ) {
-  guard !ranges.isEmpty, !order.isEmpty else { return }
-  // Build a difference array over positions 0...order.count (0-based for convenience)
-  var diff = Array(repeating: 0, count: order.count + 1)
+  var scratch: [Int] = []
+  applyIncrementalLocationShifts(
+    rangeCache: &rangeCache,
+    ranges: ranges,
+    order: order,
+    indexOf: indexOf,
+    diffScratch: &scratch
+  )
+}
+
+@MainActor
+internal func applyIncrementalLocationShifts(
+  rangeCache: inout [NodeKey: RangeCacheItem],
+  ranges: [(startKey: NodeKey, endKeyExclusive: NodeKey?, delta: Int)],
+  order: [NodeKey],
+  indexOf: [NodeKey: Int],
+  diffScratch: inout [Int]
+) {
+  let n = order.count
+  guard !ranges.isEmpty, n > 0 else { return }
+  if diffScratch.count < n {
+    diffScratch.append(contentsOf: repeatElement(0, count: n - diffScratch.count))
+  }
+
+  var didMutate = false
+  var touched: [Int] = []
+  touched.reserveCapacity(min(ranges.count * 2, 64))
+
   for (s, e, d) in ranges {
-    if d == 0 { continue }
-    if let si1 = indexOf[s] {
-      let si = si1 - 1 // convert 1-based to 0-based index in `order`
-      let startPos = si + 1 // exclusive: start shifting strictly after startKey
-      if startPos < diff.count { diff[startPos] &+= d }
-      if let e, let ei1 = indexOf[e] {
-        let ei = ei1 - 1
-        if ei < diff.count { diff[ei] &-= d }
+    guard d != 0, let si1 = indexOf[s] else { continue }
+    let si = si1 - 1 // convert 1-based to 0-based index in `order`
+    let startPos = si + 1 // exclusive: start shifting strictly after startKey
+    if startPos < n {
+      diffScratch[startPos] &+= d
+      touched.append(startPos)
+      didMutate = true
+    }
+    if let e, let ei1 = indexOf[e] {
+      let ei = ei1 - 1
+      if ei < n {
+        diffScratch[ei] &-= d
+        touched.append(ei)
+        didMutate = true
       }
     }
   }
-  if diff.allSatisfy({ $0 == 0 }) { return }
+
+  guard didMutate else { return }
+
   // Prefix accumulate and apply to rangeCache locations
   var running = 0
   for (i, key) in order.enumerated() {
-    running &+= diff[i]
+    running &+= diffScratch[i]
     if running == 0 { continue }
     if var item = rangeCache[key] {
       item.location = max(0, item.location + running)
       rangeCache[key] = item
     }
   }
+
+  // Reset touched indices for next run (duplicates OK)
+  for idx in touched { diffScratch[idx] = 0 }
 }
 
 // Batch-apply length deltas for multiple nodes/parts and propagate
@@ -83,7 +119,9 @@ internal func applyLengthDeltasBatch(
 ) -> [NodeKey: Int] {
   if changes.isEmpty { return [:] }
   var startShift: [NodeKey: Int] = [:]
+  startShift.reserveCapacity(changes.count)
   var parentAccum: [NodeKey: Int] = [:]
+  parentAccum.reserveCapacity(changes.count * 4)
 
   // 1) Update node part lengths and collect per-node total deltas
   for (key, part, delta) in changes {
@@ -99,7 +137,11 @@ internal func applyLengthDeltasBatch(
     startShift[key, default: 0] &+= delta
     // 2) Accumulate childrenLength propagation for all ancestors
     if let node = getNodeByKey(key: key) {
-      for p in node.getParents() { parentAccum[p.getKey(), default: 0] &+= delta }
+      var parent = node.getParent()
+      while let p = parent {
+        parentAccum[p.getKey(), default: 0] &+= delta
+        parent = p.getParent()
+      }
     }
   }
 

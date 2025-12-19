@@ -14,7 +14,7 @@ import XCTest
 
 final class OptimizedReconcilerGranularityUITests: XCTestCase {
   private func makeOptimizedEditorView() -> (Editor, LexicalView) {
-    let flags = FeatureFlags.optimizedProfile(.aggressiveEditor)
+    let flags = FeatureFlags()
     let view = LexicalView(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: flags)
     return (view.editor, view)
   }
@@ -147,7 +147,7 @@ final class OptimizedReconcilerGranularityUITests: XCTestCase {
   }
 
   func testDeleteWordForwardAcrossInlineImage_UI() throws {
-    let flags = FeatureFlags.optimizedProfile(.aggressiveEditor)
+    let flags = FeatureFlags()
     let v = LexicalView(editorConfig: EditorConfig(theme: Theme(), plugins: [InlineImagePlugin()]), featureFlags: flags)
     let editor = v.editor
     let view = v

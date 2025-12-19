@@ -241,8 +241,7 @@ enum AttributeUtils {
     return nil
   }
 
-  #if canImport(UIKit)
-  private static func extraLineFragmentIsPresent(_ textStorage: TextStorage) -> Bool {
+  private static func extraLineFragmentIsPresent(_ textStorage: ReconcilerTextStorage) -> Bool {
     let textAsNSString: NSString = textStorage.string as NSString
     guard textAsNSString.length > 0 else { return true }
 
@@ -258,7 +257,7 @@ enum AttributeUtils {
   }
 
   internal static func applyBlockLevelAttributes(
-    _ attributes: BlockLevelAttributes, cacheItem: RangeCacheItem, textStorage: TextStorage,
+    _ attributes: BlockLevelAttributes, cacheItem: RangeCacheItem, textStorage: ReconcilerTextStorage,
     nodeKey: NodeKey, lastDescendentAttributes: [NSAttributedString.Key: Any]
   ) {
 
@@ -374,7 +373,6 @@ enum AttributeUtils {
         .appliedBlockLevelStyles_internal, value: attributes, range: enclosing)
     }
   }
-  #endif  // canImport(UIKit) - UIKit-specific block level attribute functions
 }
 
 extension NSAttributedString.Key {

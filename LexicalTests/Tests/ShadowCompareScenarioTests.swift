@@ -14,12 +14,7 @@ final class ShadowCompareScenarioTests: XCTestCase {
     let flags = FeatureFlags(
       reconcilerSanityCheck: false,
       proxyTextViewInputDelegate: false,
-      useOptimizedReconciler: true,
-      useReconcilerFenwickDelta: true,
-      useReconcilerKeyedDiff: true,
-      useReconcilerBlockRebuild: true,
-      useOptimizedReconcilerStrictMode: true,
-      useReconcilerShadowCompare: true
+      reconcilerStrictMode: true
     )
     #if os(macOS) && !targetEnvironment(macCatalyst)
     let ctx = LexicalReadOnlyTextKitContextAppKit(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: flags)
@@ -67,7 +62,6 @@ final class ShadowCompareScenarioTests: XCTestCase {
       try t1.setText("Hola")
     }
 
-    // We rely on shadowCompareOptimizedVsLegacy (enabled) to log mismatches if any.
     XCTAssertFalse(frontend.textStorage.string.isEmpty)
   }
 

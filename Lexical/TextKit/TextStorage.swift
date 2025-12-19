@@ -11,13 +11,16 @@ import UIKit
 import LexicalCore
 
 @MainActor
-public class TextStorage: NSTextStorage {
+public class TextStorage: NSTextStorage, ReconcilerTextStorage {
 
-  internal typealias CharacterLocation = Int
-  @objc internal var decoratorPositionCache: [NodeKey: CharacterLocation] = [:]
+  public typealias CharacterLocation = Int
+  @objc public var decoratorPositionCache: [NodeKey: CharacterLocation] = [:]
+  public var decoratorPositionCacheDirtyKeys: Set<NodeKey> = []
+  private var pendingDecoratorCacheRepair = false
 
   private var backingAttributedString: NSMutableAttributedString
-  var mode: TextStorageEditingMode
+  public var mode: TextStorageEditingMode
+  private var editingDepth: Int = 0
   weak var editor: Editor?
   /// True while inside `performControllerModeUpdate`, indicating that UIKit's text storage editing
   /// session is still active. Layout operations must be deferred until this is false.
@@ -43,6 +46,59 @@ public class TextStorage: NSTextStorage {
 
   override open var string: String {
     return backingAttributedString.string
+  }
+
+  override open func beginEditing() {
+    editingDepth += 1
+    super.beginEditing()
+  }
+
+  override open func endEditing() {
+    super.endEditing()
+    editingDepth = max(0, editingDepth - 1)
+    if editingDepth == 0 {
+      scheduleDecoratorPositionCacheRepairIfNeeded()
+    }
+  }
+
+  private func scheduleDecoratorPositionCacheRepairIfNeeded() {
+    guard !pendingDecoratorCacheRepair, !decoratorPositionCache.isEmpty else { return }
+    pendingDecoratorCacheRepair = true
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      self.pendingDecoratorCacheRepair = false
+      self.repairDecoratorPositionCacheIfNeeded()
+    }
+  }
+
+  private func repairDecoratorPositionCacheIfNeeded() {
+    let storageLen = backingAttributedString.length
+    guard storageLen > 0 else { return }
+
+    var attachmentLocations: [NodeKey: Int]? = nil
+
+    for (key, cachedLoc) in decoratorPositionCache {
+      if cachedLoc >= 0, cachedLoc < storageLen,
+         let att = backingAttributedString.attribute(.attachment, at: cachedLoc, effectiveRange: nil) as? TextAttachment,
+         att.key == key {
+        continue
+      }
+
+      if attachmentLocations == nil {
+        var locations: [NodeKey: Int] = [:]
+        backingAttributedString.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storageLen)) { value, range, _ in
+          if let att = value as? TextAttachment, let attKey = att.key {
+            locations[attKey] = range.location
+          }
+        }
+        attachmentLocations = locations
+      }
+
+      if let foundAt = attachmentLocations?[key] {
+        decoratorPositionCache[key] = foundAt
+        decoratorPositionCacheDirtyKeys.insert(key)
+      }
+    }
   }
 
   override open func attributes(
@@ -99,16 +155,26 @@ public class TextStorage: NSTextStorage {
     // Mode is not none, so this change has already passed through Lexical
     // Clamp range to storage bounds to avoid NSRangeException from UIKit internals when fast paths race with length changes.
     let length = backingAttributedString.length
+    let wasEmpty = length == 0
     let start = max(0, min(range.location, length))
     let end = max(start, min(range.location + range.length, length))
     let safe = NSRange(location: start, length: end - start)
-    beginEditing()
+
+    let shouldManageEditing = editingDepth == 0
+    if shouldManageEditing {
+      beginEditing()
+    }
+
     backingAttributedString.replaceCharacters(in: safe, with: str)
     edited(.editedCharacters, range: safe, changeInLength: (str as NSString).length - safe.length)
-    endEditing()
+    if shouldManageEditing {
+      endEditing()
+    }
 
-    guard let editor, let frontend = editor.frontend else { return }
-    frontend.showPlaceholderText()
+    let isEmpty = backingAttributedString.length == 0
+    if wasEmpty != isEmpty, let editor, let frontend = editor.frontend {
+      frontend.showPlaceholderText()
+    }
   }
 
   private func performControllerModeUpdate(_ str: String, range: NSRange) {
@@ -165,15 +231,18 @@ public class TextStorage: NSTextStorage {
     let start = max(0, min(range.location, length))
     let end = max(start, min(range.location + range.length, length))
     let safe = NSRange(location: start, length: end - start)
-    beginEditing()
+
+    let shouldManageEditing = editingDepth == 0
+    if shouldManageEditing {
+      beginEditing()
+    }
     if safe.length > 0 {
       backingAttributedString.setAttributes(attrs, range: safe)
       edited(.editedAttributes, range: safe, changeInLength: 0)
     }
-    endEditing()
-
-    guard let editor, let frontend = editor.frontend else { return }
-    frontend.showPlaceholderText()
+    if shouldManageEditing {
+      endEditing()
+    }
   }
 
   public var extraLineFragmentAttributes: [NSAttributedString.Key: Any]? {

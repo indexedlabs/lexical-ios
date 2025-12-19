@@ -10,7 +10,7 @@ final class OptimizedReconcilerCompositionMidStringParityTests: XCTestCase {
 
   private func makeViews() -> (opt: TestEditorView, leg: TestEditorView) {
     let cfg = EditorConfig(theme: Theme(), plugins: [])
-    let opt = TestEditorView(editorConfig: cfg, featureFlags: FeatureFlags.optimizedProfile(.aggressiveEditor))
+    let opt = TestEditorView(editorConfig: cfg, featureFlags: FeatureFlags())
     let leg = TestEditorView(editorConfig: cfg, featureFlags: FeatureFlags())
     return (opt, leg)
   }

@@ -25,7 +25,7 @@ final class OptimizedReconcilerAttributeOnlySequenceParityTests: XCTestCase {
     let metrics = Metrics()
     let cfgOpt = EditorConfig(theme: Theme(), plugins: [], metricsContainer: metrics)
     let cfgLeg = EditorConfig(theme: Theme(), plugins: [])
-    let opt = makeReadOnlyContext(editorConfig: cfgOpt, featureFlags: FeatureFlags.optimizedProfile(.aggressiveEditor))
+    let opt = makeReadOnlyContext(editorConfig: cfgOpt, featureFlags: FeatureFlags())
     let leg = makeReadOnlyContext(editorConfig: cfgLeg, featureFlags: FeatureFlags())
     return (opt, leg, metrics)
   }

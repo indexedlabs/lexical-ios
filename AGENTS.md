@@ -9,9 +9,10 @@ This repo contains Lexical iOS — a Swift Package with a modular plugin archite
 - `Playground/` — Xcode demo app (`LexicalPlayground`).
 - `docs/` — generated DocC site (deployed via GitHub Actions).
 
-## Build, Test, and Development Commands (iOS Only)
-- Always target iOS Simulator (iPhone 17 Pro, iOS 26.0). Do not build/test for macOS.
-- Never run macOS builds or tests. Use iOS Simulator destinations only (Xcodebuild or SwiftPM with iphonesimulator SDK).
+## Build, Test, and Development Commands (Primarily iOS)
+- Default workflow targets iOS Simulator (iPhone 17 Pro, iOS 26.0).
+- **Exception:** When working on **AppKit/macOS-only codepaths or tests** (e.g. `LexicalAppKit`, `LexicalDemoMac`, `#if os(macOS)` XCTest), it is OK to run **macOS builds/tests** *when explicitly requested in this conversation* or when required to validate the fix. Prefer targeted `-only-testing` runs.
+- Never use `swift test` for this repo; SwiftPM targets macOS by default and will fail for UIKit/TextKit iOS‑only APIs. Use `xcodebuild` instead.
 
 - SwiftPM (CLI):
   ```bash
@@ -68,7 +69,9 @@ This repo contains Lexical iOS — a Swift Package with a modular plugin archite
       `xcodebuild -workspace Playground/LexicalPlayground.xcodeproj/project.xcworkspace -scheme Lexical-Package -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.0' -only-testing:LexicalTests/NodeTests test`
   - Build Playground app on simulator:
     `xcodebuild -project Playground/LexicalPlayground.xcodeproj -scheme LexicalPlayground -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.0' build`
-  - Never use `swift test` (macOS). It targets macOS by default and will fail due to UIKit/TextKit iOS‑only APIs. Always use the Xcode iOS simulator command above.
+  - If changes touch AppKit/macOS-only code, also run a targeted macOS test/build:
+    - Example (single test): `xcodebuild -workspace Playground/LexicalPlayground.xcodeproj/project.xcworkspace -scheme Lexical-Package -destination 'platform=macOS' -only-testing:LexicalTests/<Suite>/<testName> test`
+    - Example (build): `xcodebuild -workspace Playground/LexicalPlayground.xcodeproj/project.xcworkspace -scheme Lexical-Package -destination 'platform=macOS' build`
   - Never pass `-quiet` to `xcodebuild` for tests or builds; keep output visible for diagnosis and CI logs.
 - After each significant change, ensure all tests pass and the Playground build succeeds on the iPhone 17 Pro (iOS 26.0) simulator. Do not commit unless these checks pass.
 

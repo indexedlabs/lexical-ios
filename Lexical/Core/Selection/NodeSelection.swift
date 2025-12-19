@@ -117,6 +117,29 @@ public class NodeSelection: BaseSelection {
       let point = Point(key: parentKey, offset: index, type: .element)
       let newSelection = RangeSelection(anchor: point, focus: point, format: TextFormat())
       try setSelection(newSelection)
+      return
+    }
+
+    // Fallback: if we couldn't compute a parent insertion point (e.g. node already detached),
+    // restore to a safe caret so subsequent typing isn't stuck with an empty NodeSelection.
+    if let root = getRoot() {
+      if let firstChild = root.getChildren().first {
+        if firstChild is ElementNode {
+          let point = Point(key: firstChild.getKey(), offset: 0, type: .element)
+          let selection = RangeSelection(anchor: point, focus: point, format: TextFormat())
+          try setSelection(selection)
+          return
+        } else if firstChild is TextNode {
+          let point = Point(key: firstChild.getKey(), offset: 0, type: .text)
+          let selection = RangeSelection(anchor: point, focus: point, format: TextFormat())
+          try setSelection(selection)
+          return
+        }
+      }
+
+      let point = Point(key: root.getKey(), offset: 0, type: .element)
+      let selection = RangeSelection(anchor: point, focus: point, format: TextFormat())
+      try setSelection(selection)
     }
   }
 

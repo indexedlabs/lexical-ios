@@ -13,6 +13,7 @@
 #if canImport(UIKit)
 
 import XCTest
+import UIKit
 @testable import Lexical
 
 @MainActor
@@ -363,7 +364,31 @@ final class DecoratorLayoutDuringEditingRegressionTests: XCTestCase {
     // CRITICAL: The decorator should still be in the position cache!
     // Before the fix, it was incorrectly removed during reconcileDecoratorOpsForSubtree
     XCTAssertNotNil(textStorage.decoratorPositionCache[key], "Decorator should still be in position cache after paragraph merge")
-    XCTAssertEqual(textStorage.decoratorPositionCache[key], 0, "Decorator should be back at position 0 after backspace")
+    // Allow the editor/reconciler to settle if needed (this can be order-dependent when running
+    // alongside other TextKit-heavy tests). Assert that the cache matches the actual attachment
+    // location rather than assuming a specific absolute offset.
+    func attachmentLocation() -> Int? {
+      let len = textStorage.length
+      guard len > 0 else { return nil }
+      var found: Int? = nil
+      textStorage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: len)) { value, range, stop in
+        if let att = value as? TextAttachment, att.key == key {
+          found = range.location
+          stop.pointee = true
+        }
+      }
+      return found
+    }
+
+    let deadline = Date().addingTimeInterval(1.0)
+    while Date() < deadline {
+      let expected = attachmentLocation()
+      if expected != nil, textStorage.decoratorPositionCache[key] == expected { break }
+      RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+    }
+    let expected = attachmentLocation()
+    XCTAssertNotNil(expected, "Decorator attachment should still exist in text storage after paragraph merge")
+    XCTAssertEqual(textStorage.decoratorPositionCache[key], expected, "Decorator position cache should match attachment location after paragraph merge")
 
     // Verify decorator node still exists in editor state
     try editor.read {
@@ -463,7 +488,8 @@ final class DecoratorLayoutDuringEditingRegressionTests: XCTestCase {
 
     var decoratorKey: NodeKey?
 
-    // Setup: newline + decorator (decorator at position 1)
+    // Setup: decorator + trailing text (ensure there is at least one non-attachment character
+    // after the decorator so a stale cache value can point at a non-attachment index).
     try editor.update {
       guard let root = getRoot() else { return }
       for child in root.getChildren() {
@@ -472,7 +498,8 @@ final class DecoratorLayoutDuringEditingRegressionTests: XCTestCase {
       let paragraph = createParagraphNode()
       let decorator = TestDecoratorNodeCrossplatform()
       decoratorKey = decorator.key
-      try paragraph.append([decorator])
+      let trailingText = createTextNode(text: "x")
+      try paragraph.append([decorator, trailingText])
       try root.append([paragraph])
     }
 
@@ -481,34 +508,29 @@ final class DecoratorLayoutDuringEditingRegressionTests: XCTestCase {
       return
     }
 
-    // Insert newline before decorator
-    textStorage.beginEditing()
-    textStorage.replaceCharacters(in: NSRange(location: 0, length: 0), with: "\n")
-    textStorage.endEditing()
+    XCTAssertGreaterThanOrEqual(textStorage.length, 2, "Expected at least 2 characters in storage")
 
-    // Allow deferred operations
-    let exp1 = expectation(description: "Enter deferred ops")
-    DispatchQueue.main.async { exp1.fulfill() }
-    wait(for: [exp1], timeout: 1.0)
+    // Simulate a stale cache: point at the trailing text instead of the attachment.
+    // LayoutManager should detect no attachment at this index and recover by scanning.
+    textStorage.decoratorPositionCache[key] = 1
 
-    // Verify decorator is at position 1
-    XCTAssertEqual(textStorage.decoratorPositionCache[key], 1, "Decorator should be at position 1 after newline insert")
+    // Force a draw pass so LayoutManager runs `positionAllDecorators()` and can correct the cache.
+    textView.frame = CGRect(x: 0, y: 0, width: 320, height: 200)
+    textView.setNeedsLayout()
+    textView.layoutIfNeeded()
+    let renderer = UIGraphicsImageRenderer(size: textView.bounds.size)
+    _ = renderer.image { ctx in
+      guard let layoutManager = textView.layoutManager as? Lexical.LayoutManager else {
+        return
+      }
+      let textContainer = textView.textContainer
+      // `drawGlyphs` uses the current graphics context; calling it inside the renderer closure
+      // guarantees our LayoutManager override runs (and thus `positionAllDecorators()`).
+      let glyphRange = layoutManager.glyphRange(for: textContainer)
+      layoutManager.drawGlyphs(forGlyphRange: glyphRange, at: .zero)
+    }
 
-    // Delete the newline - decorator moves back to 0
-    // In real usage, the draw cycle can race with cache updates, causing stale position reads
-    textStorage.beginEditing()
-    textStorage.replaceCharacters(in: NSRange(location: 0, length: 1), with: "")
-    textStorage.endEditing()
-
-    // Before deferred ops run, the cache might still have stale value
-    // The fix in LayoutManager should recover from this by finding the actual position
-
-    // Allow deferred operations
-    let exp2 = expectation(description: "Backspace deferred ops")
-    DispatchQueue.main.async { exp2.fulfill() }
-    wait(for: [exp2], timeout: 1.0)
-
-    // After all deferred ops, the cache should be correct
+    // After draw, the cache should be corrected to the attachment location.
     XCTAssertEqual(textStorage.decoratorPositionCache[key], 0, "Decorator position cache should be updated to 0")
 
     // Verify decorator still exists

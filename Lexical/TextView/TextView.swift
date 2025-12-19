@@ -46,9 +46,9 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
   private let useInputDelegateProxy: Bool
   private let inputDelegateProxy: InputDelegateProxy
   private let _keyCommands: [UIKeyCommand]?
+  private var pendingScrollSelectionWorkItem: DispatchWorkItem?
 
   fileprivate var textViewDelegate: TextViewDelegate
-  private let modernTKOptimizations: Bool
 
   override public var keyCommands: [UIKeyCommand]? {
     return _keyCommands
@@ -80,19 +80,8 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
     let adjustedFlags = FeatureFlags(
       reconcilerSanityCheck: reconcilerSanityCheck,
       proxyTextViewInputDelegate: featureFlags.proxyTextViewInputDelegate,
-      useOptimizedReconciler: featureFlags.useOptimizedReconciler,
-      useReconcilerFenwickDelta: featureFlags.useReconcilerFenwickDelta,
-      useReconcilerKeyedDiff: featureFlags.useReconcilerKeyedDiff,
-      useReconcilerBlockRebuild: featureFlags.useReconcilerBlockRebuild,
-      useOptimizedReconcilerStrictMode: featureFlags.useOptimizedReconcilerStrictMode,
-      useReconcilerFenwickCentralAggregation: featureFlags.useReconcilerFenwickCentralAggregation,
-      useReconcilerShadowCompare: featureFlags.useReconcilerShadowCompare,
-      useReconcilerInsertBlockFenwick: featureFlags.useReconcilerInsertBlockFenwick,
-      useReconcilerDeleteBlockFenwick: featureFlags.useReconcilerDeleteBlockFenwick,
-      useReconcilerPrePostAttributesOnly: featureFlags.useReconcilerPrePostAttributesOnly,
-      useModernTextKitOptimizations: featureFlags.useModernTextKitOptimizations,
-      verboseLogging: featureFlags.verboseLogging,
-      prePostAttrsOnlyMaxTargets: featureFlags.prePostAttrsOnlyMaxTargets
+      reconcilerStrictMode: featureFlags.reconcilerStrictMode,
+      verboseLogging: featureFlags.verboseLogging
     )
 
     editor = Editor(
@@ -102,7 +91,6 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
     placeholderLabel = UILabel(frame: .zero)
 
     useInputDelegateProxy = featureFlags.proxyTextViewInputDelegate
-    modernTKOptimizations = featureFlags.useModernTextKitOptimizations
     inputDelegateProxy = InputDelegateProxy()
     textViewDelegate = TextViewDelegate(editor: editor)
     _keyCommands = editorConfig.keyCommands
@@ -122,12 +110,10 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
     setUpPlaceholderLabel()
     registerRichText(editor: editor)
 
-    // Opportunistically drive viewport-only layout on iOS 16+ when enabled.
-    if modernTKOptimizations {
-      if #available(iOS 16.0, *) {
-        // Trigger an initial viewport layout; we’ll also refresh in layoutSubviews.
-        self.textLayoutManager?.textViewportLayoutController.layoutViewport()
-      }
+    // Opportunistically drive viewport-only layout on iOS 16+.
+    if #available(iOS 16.0, *) {
+      // Trigger an initial viewport layout; we’ll also refresh in layoutSubviews.
+      self.textLayoutManager?.textViewportLayoutController.layoutViewport()
     }
   }
 
@@ -149,11 +135,9 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
       y: textContainerInset.top)
     placeholderLabel.sizeToFit()
 
-    // Keep viewport layout bounded to visible area when enabled (iOS 16+)
-    if modernTKOptimizations {
-      if #available(iOS 16.0, *) {
-        self.textLayoutManager?.textViewportLayoutController.layoutViewport()
-      }
+    // Keep viewport layout bounded to visible area (iOS 16+)
+    if #available(iOS 16.0, *) {
+      self.textLayoutManager?.textViewportLayoutController.layoutViewport()
     }
   }
 
@@ -194,6 +178,10 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
   override public func deleteBackward() {
     editor.log(.UITextView, .verbose, "deleteBackward()")
 
+    // Ensure Lexical selection is synced with the current native selection. In unit tests and
+    // some programmatic selection changes, `textViewDidChangeSelection` may not fire reliably.
+    onSelectionChange(editor: editor)
+
     let previousSelectedRange = selectedRange
     let previousText = text
 
@@ -204,8 +192,17 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
 
     editor.dispatchCommand(type: .deleteCharacter, payload: true)
 
+    var handledByNonRangeSelection = false
+    do {
+      try editor.read {
+        if let selection = try? getSelection() {
+          handledByNonRangeSelection = selection is NodeSelection || selection is GridSelection
+        }
+      }
+    } catch {}
+
     // Fallback: if nothing changed (text and selection), delegate to UIKit's default handling
-    if text == previousText && selectedRange == previousSelectedRange {
+    if text == previousText && selectedRange == previousSelectedRange && !handledByNonRangeSelection {
       super.deleteBackward()
       resetTypingAttributes(for: selectedRange)
       return
@@ -304,6 +301,10 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
     editor.log(
       .UITextView, .verbose, "Text view selected range \(String(describing: self.selectedRange))")
 
+    // Ensure Lexical selection is synced with the current native selection. In unit tests and
+    // some programmatic selection changes, `textViewDidChangeSelection` may not fire reliably.
+    onSelectionChange(editor: editor)
+
     let expectedSelectionLocation = selectedRange.location + text.lengthAsNSString()
 
     inputDelegateProxy.isSuspended = true  // do not send selection changes during insertText, to not confuse third party keyboards
@@ -320,6 +321,24 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
     textStorage.mode = TextStorageEditingMode.controllerMode
     editor.dispatchCommand(type: .insertText, payload: text)
     textStorage.mode = TextStorageEditingMode.none
+
+    // When layout is allowed to be non-contiguous, TextKit may defer laying out newly-inserted
+    // content. During rapid typing this can make the caret appear to lag behind the inserted text.
+    // Ensure layout in a tiny range around the caret so the insertion point stays visually in sync.
+    if layoutManager.hasNonContiguousLayout {
+      let len = textStorage.length
+      if len > 0 {
+        let caret = min(max(0, selectedRange.location), len)
+        let ensureLoc = min(max(0, (caret == len) ? (caret - 1) : caret), len - 1)
+        layoutManager.ensureLayout(forCharacterRange: NSRange(location: ensureLoc, length: 1))
+      }
+    }
+
+    // Ensure the insertion point remains visible when inserting newlines (e.g. pressing Return).
+    // With Lexical's controller-driven text storage, UIKit doesn't always auto-scroll for us.
+    if text.contains("\n") {
+      requestScrollSelectionToVisible()
+    }
 
     // check if we need to send a selectionChanged (i.e. something unexpected happened)
     if selectedRange.length != 0 || selectedRange.location != expectedSelectionLocation {
@@ -470,11 +489,59 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
 
     if let range = nativeSelection.range {
       selectedRange = range
+      requestScrollSelectionToVisible()
+    } else {
+      // If we can't map the Lexical selection back to a native range (usually because the range cache
+      // is temporarily out of sync after a structural edit), ensure we still set a valid caret.
+      // Otherwise UIKit can end up with an invalid/hidden caret until the user taps to force a selection change.
+      let len = textStorage.length
+      let clampedLoc = min(max(0, selectedRange.location), len)
+      selectedRange = NSRange(location: clampedLoc, length: 0)
+      requestScrollSelectionToVisible()
     }
   }
 
   internal func resetSelectedRange() {
     selectedRange = NSRange(location: 0, length: 0)
+  }
+
+  fileprivate func requestScrollSelectionToVisible() {
+    guard window != nil, isScrollEnabled else { return }
+    pendingScrollSelectionWorkItem?.cancel()
+    let work = DispatchWorkItem { [weak self] in
+      guard let self, self.window != nil, self.isScrollEnabled else { return }
+      let rangeToScroll = self.selectedRange
+      let len = self.textStorage.length
+      if len > 0 {
+        let caret = min(max(0, rangeToScroll.location), len)
+        let ensureLoc = min(max(0, (caret == len) ? (caret - 1) : caret), len - 1)
+        self.layoutManager.ensureLayout(forCharacterRange: NSRange(location: ensureLoc, length: 1))
+      }
+      self.layoutIfNeeded()
+      if let end = self.selectedTextRange?.end {
+        var caretRect = self.caretRect(for: end)
+        caretRect = caretRect.insetBy(dx: 0, dy: -8)
+        let padding: CGFloat = 8
+        let minY = -self.adjustedContentInset.top
+        let maxY = max(minY, self.contentSize.height - self.bounds.height + self.adjustedContentInset.bottom)
+        let visibleTop = self.contentOffset.y
+        let visibleBottom = visibleTop + self.bounds.height
+
+        var targetY = self.contentOffset.y
+        if caretRect.maxY > (visibleBottom - padding) {
+          targetY = caretRect.maxY - self.bounds.height + padding
+        } else if caretRect.minY < (visibleTop + padding) {
+          targetY = caretRect.minY - padding
+        }
+
+        targetY = min(max(targetY, minY), maxY)
+        self.setContentOffset(CGPoint(x: self.contentOffset.x, y: targetY), animated: false)
+      } else {
+        self.scrollRangeToVisible(rangeToScroll)
+      }
+    }
+    pendingScrollSelectionWorkItem = work
+    DispatchQueue.main.async(execute: work)
   }
 
   func defaultClearEditor() throws {
@@ -570,6 +637,13 @@ private class TextViewDelegate: NSObject, UITextViewDelegate {
 
     textView.validateNativeSelection(textView)
     onSelectionChange(editor: textView.editor)
+
+    // Keep caret visible when UIKit moves selection as part of text storage edits (e.g. Return/Enter),
+    // since controller-driven editing doesn't always trigger UITextView's built-in autoscroll.
+    let range = textView.selectedRange
+    if range.length == 0 {
+      textView.requestScrollSelectionToVisible()
+    }
   }
 
   public func textView(

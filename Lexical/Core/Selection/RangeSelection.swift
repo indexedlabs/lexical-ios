@@ -1029,12 +1029,13 @@ public class RangeSelection: BaseSelection {
   }
 
   #if canImport(UIKit)
-  @MainActor
-  public func deleteCharacter(isBackwards: Bool) throws {
-    let wasCollapsed = isCollapsed()
-    let startedAtElementOffsetZero = wasCollapsed && isBackwards && anchor.type == .element && anchor.offset == 0
-    let startedAtInlineDecorator =
-      startedAtElementOffsetZero
+	  @MainActor
+	  public func deleteCharacter(isBackwards: Bool) throws {
+	    let wasCollapsed = isCollapsed()
+	    var shouldDeleteLeadingInlineDecoratorAfterParagraphMerge = false
+	    let startedAtElementOffsetZero = wasCollapsed && isBackwards && anchor.type == .element && anchor.offset == 0
+	    let startedAtInlineDecorator =
+	      startedAtElementOffsetZero
       && (try? (anchor.getNode() as? ElementNode)?.getChildAtIndex(index: anchor.offset) as? DecoratorNode)?
         .isInline() == true
     let startedInEmptyElement =
@@ -1047,7 +1048,7 @@ public class RangeSelection: BaseSelection {
     }
     // Universal no-op: backspace at absolute document start should do nothing (parity with legacy)
     if isBackwards && wasCollapsed {
-      if let editor = getActiveEditor() {
+      if getActiveEditor() != nil {
         func hasPreviousSiblingInAncestorChain(startingFrom node: Node) -> Bool {
           var current: Node? = node
           while let cur = current {
@@ -1079,9 +1080,8 @@ public class RangeSelection: BaseSelection {
       }
     }
     // If the caret is adjacent to an inline decorator, handle selection transition to NodeSelection
-    // before any native clamping. The optimized reconciler pre-clamp turns a collapsed caret into
-    // a 1-char range selection, which would otherwise bypass decorator handling and delete the
-    // attachment immediately (breaking parity with legacy).
+    // before any native clamping. Pre-clamping can turn a collapsed caret into a 1-char range
+    // selection, which would otherwise bypass decorator handling and delete the attachment.
     if wasCollapsed {
       let anchorPoint = anchor
       let focusPoint = focus
@@ -1099,14 +1099,90 @@ public class RangeSelection: BaseSelection {
         return
       }
     }
-    // Optimized: pre-clamp a single grapheme (composed character) deletion when starting
+    // Pre-clamp a single grapheme (composed character) deletion when starting
     // from a collapsed caret. This avoids relying on native tokenizer behavior that may
     var didPreClampSingleChar = false
-    if isBackwards && wasCollapsed, let editor = getActiveEditor(),
-       editor.frontend is LexicalView, editor.featureFlags.useOptimizedReconciler {
-      if let start = caretStringLocation, start > 0 {
-        let clamp: NSRange
-        if let ns = editor.textStorage?.string as NSString?, editor.featureFlags.useOptimizedReconcilerStrictMode {
+    if isBackwards && wasCollapsed,
+       let editor = getActiveEditor(),
+       editor.frontend is LexicalView,
+       // Only pre-clamp when deleting *inside* a TextNode. At start-of-node (.offset == 0),
+       // we want structural handlers (e.g. list item collapse) to run instead.
+       anchor.type == .text,
+       focus == anchor,
+       anchor.offset > 0,
+       let start = caretStringLocation,
+       start > 0
+    {
+        // Prefer a point-based clamp when deleting inside a TextNode. This avoids relying on
+        // native selection movement (which can be unavailable in tests) and avoids mapping
+        // global string offsets back into Points via rangeCache search.
+        if let textNode = (try? anchor.getNode()) as? TextNode {
+          let ns = textNode.getTextPart() as NSString
+          let caret = anchor.offset
+          if caret > 0, caret <= ns.length {
+            let localClamp: NSRange
+            if editor.featureFlags.reconcilerStrictMode {
+              // Previous Unicode scalar (handle surrogate pairs)
+              let i = caret - 1
+              if i >= 0 {
+                let c = ns.character(at: i)
+                if c >= 0xDC00 && c <= 0xDFFF, i - 1 >= 0 {
+                  let h = ns.character(at: i - 1)
+                  if h >= 0xD800 && h <= 0xDBFF { localClamp = NSRange(location: i - 1, length: 2) } else { localClamp = NSRange(location: i, length: 1) }
+                } else {
+                  localClamp = NSRange(location: i, length: 1)
+                }
+              } else {
+                localClamp = NSRange(location: max(0, caret - 1), length: 1)
+              }
+            } else {
+              // Default (non-strict): delete one user-perceived character (grapheme cluster).
+              // If caret is inside a composed sequence, mimic native parity by deleting only
+              // the previous scalar segment (typically the base).
+              let left = ns.rangeOfComposedCharacterSequence(at: caret - 1)
+              let insideSameCluster = (caret > left.location) && (caret < left.location + left.length)
+              if insideSameCluster {
+                let i = caret - 1
+                if i >= 0 {
+                  let c = ns.character(at: i)
+                  if c >= 0xDC00 && c <= 0xDFFF, i - 1 >= 0 {
+                    let h = ns.character(at: i - 1)
+                    if h >= 0xD800 && h <= 0xDBFF { localClamp = NSRange(location: i - 1, length: 2) } else { localClamp = NSRange(location: i, length: 1) }
+                  } else {
+                    localClamp = NSRange(location: i, length: 1)
+                  }
+                } else {
+                  localClamp = NSRange(location: max(0, caret - 1), length: 1)
+                }
+              } else {
+                localClamp = left
+              }
+            }
+            if localClamp.length > 0 && localClamp.location != caret {
+              focus.updatePoint(key: anchor.key, offset: localClamp.location, type: .text)
+              // Clamp structural fast paths in the reconciler (one-shot)
+              editor.pendingDeletionClampRange = NSRange(location: start - localClamp.length, length: localClamp.length)
+              didPreClampSingleChar = true
+            }
+          } else if caret == 0, textNode.getPreviousSibling() == nil {
+            // At the beginning of a block/paragraph, UIKit native selection extension can
+            // sometimes expand to a larger range (e.g. the whole previous word). Pre-select
+            // the single character immediately before the caret (typically the paragraph
+            // separator) to ensure backspace merges blocks rather than deleting content.
+            if let parent = textNode.getParent(), parent.getPreviousSibling() != nil {
+              let clamp = NSRange(location: start - 1, length: 1)
+              try applySelectionRange(clamp, affinity: .backward)
+              if !isCollapsed() {
+                editor.pendingDeletionClampRange = clamp
+                didPreClampSingleChar = true
+              }
+            }
+          }
+        }
+
+        if !didPreClampSingleChar {
+          let clamp: NSRange
+          if let ns = editor.textStorage?.string as NSString?, editor.featureFlags.reconcilerStrictMode {
           // Previous Unicode scalar (handle surrogate pairs)
           let i = start - 1
           if i >= 0 {
@@ -1120,7 +1196,7 @@ public class RangeSelection: BaseSelection {
           } else {
             clamp = NSRange(location: max(0, start - 1), length: 1)
           }
-        } else if let ns = editor.textStorage?.string as NSString? {
+          } else if let ns = editor.textStorage?.string as NSString? {
           // Default (non-strict): delete one user-perceived character (grapheme cluster).
           // However, if the caret is positioned INSIDE a cluster (e.g., between emoji base and
           // its skin‑tone modifier), mimic legacy/native parity by deleting only the "previous"
@@ -1145,14 +1221,16 @@ public class RangeSelection: BaseSelection {
           } else {
             clamp = left
           }
-        } else {
+          } else {
           clamp = NSRange(location: start - 1, length: 1)
+          }
+          // Map and apply explicit 1‑char selection; also set structural clamp for reconciler.
+          try applySelectionRange(clamp, affinity: .backward)
+          if !isCollapsed() {
+            editor.pendingDeletionClampRange = clamp
+            didPreClampSingleChar = true
+          }
         }
-        // Map and apply explicit 1‑char selection; also set structural clamp for reconciler.
-        try applySelectionRange(clamp, affinity: .backward)
-        editor.pendingDeletionClampRange = clamp
-        didPreClampSingleChar = true
-      }
     }
     // Capture potential caret remap target for list/item merges when deleting backwards
     var preDeletePreviousTextKey: NodeKey? = nil
@@ -1303,43 +1381,59 @@ public class RangeSelection: BaseSelection {
         try possibleNode.selectStart()
         return
       }
-      if didPreClampSingleChar {
-      } else {
+      // Structural backspace handling for element selections at start-of-node (e.g. empty list item).
+      // Run before `modify(...)` since extending selection would bypass `collapseAtStart`.
+      if isBackwards, anchor.type == .element, anchor.offset == 0,
+         let element = try anchor.getNode() as? ElementNode,
+         try element.collapseAtStart(selection: self)
+      {
+        return
+      }
+      if !didPreClampSingleChar {
         try modify(alter: .extend, isBackward: isBackwards, granularity: .character)
       }
 
-      // Clamp over-eager native selection expansions (observed with optimized reconciler
+      // Clamp over-eager native selection expansions (observed with reconciler
       // on fast backspaces after typing a new word). If selection started collapsed and
       // the native tokenizer expanded to more than one character (e.g., a whole word),
       // force a single-character deletion to mirror legacy behavior.
-      if wasCollapsed, let editor = getActiveEditor(), editor.frontend is LexicalView, editor.featureFlags.useOptimizedReconciler {
-        if !isCollapsed(), let start = caretStringLocation,
-           let a = try? stringLocationForPoint(anchor, editor: editor),
-           let b = try? stringLocationForPoint(focus, editor: editor) {
-          let len = abs(a - b)
-          if len > 1 {
-            // Clamp to either a single code unit (strict parity) or the full grapheme cluster
-            var clamp = NSRange(location: 0, length: 0)
-            if editor.featureFlags.useOptimizedReconcilerStrictMode {
-              let loc = isBackwards ? max(0, start - 1) : start
-              clamp = NSRange(location: loc, length: 1)
-            } else if let ns = editor.textStorage?.string as NSString? {
-              if isBackwards {
-                if start > 0 { clamp = ns.rangeOfComposedCharacterSequence(at: start - 1) }
-              } else {
-                if start < ns.length { clamp = ns.rangeOfComposedCharacterSequence(at: start) }
-              }
-            }
-            try applySelectionRange(clamp, affinity: isBackwards ? .backward : .forward)
-            // Additionally clamp structural fast paths in the optimized reconciler (one‑shot)
-            editor.pendingDeletionClampRange = clamp
-          }
-          }
-        }
+      if wasCollapsed, let editor = getActiveEditor(), editor.frontend is LexicalView {
+	        if !isCollapsed(), let start = caretStringLocation,
+	           let a = try? stringLocationForPoint(anchor, editor: editor),
+	           let b = try? stringLocationForPoint(focus, editor: editor) {
+	          let len = abs(a - b)
+	          let selectionRange = NSRange(location: min(a, b), length: len)
+	          // If the selection includes an attachment placeholder (U+FFFC), don't clamp it down to a
+	          // single character; we want forward/backward delete to be able to remove inline decorators.
+	          let includesAttachment: Bool = {
+	            guard let ns = editor.textStorage?.string as NSString?,
+	                  selectionRange.location >= 0,
+	                  NSMaxRange(selectionRange) <= ns.length else { return false }
+	            return ns.range(of: "\u{FFFC}", options: [], range: selectionRange).location != NSNotFound
+	          }()
+	          if len > 1, !includesAttachment {
+	            // Clamp to either a single code unit (strict parity) or the full grapheme cluster
+	            var clamp = NSRange(location: 0, length: 0)
+	            if editor.featureFlags.reconcilerStrictMode {
+	              let loc = isBackwards ? max(0, start - 1) : start
+	              clamp = NSRange(location: loc, length: 1)
+	            } else if let ns = editor.textStorage?.string as NSString? {
+	              if isBackwards {
+	                if start > 0 { clamp = ns.rangeOfComposedCharacterSequence(at: start - 1) }
+	              } else {
+	                if start < ns.length { clamp = ns.rangeOfComposedCharacterSequence(at: start) }
+	              }
+	            }
+	            try applySelectionRange(clamp, affinity: isBackwards ? .backward : .forward)
+	            // Additionally clamp structural fast paths in the reconciler (one‑shot)
+	            editor.pendingDeletionClampRange = clamp
+	          }
+	          }
+	        }
 
-      if !isCollapsed() {
-        let focusNode = focus.type == .text ? try focus.getNode() : nil
-        anchorNode = anchor.type == .text ? try anchor.getNode() : nil
+	      if !isCollapsed() {
+	        let focusNode = focus.type == .text ? try focus.getNode() : nil
+	        anchorNode = anchor.type == .text ? try anchor.getNode() : nil
 
         if let focusNode = focusNode as? TextNode, focusNode.isSegmented() {
           let offset = focus.getOffset()
@@ -1364,21 +1458,37 @@ public class RangeSelection: BaseSelection {
         }
         // Lexical JS calls updateCaretSelectionForUnicodeCharacter() here. We don't need to do that,
         // since our modify() accurately accounts for unicode boundaries
-      } else if isBackwards && anchor.offset == 0 {
-        // Special handling around rich text nodes
-        let element =
-          anchor.type == .element ? try anchor.getNode() : try anchor.getNode().getParentOrThrow()
-        if let element = element as? ElementNode, try element.collapseAtStart(selection: self) {
-          return
-        }
-      }
-    }
+	      }
+	    }
 
-    try removeText()
+	    // Forward delete at end-of-paragraph: if we are deleting a paragraph separator, and the next
+	    // character is an inline decorator attachment (U+FFFC), also delete that decorator. This
+	    // matches expected native behavior for attachments at the start of the next paragraph.
+	    if !isBackwards, wasCollapsed, let editor = getActiveEditor(), !isCollapsed(),
+	       let a = try? stringLocationForPoint(anchor, editor: editor),
+	       let b = try? stringLocationForPoint(focus, editor: editor),
+	       let ns = editor.textStorage?.string as NSString?
+	    {
+	      let range = NSRange(location: min(a, b), length: abs(a - b))
+	      if range.length > 0, NSMaxRange(range) <= ns.length {
+	        if ns.range(of: "\n", options: [], range: range).location != NSNotFound {
+	          shouldDeleteLeadingInlineDecoratorAfterParagraphMerge = true
+	        }
+	      }
+	    }
 
-    // After a successful backward delete at the start of a block (e.g., list item),
-    // remap the caret to the end of the previous text node to mirror legacy behavior.
-    if isBackwards && wasCollapsed, let key = preDeletePreviousTextKey {
+	    try removeText()
+
+	    if shouldDeleteLeadingInlineDecoratorAfterParagraphMerge, isCollapsed() {
+	      let adjacentNode = try getAdjacentNode(focus: focus, isBackward: false)
+	      if let adjacentDecorator = adjacentNode as? DecoratorNode, adjacentDecorator.isInline() {
+	        try adjacentDecorator.remove()
+	      }
+	    }
+	
+	    // After a successful backward delete at the start of a block (e.g., list item),
+	    // remap the caret to the end of the previous text node to mirror legacy behavior.
+	    if isBackwards && wasCollapsed, let key = preDeletePreviousTextKey {
       if let prevText: TextNode = getNodeByKey(key: key) {
         let end = prevText.getTextContentSize()
         do {
@@ -1401,9 +1511,9 @@ public class RangeSelection: BaseSelection {
          anchor.offset == textNode.getTextContentSize(),
          let nextDecorator = textNode.getNextSibling() as? DecoratorNode,
          nextDecorator.isInline(),
-         let parent = textNode.getParent() as? ElementNode,
+         let parent = textNode.getParent(),
          let index = textNode.getIndexWithinParent() {
-        try? parent.select(anchorOffset: index + 1, focusOffset: index + 1)
+        _ = try? parent.select(anchorOffset: index + 1, focusOffset: index + 1)
       } else if startedInEmptyElement,
                 anchor.type == .element,
                 let element = try? anchor.getNode() as? ElementNode,
@@ -1414,12 +1524,12 @@ public class RangeSelection: BaseSelection {
         while let node = prev {
           if let prevText = node as? TextNode {
             let end = prevText.getTextContentSize()
-            try? prevText.select(anchorOffset: end, focusOffset: end)
+            _ = try? prevText.select(anchorOffset: end, focusOffset: end)
             break
           }
           if let prevElement = node as? ElementNode, let desc = prevElement.getLastDescendant() as? TextNode {
             let end = desc.getTextContentSize()
-            try? desc.select(anchorOffset: end, focusOffset: end)
+            _ = try? desc.select(anchorOffset: end, focusOffset: end)
             break
           }
           prev = node.getPreviousSibling()
@@ -1956,6 +2066,30 @@ public class RangeSelection: BaseSelection {
       throw LexicalError.invariantViolation("Calling applySelectionRange when no active editor")
     }
 
+    // For non-collapsed ranges, map the NSRange boundaries in a stable way:
+    // - start boundary prefers the previous node (backward)
+    // - end boundary prefers the next node (forward)
+    //
+    // This avoids tie-breaking issues at block boundaries (e.g. paragraph separators) where
+    // using a single direction for both endpoints can incorrectly map a 1-char range onto
+    // the first character of the next TextNode.
+    if range.length > 0 {
+      if let startPoint = try? pointAtStringLocation(
+        range.location, searchDirection: .backward, rangeCache: editor.rangeCache),
+        let endPoint = try? pointAtStringLocation(
+          range.location + range.length, searchDirection: .forward, rangeCache: editor.rangeCache)
+      {
+        if affinity == .forward {
+          self.anchor = startPoint
+          self.focus = endPoint
+        } else {
+          self.anchor = endPoint
+          self.focus = startPoint
+        }
+        return
+      }
+    }
+
     let anchorOffset = affinity == .forward ? range.location : range.location + range.length
     let focusOffset = affinity == .forward ? range.location + range.length : range.location
 
@@ -2006,11 +2140,13 @@ public class RangeSelection: BaseSelection {
     // Because a range works on start and end, we might need to flip
     // to match the range has specifically.
 
-    if let range = nativeSelection.range {
-      let anchorLocation = isBackward ? range.location + range.length : range.location
-      let focusLocation = isBackward ? range.location : range.location + range.length
+    if let range = nativeSelection.range,
+       let aLoc = try? stringLocationForPoint(anchor, editor: editor),
+       let fLoc = try? stringLocationForPoint(focus, editor: editor) {
+      let expectedAnchorLocation = isBackward ? range.location + range.length : range.location
+      let expectedFocusLocation = isBackward ? range.location : range.location + range.length
 
-      if !collapse && anchorLocation != anchor.offset || focusLocation != focus.offset {
+      if !collapse && (aLoc != expectedAnchorLocation || fLoc != expectedFocusLocation) {
         swapPoints()
       }
     }
@@ -2076,11 +2212,14 @@ public class RangeSelection: BaseSelection {
 
     // Because a range works on start and end, we might need to flip
     // to match the range specifically.
-    let anchorLocation = isBackward ? nativeRange.location + nativeRange.length : nativeRange.location
-    let focusLocation = isBackward ? nativeRange.location : nativeRange.location + nativeRange.length
+    if let aLoc = try? stringLocationForPoint(anchor, editor: editor),
+       let fLoc = try? stringLocationForPoint(focus, editor: editor) {
+      let expectedAnchorLocation = isBackward ? nativeRange.location + nativeRange.length : nativeRange.location
+      let expectedFocusLocation = isBackward ? nativeRange.location : nativeRange.location + nativeRange.length
 
-    if !collapse && anchorLocation != anchor.offset || focusLocation != focus.offset {
-      swapPoints()
+      if !collapse && (aLoc != expectedAnchorLocation || fLoc != expectedFocusLocation) {
+        swapPoints()
+      }
     }
   }
   #endif

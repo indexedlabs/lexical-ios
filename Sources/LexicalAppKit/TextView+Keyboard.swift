@@ -30,10 +30,17 @@ extension TextViewAppKit {
     // Hide cursor while typing
     NSCursor.setHiddenUntilMouseMoves(true)
 
+    // Command-modified navigation (e.g. Cmd+Shift+Left) should always be routed through
+    // NSTextView's native key handling so selection/movement commands run reliably.
+    if event.modifierFlags.contains(.command) {
+      super.keyDown(with: event)
+      return
+    }
+
     // Let the input context handle the event first (for IME)
     // If not handled, interpret the key event
-    if inputContext?.handleEvent(event) == false {
-      interpretKeyEvents([event])
+    if inputContext?.handleEvent(event) != true {
+      super.keyDown(with: event)
     }
   }
 
@@ -45,7 +52,23 @@ extension TextViewAppKit {
       return super.performKeyEquivalent(with: event)
     }
 
-    // Let NSTextView handle standard shortcuts (Cmd+C, Cmd+V, etc.)
+    if event.type == .keyDown, event.modifierFlags.contains(.command) {
+      let key = (event.charactersIgnoringModifiers ?? "").lowercased()
+      switch key {
+      case "c":
+        copy(nil)
+        return true
+      case "x":
+        cut(nil)
+        return true
+      case "v":
+        paste(nil)
+        return true
+      default:
+        break
+      }
+    }
+
     return super.performKeyEquivalent(with: event)
   }
 
@@ -100,6 +123,7 @@ extension TextViewAppKit {
     // Dispatch Lexical command for paragraph insertion
     editor.dispatchCommand(type: .insertParagraph, payload: nil)
     updatePlaceholderVisibility()
+    scrollRangeToVisible(selectedRange())
   }
 
   /// Insert newline ignoring field editor (Option+Return).
@@ -107,6 +131,7 @@ extension TextViewAppKit {
     // Dispatch Lexical command for line break insertion
     editor.dispatchCommand(type: .insertLineBreak, payload: nil)
     updatePlaceholderVisibility()
+    scrollRangeToVisible(selectedRange())
   }
 
   /// Insert tab.

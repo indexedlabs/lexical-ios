@@ -12,7 +12,7 @@ final class DecoratorDeleteWordParityTests: XCTestCase {
 
   private func makeViews() -> (opt: TestEditorView, leg: TestEditorView) {
     let cfg = EditorConfig(theme: Theme(), plugins: [])
-    let opt = TestEditorView(editorConfig: cfg, featureFlags: FeatureFlags.optimizedProfile(.aggressiveEditor))
+    let opt = TestEditorView(editorConfig: cfg, featureFlags: FeatureFlags())
     let leg = TestEditorView(editorConfig: cfg, featureFlags: FeatureFlags())
     try? registerTestDecoratorNode(on: opt.editor)
     try? registerTestDecoratorNode(on: leg.editor)

@@ -20,16 +20,12 @@ final class OptimizedReconcilerTransformsParityTests: XCTestCase {
     let optFlags = FeatureFlags(
       reconcilerSanityCheck: false,
       proxyTextViewInputDelegate: false,
-      useOptimizedReconciler: true,
-      useReconcilerFenwickDelta: true,
-      useReconcilerKeyedDiff: true,
-      useReconcilerBlockRebuild: true,
-      useOptimizedReconcilerStrictMode: true
+      reconcilerStrictMode: true
     )
     let legFlags = FeatureFlags(
       reconcilerSanityCheck: false,
       proxyTextViewInputDelegate: false,
-      useOptimizedReconciler: false
+      reconcilerStrictMode: true
     )
     let optCtx = makeReadOnlyContext(editorConfig: cfg, featureFlags: optFlags)
     let legCtx = makeReadOnlyContext(editorConfig: cfg, featureFlags: legFlags)

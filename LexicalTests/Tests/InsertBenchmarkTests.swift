@@ -64,24 +64,17 @@ final class InsertBenchmarkTests: XCTestCase {
   func testInsertBenchmarksQuick() throws {
     // Quick smoke perf (kept small to avoid long CI runs); detailed runs live in Playground Perf tab.
     let variations: [Variation] = [
-      .init(name: "Optimized (base)", flags: FeatureFlags(useOptimizedReconciler: true, useReconcilerFenwickDelta: true, useOptimizedReconcilerStrictMode: true)),
-      .init(name: "+ Central Aggregation", flags: FeatureFlags(useOptimizedReconciler: true, useReconcilerFenwickDelta: true, useOptimizedReconcilerStrictMode: true, useReconcilerFenwickCentralAggregation: true)),
-      .init(name: "+ Insert-Block Fenwick", flags: FeatureFlags(useOptimizedReconciler: true, useReconcilerFenwickDelta: true, useOptimizedReconcilerStrictMode: true, useReconcilerFenwickCentralAggregation: true, useReconcilerInsertBlockFenwick: true)),
-      .init(name: "All toggles", flags: FeatureFlags(useOptimizedReconciler: true, useReconcilerFenwickDelta: true, useReconcilerKeyedDiff: true, useReconcilerBlockRebuild: true, useOptimizedReconcilerStrictMode: true, useReconcilerFenwickCentralAggregation: true, useReconcilerShadowCompare: false, useReconcilerInsertBlockFenwick: true)),
+      .init(name: "default", flags: FeatureFlags(reconcilerStrictMode: true)),
     ]
 
     func runForPosition(_ pos: Position, label: String) throws {
-      var best: (String, TimeInterval)? = nil
       for v in variations {
         let (opt, leg) = makeEditors(flags: v.flags)
         try seed(editor: opt.0, paragraphs: 60, width: 24)
         try seed(editor: leg.0, paragraphs: 60, width: 24)
         _ = try timeInserts(editor: leg.0, pos: pos, loops: 10) // warm legacy path similarly
-        let dt = try timeInserts(editor: opt.0, pos: pos, loops: 10)
-        print("🔥 INSERT-BENCH [\(label)] variation=\(v.name) time=\(dt)s")
-        if best == nil || dt < best!.1 { best = (v.name, dt) }
+        _ = try timeInserts(editor: opt.0, pos: pos, loops: 10)
       }
-      if let best { print("🔥 INSERT-BEST [\(label)] variation=\(best.0) time=\(best.1)s") }
     }
 
     try runForPosition(.top, label: "TOP")

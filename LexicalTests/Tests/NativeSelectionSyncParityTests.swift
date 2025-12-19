@@ -10,6 +10,7 @@ import XCTest
 
 #if os(macOS) && !targetEnvironment(macCatalyst)
 @testable import LexicalAppKit
+#endif
 
 /// Tests for native selection to Lexical selection synchronization.
 ///
@@ -17,6 +18,15 @@ import XCTest
 /// the Lexical selection is properly updated to match.
 @MainActor
 final class NativeSelectionSyncParityTests: XCTestCase {
+
+  private func applyNativeSelectionChange(_ testView: TestEditorView) {
+    #if os(macOS) && !targetEnvironment(macCatalyst)
+    testView.view.textView.handleSelectionChange()
+    #else
+    let textView = testView.view.textView
+    textView.delegate?.textViewDidChangeSelection?(textView)
+    #endif
+  }
 
   /// Test that changing native selection updates Lexical selection.
   ///
@@ -27,7 +37,6 @@ final class NativeSelectionSyncParityTests: XCTestCase {
     // Create a test editor view
     let testView = createTestEditorView()
     let editor = testView.editor
-    let lexicalView = testView.view
 
     // Add some content: "Hello World"
     var textNodeKey: NodeKey = ""
@@ -65,10 +74,10 @@ final class NativeSelectionSyncParityTests: XCTestCase {
     // Native position right after "Hello" (accounting for any prefix characters)
     let nativePositionAfterHello = helloRange.location + helloRange.length
     let newRange = NSRange(location: nativePositionAfterHello, length: 0)
-    lexicalView.textView.setSelectedRange(newRange)
+    testView.setSelectedRange(newRange)
 
     // Trigger the selection change handler
-    lexicalView.textView.handleSelectionChange()
+    applyNativeSelectionChange(testView)
 
     // Verify Lexical selection was updated to match native selection
     var updatedAnchorKey: NodeKey = ""
@@ -94,7 +103,6 @@ final class NativeSelectionSyncParityTests: XCTestCase {
   func testNativeRangeSelectionUpdatesLexicalSelection() throws {
     let testView = createTestEditorView()
     let editor = testView.editor
-    let lexicalView = testView.view
 
     // Add content
     try editor.update {
@@ -114,8 +122,8 @@ final class NativeSelectionSyncParityTests: XCTestCase {
     XCTAssertNotEqual(helloRange.location, NSNotFound, "Should find 'Hello' in native text")
 
     // Select "Hello" in native view
-    lexicalView.textView.setSelectedRange(helloRange)
-    lexicalView.textView.handleSelectionChange()
+    testView.setSelectedRange(helloRange)
+    applyNativeSelectionChange(testView)
 
     // Verify Lexical selection matches - anchor at 0, focus at 5 (selecting "Hello")
     var anchorOffset = -1
@@ -140,7 +148,6 @@ final class NativeSelectionSyncParityTests: XCTestCase {
   func testBackspaceDeletesSelectedRange() throws {
     let testView = createTestEditorView()
     let editor = testView.editor
-    let lexicalView = testView.view
 
     // Add content: "Hello World"
     try editor.update {
@@ -160,8 +167,8 @@ final class NativeSelectionSyncParityTests: XCTestCase {
     XCTAssertNotEqual(worldRange.location, NSNotFound)
 
     // Select "World"
-    lexicalView.textView.setSelectedRange(worldRange)
-    lexicalView.textView.handleSelectionChange()
+    testView.setSelectedRange(worldRange)
+    applyNativeSelectionChange(testView)
 
     // Verify selection is now "World" (length 5)
     var anchorOffset = -1
@@ -192,7 +199,6 @@ final class NativeSelectionSyncParityTests: XCTestCase {
   func testRepeatedSelectAndBackspace() throws {
     let testView = createTestEditorView()
     let editor = testView.editor
-    let lexicalView = testView.view
 
     // Add content: "AAABBBCCC"
     try editor.update {
@@ -208,8 +214,8 @@ final class NativeSelectionSyncParityTests: XCTestCase {
     var bbbRange = nativeString.range(of: "BBB")
     XCTAssertNotEqual(bbbRange.location, NSNotFound, "Should find 'BBB'")
 
-    lexicalView.textView.setSelectedRange(bbbRange)
-    lexicalView.textView.handleSelectionChange()
+    testView.setSelectedRange(bbbRange)
+    applyNativeSelectionChange(testView)
     editor.dispatchCommand(type: .deleteCharacter, payload: true)
 
     // Verify "BBB" is deleted
@@ -223,8 +229,8 @@ final class NativeSelectionSyncParityTests: XCTestCase {
     let cccRange = nativeString.range(of: "CCC")
     XCTAssertNotEqual(cccRange.location, NSNotFound, "Should find 'CCC'")
 
-    lexicalView.textView.setSelectedRange(cccRange)
-    lexicalView.textView.handleSelectionChange()
+    testView.setSelectedRange(cccRange)
+    applyNativeSelectionChange(testView)
     editor.dispatchCommand(type: .deleteCharacter, payload: true)
 
     // Verify "CCC" is also deleted (not just single character)
@@ -241,7 +247,6 @@ final class NativeSelectionSyncParityTests: XCTestCase {
   func testNativeSelectionWithMultipleParagraphs() throws {
     let testView = createTestEditorView()
     let editor = testView.editor
-    let lexicalView = testView.view
 
     // Add content with two paragraphs: "Hello" and "World"
     var worldKey: NodeKey = ""
@@ -268,8 +273,8 @@ final class NativeSelectionSyncParityTests: XCTestCase {
     // Select position 2 characters into "World"
     let nativePosition = worldRange.location + 2
     let newRange = NSRange(location: nativePosition, length: 0)
-    lexicalView.textView.setSelectedRange(newRange)
-    lexicalView.textView.handleSelectionChange()
+    testView.setSelectedRange(newRange)
+    applyNativeSelectionChange(testView)
 
     // Verify selection moved to the second paragraph's text node
     var anchorKey: NodeKey = ""
@@ -287,7 +292,3 @@ final class NativeSelectionSyncParityTests: XCTestCase {
     XCTAssertEqual(anchorOffset, 2, "Offset should be 2 within 'World' node")
   }
 }
-
-
-
-#endif // os(macOS) && !targetEnvironment(macCatalyst)

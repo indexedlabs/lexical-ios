@@ -57,7 +57,9 @@ public class AutoLinkNode: LinkNode {
   override open func insertNewAfter(selection: RangeSelection?) throws
     -> RangeSelection.InsertNewAfterResult
   {
-    if let element = try getParentOrThrow().insertNewAfter(selection: selection) as? ElementNode {
+    if let element = try getParentOrThrow().insertNewAfter(selection: selection).element
+      as? ElementNode
+    {
       let linkNode = AutoLinkNode(url: url, key: nil)
       try element.append([linkNode])
       return .init(element: linkNode)

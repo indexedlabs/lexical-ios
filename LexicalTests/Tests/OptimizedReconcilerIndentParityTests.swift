@@ -15,26 +15,14 @@ import XCTest
 @MainActor
 final class OptimizedReconcilerIndentParityTests: XCTestCase {
 
-  private func makeEditors() -> (opt: (Editor, any ReadOnlyTextKitContextProtocol), leg: (Editor, any ReadOnlyTextKitContextProtocol)) {
-    let cfg = EditorConfig(theme: Theme(), plugins: [])
-    let optFlags = FeatureFlags(
-      reconcilerSanityCheck: false,
-      proxyTextViewInputDelegate: false,
-      useOptimizedReconciler: true,
-      useReconcilerFenwickDelta: true,
-      useReconcilerKeyedDiff: true,
-      useReconcilerBlockRebuild: true,
-      useOptimizedReconcilerStrictMode: true
-    )
-    let legFlags = FeatureFlags(
-      reconcilerSanityCheck: false,
-      proxyTextViewInputDelegate: false,
-      useOptimizedReconciler: false
-    )
-    let optCtx = makeReadOnlyContext(editorConfig: cfg, featureFlags: optFlags)
-    let legCtx = makeReadOnlyContext(editorConfig: cfg, featureFlags: legFlags)
-    return ((optCtx.editor, optCtx), (legCtx.editor, legCtx))
-  }
+	  private func makeEditors() -> (opt: (Editor, any ReadOnlyTextKitContextProtocol), leg: (Editor, any ReadOnlyTextKitContextProtocol)) {
+	    let cfg = EditorConfig(theme: Theme(), plugins: [])
+	    let optFlags = FeatureFlags(reconcilerStrictMode: true)
+	    let legFlags = FeatureFlags(reconcilerStrictMode: true)
+	    let optCtx = makeReadOnlyContext(editorConfig: cfg, featureFlags: optFlags)
+	    let legCtx = makeReadOnlyContext(editorConfig: cfg, featureFlags: legFlags)
+	    return ((optCtx.editor, optCtx), (legCtx.editor, legCtx))
+	  }
 
   func testIndentOutdentParity() throws {
     let (opt, leg) = makeEditors()

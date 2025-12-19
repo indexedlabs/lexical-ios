@@ -11,7 +11,7 @@ final class SelectionClampParityTests: XCTestCase {
   #if os(macOS) && !targetEnvironment(macCatalyst)
   private func makeViews() -> (opt: LexicalAppKit.LexicalView, leg: LexicalAppKit.LexicalView) {
     let cfg = EditorConfig(theme: Theme(), plugins: [])
-    let opt = LexicalAppKit.LexicalView(editorConfig: cfg, featureFlags: FeatureFlags.optimizedProfile(.aggressiveEditor))
+    let opt = LexicalAppKit.LexicalView(editorConfig: cfg, featureFlags: FeatureFlags())
     let leg = LexicalAppKit.LexicalView(editorConfig: cfg, featureFlags: FeatureFlags())
     opt.frame = CGRect(x: 0, y: 0, width: 320, height: 200)
     leg.frame = CGRect(x: 0, y: 0, width: 320, height: 200)
@@ -20,7 +20,7 @@ final class SelectionClampParityTests: XCTestCase {
   #else
   private func makeViews() -> (opt: Lexical.LexicalView, leg: Lexical.LexicalView) {
     let cfg = EditorConfig(theme: Theme(), plugins: [])
-    let opt = Lexical.LexicalView(editorConfig: cfg, featureFlags: FeatureFlags.optimizedProfile(.aggressiveEditor))
+    let opt = Lexical.LexicalView(editorConfig: cfg, featureFlags: FeatureFlags())
     let leg = Lexical.LexicalView(editorConfig: cfg, featureFlags: FeatureFlags())
     opt.frame = CGRect(x: 0, y: 0, width: 320, height: 200)
     leg.frame = CGRect(x: 0, y: 0, width: 320, height: 200)

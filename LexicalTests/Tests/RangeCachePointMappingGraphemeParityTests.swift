@@ -8,26 +8,14 @@ import XCTest
 @MainActor
 final class RangeCachePointMappingGraphemeParityTests: XCTestCase {
 
-  private func makeEditors() -> (opt: Editor, leg: Editor, optCtx: any ReadOnlyTextKitContextProtocol, legCtx: any ReadOnlyTextKitContextProtocol) {
-    let cfg = EditorConfig(theme: Theme(), plugins: [])
-    let optFlags = FeatureFlags(
-      reconcilerSanityCheck: false,
-      proxyTextViewInputDelegate: false,
-      useOptimizedReconciler: true,
-      useReconcilerFenwickDelta: true,
-      useReconcilerKeyedDiff: true,
-      useReconcilerBlockRebuild: true,
-      useOptimizedReconcilerStrictMode: true
-    )
-    let legFlags = FeatureFlags(
-      reconcilerSanityCheck: false,
-      proxyTextViewInputDelegate: false,
-      useOptimizedReconciler: false
-    )
-    let optCtx = makeReadOnlyContext(editorConfig: cfg, featureFlags: optFlags)
-    let legCtx = makeReadOnlyContext(editorConfig: cfg, featureFlags: legFlags)
-    return (optCtx.editor, legCtx.editor, optCtx, legCtx)
-  }
+	  private func makeEditors() -> (opt: Editor, leg: Editor, optCtx: any ReadOnlyTextKitContextProtocol, legCtx: any ReadOnlyTextKitContextProtocol) {
+	    let cfg = EditorConfig(theme: Theme(), plugins: [])
+	    let optFlags = FeatureFlags(reconcilerStrictMode: true)
+	    let legFlags = FeatureFlags(reconcilerStrictMode: true)
+	    let optCtx = makeReadOnlyContext(editorConfig: cfg, featureFlags: optFlags)
+	    let legCtx = makeReadOnlyContext(editorConfig: cfg, featureFlags: legFlags)
+	    return (optCtx.editor, legCtx.editor, optCtx, legCtx)
+	  }
 
   func testRoundTripGraphemeClustersParity() throws {
     let (opt, leg, optCtx, legCtx) = makeEditors()

@@ -172,6 +172,8 @@ public class Editor: NSObject {
   // See description in RangeCache.swift.
   public internal(set) var rangeCache: [NodeKey: RangeCacheItem] = [:]
   private var dfsOrderCache: [NodeKey]? = nil
+  private var dfsOrderIndexCache: [NodeKey: Int]? = nil
+  internal var locationShiftDiffScratch: [Int] = []
   internal var dirtyNodes: DirtyNodeMap = [:]
   internal var cloneNotNeeded: Set<NodeKey> = Set()
   internal var normalizedNodes: Set<NodeKey> = Set()
@@ -191,7 +193,9 @@ public class Editor: NSObject {
   // Used to help co-ordinate selection and events
   internal var compositionKey: NodeKey?
   public var dirtyType: DirtyType = .noDirtyNodes  // TODO: I made this public to work around an issue in playground. @amyworrall
-  public var featureFlags: FeatureFlags = FeatureFlags()
+  public var featureFlags: FeatureFlags = FeatureFlags() {
+    didSet { invalidateDFSOrderCache() }
+  }
 
   // Used for storing editor listener events
   internal var listeners = Listeners()
@@ -238,7 +242,7 @@ public class Editor: NSObject {
     }
     rangeCache[rootNodeKey] = RangeCacheItem()
     dfsOrderCache = nil
-    dfsOrderCache = nil
+    dfsOrderIndexCache = nil
     theme = editorConfig.theme
     plugins = editorConfig.plugins
     super.init()
@@ -308,7 +312,7 @@ public class Editor: NSObject {
   ///
   /// > Important: Your code within the `update()` closure must run synchronously on the thread that
   /// Lexical calls it on. Do not dispatch to another thread!
-  public func update(reason: EditorUpdateReason = .update, _ closure: () throws -> Void) throws {
+  public func update(reason: EditorUpdateReason = .update, _ closure: @MainActor () throws -> Void) throws {
     let mode: UpdateBehaviourModificationMode
     if reason == .sync {
       #if canImport(UIKit)
@@ -340,7 +344,7 @@ public class Editor: NSObject {
   ///
   /// This function is syntactic sugar over calling ``getEditorState()`` then ``EditorState/read(closure:)``.
   /// Note if you want to return a value, using the function directly on the ``EditorState`` is better.
-  public func read(_ closure: () throws -> Void) throws {
+  public func read(_ closure: @MainActor () throws -> Void) throws {
     try beginRead(closure)
   }
 
@@ -543,7 +547,7 @@ public class Editor: NSObject {
     rangeCache = [:]
     rangeCache[kRootNodeKey] = RangeCacheItem()
     dfsOrderCache = nil
-    dfsOrderCache = nil
+    dfsOrderIndexCache = nil
 
     #if canImport(UIKit)
     if let textStorage = frontend?.textStorage {
@@ -989,17 +993,30 @@ public class Editor: NSObject {
   var isUpdating = false
   internal func invalidateDFSOrderCache() {
     dfsOrderCache = nil
+    dfsOrderIndexCache = nil
+  }
+
+  internal func cachedDFSOrderAndIndex() -> ([NodeKey], [NodeKey: Int]) {
+    if let cached = dfsOrderCache, let cachedIndex = dfsOrderIndexCache {
+      return (cached, cachedIndex)
+    }
+
+    let ordered = sortedNodeKeysByLocation(rangeCache: rangeCache)
+    var index: [NodeKey: Int] = [:]
+    index.reserveCapacity(ordered.count)
+    for (i, key) in ordered.enumerated() { index[key] = i + 1 }
+
+    dfsOrderCache = ordered
+    dfsOrderIndexCache = index
+    return (ordered, index)
   }
 
   internal func cachedDFSOrder() -> [NodeKey] {
-    if let cached = dfsOrderCache { return cached }
-    let ordered = sortedNodeKeysByLocation(rangeCache: rangeCache)
-    dfsOrderCache = ordered
-    return ordered
+    cachedDFSOrderAndIndex().0
   }
 
   private func beginUpdate(
-    _ closure: () throws -> Void, mode: UpdateBehaviourModificationMode,
+    _ closure: @MainActor () throws -> Void, mode: UpdateBehaviourModificationMode,
     reason: EditorUpdateReason = .update
   ) throws {
     var editorStateWasCloned = false
@@ -1079,39 +1096,22 @@ public class Editor: NSObject {
 
         #if canImport(UIKit)
         if !headless {
-          if featureFlags.useOptimizedReconciler {
-            try OptimizedReconciler.updateEditorState(
-              currentEditorState: editorState,
-              pendingEditorState: pendingEditorState,
-              editor: self,
-              shouldReconcileSelection: !mode.suppressReconcilingSelection,
-              markedTextOperation: mode.markedTextOperation
-            )
-            if featureFlags.useReconcilerShadowCompare && compositionKey == nil {
-              shadowCompareOptimizedVsLegacy(
-                activeEditor: self,
-                currentEditorState: editorState,
-                pendingEditorState: pendingEditorState
-              )
-            }
-          } else {
-            try Reconciler.updateEditorState(
-              currentEditorState: editorState,
-              pendingEditorState: pendingEditorState,
-              editor: self,
-              shouldReconcileSelection: !mode.suppressReconcilingSelection,
-              markedTextOperation: mode.markedTextOperation
-            )
-          }
+          try OptimizedReconciler.updateEditorState(
+            currentEditorState: editorState,
+            pendingEditorState: pendingEditorState,
+            editor: self,
+            shouldReconcileSelection: !mode.suppressReconcilingSelection,
+            markedTextOperation: mode.markedTextOperation
+          )
         }
         #elseif os(macOS) && !targetEnvironment(macCatalyst)
-        // AppKit reconciliation path - use legacy Reconciler only (no optimized path yet)
+        // AppKit reconciliation path
         if !headless {
           // Prevent selection feedback during reconciliation
           frontendAppKit?.isUpdatingNativeSelection = true
           defer { frontendAppKit?.isUpdatingNativeSelection = false }
 
-          try Reconciler.updateEditorState(
+          try OptimizedReconciler.updateEditorState(
             currentEditorState: editorState,
             pendingEditorState: pendingEditorState,
             editor: self,
@@ -1136,18 +1136,73 @@ public class Editor: NSObject {
         return
       }
 
+      @MainActor func fallbackSelection(_ state: EditorState) -> RangeSelection? {
+        guard let root = state.getRootNode() else { return nil }
+        // Prefer the first root child (usually a ParagraphNode).
+        if let firstChildKey = root.getChildrenKeys(fromLatest: false).first,
+           state.nodeMap[firstChildKey] is ElementNode {
+          let point = Point(key: firstChildKey, offset: 0, type: .element)
+          let selection = RangeSelection(anchor: point, focus: point, format: TextFormat())
+          selection.dirty = true
+          return selection
+        }
+        // Fallback to root element selection (should be rare).
+        let rootPoint = Point(key: root.getKey(), offset: 0, type: .element)
+        let selection = RangeSelection(anchor: rootPoint, focus: rootPoint, format: TextFormat())
+        selection.dirty = true
+        return selection
+      }
+
       if let pendingSelection = pendingEditorState.selection as? RangeSelection {
         let anchor = pendingEditorState.nodeMap[pendingSelection.anchor.key]
         let focus = pendingEditorState.nodeMap[pendingSelection.focus.key]
         if anchor == nil || focus == nil {
-          // Parity safeguard: if selection keys were removed during the update, normalize to a safe state
-          // rather than throwing. Legacy reconciler tolerates such transitions by remapping selection.
-          // We reset selection to nil; callers can set a new caret in a follow-up update.
-          pendingEditorState.selection = nil
+          // Parity safeguard: if selection keys were removed during the update, remap to a safe caret
+          // rather than leaving the editor with no selection (which breaks user navigation and input).
+          if let selection = fallbackSelection(pendingEditorState) {
+            pendingEditorState.selection = selection
+            // We already ran reconciliation earlier in this update; update native selection now to keep
+            // frontend + editor state consistent.
+            #if canImport(UIKit)
+            try? self.frontend?.updateNativeSelection(from: selection)
+            #elseif os(macOS)
+            try? self.frontendAppKit?.updateNativeSelection(from: selection)
+            #endif
+          } else {
+            pendingEditorState.selection = nil
+            #if canImport(UIKit)
+            self.frontend?.resetSelectedRange()
+            #elseif os(macOS)
+            self.frontendAppKit?.resetSelectedRange()
+            #endif
+          }
         }
       } else if let pendingSelection = pendingEditorState.selection as? NodeSelection {
+        // Safeguard: NodeSelection can become stale if its nodes are deleted outside of
+        // NodeSelection.deleteCharacter (e.g., native attachment deletion). A stale NodeSelection
+        // breaks input because insertText becomes a no-op (no resolvable nodes).
+        let existingKeys = pendingSelection.nodes.filter { pendingEditorState.nodeMap[$0] != nil }
+        if existingKeys.count != pendingSelection.nodes.count {
+          pendingSelection.nodes = Set(existingKeys)
+          pendingSelection.dirty = true
+        }
+
         if pendingSelection.nodes.isEmpty {
-          pendingEditorState.selection = nil
+          if let selection = fallbackSelection(pendingEditorState) {
+            pendingEditorState.selection = selection
+            #if canImport(UIKit)
+            try? self.frontend?.updateNativeSelection(from: selection)
+            #elseif os(macOS)
+            try? self.frontendAppKit?.updateNativeSelection(from: selection)
+            #endif
+          } else {
+            pendingEditorState.selection = nil
+            #if canImport(UIKit)
+            self.frontend?.resetSelectedRange()
+            #elseif os(macOS)
+            self.frontendAppKit?.resetSelectedRange()
+            #endif
+          }
         }
       }
 
@@ -1210,7 +1265,7 @@ public class Editor: NSObject {
     #endif
   }
 
-  private func beginRead(_ closure: () throws -> Void) throws {
+  private func beginRead(_ closure: @MainActor () throws -> Void) throws {
     try runWithStateLexicalScopeProperties(
       activeEditor: self, activeEditorState: getActiveEditorState() ?? editorState,
       readOnlyMode: true, editorUpdateReason: nil, closure: closure)
@@ -1221,7 +1276,7 @@ public class Editor: NSObject {
   // internal Lexical use only, and should only be done if safety can be guaranteed, i.e. the caller of
   // such an update must guarantee that the EditorState will not be left in an inconsistent state when they are finished.
   internal func updateWithCustomBehaviour(
-    mode: UpdateBehaviourModificationMode, reason: EditorUpdateReason, _ closure: () throws -> Void
+    mode: UpdateBehaviourModificationMode, reason: EditorUpdateReason, _ closure: @MainActor () throws -> Void
   ) throws {
     try beginUpdate(closure, mode: mode, reason: reason)
   }
@@ -1401,6 +1456,7 @@ public class Editor: NSObject {
     self.cloneNotNeeded = Set()
     self.rangeCache = [kRootNodeKey: RangeCacheItem()]
     self.dfsOrderCache = nil
+    self.dfsOrderIndexCache = nil
     self.normalizedNodes = Set()
     self.editorState = editorState
     self.pendingEditorState = nil
@@ -1412,6 +1468,7 @@ public class Editor: NSObject {
       self.cloneNotNeeded = previousCloneNotNeeded
       self.rangeCache = previousRangeCache
       self.dfsOrderCache = nil
+      self.dfsOrderIndexCache = nil
       self.normalizedNodes = previousNormalizedNodes
       self.editorState = previousActiveEditorState
       self.pendingEditorState = previousPendingEditorState

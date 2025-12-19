@@ -143,7 +143,14 @@ extension TextViewAppKit {
     isUpdatingNativeSelection = true
     defer { isUpdatingNativeSelection = wasUpdating }
 
+    ignoreNextSelectionChangeIfMatchesRange = range
     setSelectedRange(range, affinity: affinity, stillSelecting: false)
+
+    // AppKit also doesn't always auto-scroll when selection is set programmatically. Keep the
+    // caret visible while the editor is active.
+    if window?.firstResponder === self {
+      scrollRangeToVisible(range)
+    }
   }
 
   /// Apply a selection from NativeSelectionAppKit.
@@ -210,6 +217,17 @@ extension TextViewAppKit {
   ///
   /// Override point for tracking selection changes and syncing with Lexical.
   internal func handleSelectionChange() {
+    // AppKit can deliver selection-change callbacks asynchronously, after we have
+    // reset `isUpdatingNativeSelection`. Guard against feeding programmatic selection
+    // updates back into Lexical by ignoring the next callback when it matches.
+    if let ignoreRange = ignoreNextSelectionChangeIfMatchesRange {
+      let current = selectedRange()
+      if NSEqualRanges(current, ignoreRange) {
+        ignoreNextSelectionChangeIfMatchesRange = nil
+        return
+      }
+    }
+
     guard !isUpdatingNativeSelection else {
       return
     }

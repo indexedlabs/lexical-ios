@@ -38,7 +38,7 @@ public class LayoutManager: NSLayoutManager, @unchecked Sendable {
     super.drawGlyphs(forGlyphRange: drawingGlyphRange, at: origin)
     draw(forGlyphRange: drawingGlyphRange, at: origin, handlers: customDrawingText)
     drawCustomTruncationIfNeeded(forGlyphRange: drawingGlyphRange, at: origin)
-    positionAllDecorators()
+    positionDecorators(forGlyphRange: drawingGlyphRange)
   }
 
   private func drawCustomTruncationIfNeeded(
@@ -157,9 +157,31 @@ public class LayoutManager: NSLayoutManager, @unchecked Sendable {
     }
   }
 
-  private func positionAllDecorators() {
+  private func positionDecorators(forGlyphRange drawingGlyphRange: NSRange) {
     guard let textStorage = textStorage as? TextStorage else { return }
-    for (key, location) in textStorage.decoratorPositionCache {
+    if textStorage.decoratorPositionCache.isEmpty
+      && textStorage.decoratorPositionCacheDirtyKeys.isEmpty
+    {
+      return
+    }
+
+    let characterRange = characterRange(forGlyphRange: drawingGlyphRange, actualGlyphRange: nil)
+    var keysToPosition = textStorage.decoratorPositionCacheDirtyKeys
+    textStorage.decoratorPositionCacheDirtyKeys.removeAll(keepingCapacity: true)
+
+    if characterRange.length > 0 {
+      textStorage.enumerateAttribute(.attachment, in: characterRange) { value, range, _ in
+        if let att = value as? TextAttachment, let key = att.key {
+          keysToPosition.insert(key)
+          if textStorage.decoratorPositionCache[key] != range.location {
+            textStorage.decoratorPositionCache[key] = range.location
+          }
+        }
+      }
+    }
+
+    for key in keysToPosition {
+      guard let location = textStorage.decoratorPositionCache[key] else { continue }
       positionDecorator(forKey: key, characterIndex: location)
     }
   }
@@ -200,7 +222,7 @@ public class LayoutManager: NSLayoutManager, @unchecked Sendable {
         as? TextAttachment
     }
 
-    guard let attr = attribute, let attrKey = attr.key, let editor = attr.editor else {
+    guard let attr = attribute, let editor = attr.editor else {
       // Try to find where this attachment actually is - cache may be stale
       var foundAt: Int? = nil
       textStorage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: textStorage.length)) { value, range, stop in
@@ -245,7 +267,6 @@ public class LayoutManager: NSLayoutManager, @unchecked Sendable {
 
       decoratorOrigin.y += (glyphBoundingRect.height - attr.bounds.height)  // bottom left now!
 
-      let oldFrame = decoratorView.frame
       decoratorView.frame = CGRect(origin: decoratorOrigin, size: attr.bounds.size)
     }
   }

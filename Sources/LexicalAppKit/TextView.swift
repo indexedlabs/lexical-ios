@@ -52,9 +52,19 @@ public class TextViewAppKit: NSTextView {
   /// Range to intercept next selection change with.
   internal var interceptNextSelectionChangeAndReplaceWithRange: NSRange?
 
+  /// If set, ignore the next selection change callback when the native selection matches this range.
+  /// This is used to prevent programmatic selection updates (e.g. reconciler-driven) from being
+  /// fed back into Lexical when AppKit delivers selection-change notifications asynchronously.
+  internal var ignoreNextSelectionChangeIfMatchesRange: NSRange?
+
   /// Cached undo availability from Lexical's history plugin (via `canUndo`/`canRedo` commands).
   internal var lexicalCanUndo: Bool = false
   internal var lexicalCanRedo: Bool = false
+
+  /// Pasteboard used for copy/cut/paste operations.
+  ///
+  /// Defaults to the system general pasteboard, but can be overridden in tests.
+  internal var clipboardPasteboard: NSPasteboard = .general
 
   /// Internal delegate for forwarding events.
   weak var lexicalDelegate: TextViewAppKitDelegate?
@@ -220,6 +230,17 @@ public class TextViewAppKit: NSTextView {
     return result
   }
 
+  public override func hitTest(_ point: NSPoint) -> NSView? {
+    let hit = super.hitTest(point)
+    guard let hit else { return nil }
+
+    if let placeholderTextField, hit === placeholderTextField || hit.isDescendant(of: placeholderTextField) {
+      return self
+    }
+
+    return hit
+  }
+
   // Text input and deletion overrides are in TextView+NSTextInputClient.swift
   // and TextView+Keyboard.swift extensions
 
@@ -228,9 +249,33 @@ public class TextViewAppKit: NSTextView {
   public override func setSelectedRange(_ charRange: NSRange, affinity: NSSelectionAffinity, stillSelecting stillSelectingFlag: Bool) {
     // Handle selection interception if needed
     if let interceptRange = interceptNextSelectionChangeAndReplaceWithRange {
+      // Only intercept collapsed caret updates. This is intended to guard against AppKit setting
+      // the caret to a transient location during/after `insertText`, but it should not swallow
+      // user-initiated selection changes (e.g., Cmd+Shift+Arrow).
+      if charRange.length == 0 {
+        // Additionally, don't intercept navigation key-driven selection updates. These can arrive
+        // immediately after typing and should take effect on the first press.
+        if let event = NSApp.currentEvent, event.type == .keyDown {
+          switch event.keyCode {
+          case 123, 124, 125, 126, 115, 119, 116, 121:
+            // Arrow keys, Home, End, Page Up, Page Down
+            interceptNextSelectionChangeAndReplaceWithRange = nil
+            break
+          default:
+            interceptNextSelectionChangeAndReplaceWithRange = nil
+            ignoreNextSelectionChangeIfMatchesRange = interceptRange
+            super.setSelectedRange(interceptRange, affinity: affinity, stillSelecting: stillSelectingFlag)
+            return
+          }
+        } else {
+          interceptNextSelectionChangeAndReplaceWithRange = nil
+          ignoreNextSelectionChangeIfMatchesRange = interceptRange
+          super.setSelectedRange(interceptRange, affinity: affinity, stillSelecting: stillSelectingFlag)
+          return
+        }
+      }
+
       interceptNextSelectionChangeAndReplaceWithRange = nil
-      super.setSelectedRange(interceptRange, affinity: affinity, stillSelecting: stillSelectingFlag)
-      return
     }
 
     super.setSelectedRange(charRange, affinity: affinity, stillSelecting: stillSelectingFlag)
@@ -280,6 +325,7 @@ public class TextStorageAppKit: NSTextStorage, ReconcilerTextStorageAppKit {
 
   /// Cache of decorator node positions for the layout manager.
   @objc public var decoratorPositionCache: [NodeKey: Int] = [:]
+  public var decoratorPositionCacheDirtyKeys: Set<NodeKey> = []
 
   /// The backing store for the attributed string.
   private var backingAttributedString: NSMutableAttributedString

@@ -16,7 +16,7 @@ final class ResultsViewController: UIViewController, UITableViewDataSource, UITa
   // Inputs
   private let scenarios: [String]
   private let profiles: [VariationProfile]
-  // results[scenario][profileName] => delta vs legacy %
+  // results[scenario][profileName] => delta vs baseline %
   private let results: [String: [String: Double]]
   private let seedParas: Int
   private let fastestTop: (name: String, avgMs: Double)?
@@ -86,7 +86,7 @@ final class ResultsViewController: UIViewController, UITableViewDataSource, UITa
     // Legend
     legendLabel.font = .systemFont(ofSize: 11)
     legendLabel.textColor = .secondaryLabel
-    legendLabel.text = "Green=faster  Gray≈same  Red=slower (delta vs legacy)"
+    legendLabel.text = "Green=faster  Gray≈same  Red=slower (delta vs baseline)"
     legendLabel.translatesAutoresizingMaskIntoConstraints = false
 
     // Variations list

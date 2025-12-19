@@ -7,7 +7,7 @@ import XCTest
 @MainActor
 final class PlanDiffTests: XCTestCase {
   func testComputePartDiffsTextOnly() throws {
-    let flags = FeatureFlags(useOptimizedReconciler: true, useOptimizedReconcilerStrictMode: true)
+    let flags = FeatureFlags(reconcilerStrictMode: true)
     let ctx = LexicalReadOnlyTextKitContext(editorConfig: EditorConfig(theme: Theme(), plugins: []), featureFlags: flags)
     let editor = ctx.editor
 

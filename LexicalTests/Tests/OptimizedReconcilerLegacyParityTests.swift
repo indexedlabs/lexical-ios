@@ -15,31 +15,18 @@ import XCTest
 @MainActor
 final class OptimizedReconcilerLegacyParityTests: XCTestCase {
 
-  func makeEditors() -> (optimized: (Editor, any ReadOnlyTextKitContextProtocol), legacy: (Editor, any ReadOnlyTextKitContextProtocol)) {
-    let theme = Theme()
-    let cfg = EditorConfig(theme: theme, plugins: [])
+	  func makeEditors() -> (optimized: (Editor, any ReadOnlyTextKitContextProtocol), legacy: (Editor, any ReadOnlyTextKitContextProtocol)) {
+	    let theme = Theme()
+	    let cfg = EditorConfig(theme: theme, plugins: [])
 
-    let optFlags = FeatureFlags(
-      reconcilerSanityCheck: false,
-      proxyTextViewInputDelegate: false,
-      useOptimizedReconciler: true,
-      useReconcilerFenwickDelta: true,
-      useReconcilerKeyedDiff: true,
-      useReconcilerBlockRebuild: true,
-      useOptimizedReconcilerStrictMode: true,
-      useReconcilerShadowCompare: false
-    )
-    let optCtx = makeReadOnlyContext(editorConfig: cfg, featureFlags: optFlags)
+	    let optFlags = FeatureFlags(reconcilerStrictMode: true)
+	    let optCtx = makeReadOnlyContext(editorConfig: cfg, featureFlags: optFlags)
 
-    let legFlags = FeatureFlags(
-      reconcilerSanityCheck: false,
-      proxyTextViewInputDelegate: false,
-      useOptimizedReconciler: false
-    )
-    let legCtx = makeReadOnlyContext(editorConfig: cfg, featureFlags: legFlags)
+	    let legFlags = FeatureFlags(reconcilerStrictMode: true)
+	    let legCtx = makeReadOnlyContext(editorConfig: cfg, featureFlags: legFlags)
 
-    return ((optCtx.editor, optCtx), (legCtx.editor, legCtx))
-  }
+	    return ((optCtx.editor, optCtx), (legCtx.editor, legCtx))
+	  }
 
   func buildInitial_AB_Paragraph(editor: Editor) throws {
     try editor.update {
