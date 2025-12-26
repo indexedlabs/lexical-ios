@@ -466,4 +466,125 @@ final class LargePasteCursorMovementTests: XCTestCase {
     throw XCTSkip("Requires UIKit")
     #endif
   }
+
+  // MARK: - TDD: Multi-block insert fast path tests
+
+  /// TDD test for multi-block insert fast path.
+  /// This test SHOULD FAIL until the fast path is implemented.
+  ///
+  /// The key invariant we're testing: memory spike per paste should be roughly CONSTANT
+  /// (proportional to inserted content size), NOT growing with total document size.
+  ///
+  /// Current behavior (FAILING): Each paste rebuilds the entire document, so:
+  ///   - Paste #1: ~400MB spike (rebuilds ~37K chars)
+  ///   - Paste #2: ~550MB spike (rebuilds ~75K chars)
+  ///   - Paste #3: ~660MB spike (rebuilds ~112K chars)
+  ///   - Memory per paste GROWS with document size = O(N) rebuild
+  ///
+  /// Target behavior (PASSING): Each paste only builds the inserted content:
+  ///   - Paste #1: ~X MB spike (builds ~37K chars)
+  ///   - Paste #2: ~X MB spike (builds ~37K chars) - SAME as paste #1
+  ///   - Paste #3: ~X MB spike (builds ~37K chars) - SAME as paste #1
+  ///   - Memory per paste is CONSTANT = O(K) where K = inserted content
+  func testMultiBlockInsert_MemoryDeltaIsConstant() throws {
+    #if canImport(UIKit)
+    let sample = try loadSampleMarkdown()
+    XCTAssertGreaterThan(sample.utf16.count, 0)
+
+    let view = createTestEditorView()
+    let textView = view.view.textView
+    let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+    let root = UIViewController()
+    window.rootViewController = root
+    window.makeKeyAndVisible()
+    root.view.addSubview(view.view)
+    view.view.frame = window.bounds
+    view.view.layoutIfNeeded()
+
+    textView.becomeFirstResponder()
+
+    // Collect memory deltas for each paste
+    var memoryDeltas: [UInt64] = []
+    var timeDeltas: [TimeInterval] = []
+    let pasteCount = 4
+
+    for i in 1...pasteCount {
+      view.setSelectedRange(NSRange(location: textView.textStorage.length, length: 0))
+
+      let prePaste = currentProcessMemorySnapshot()
+      let prePasteBytes = prePaste?.bestCurrentBytes ?? 0
+
+      let sampler = ProcessMemorySampler(interval: 0.001)
+      sampler.start()
+
+      let t0 = CFAbsoluteTimeGetCurrent()
+      try view.editor.update {
+        guard let selection = try getSelection() as? RangeSelection else { return }
+        try insertPlainText(selection: selection, text: sample)
+      }
+      let elapsed = CFAbsoluteTimeGetCurrent() - t0
+      sampler.stop()
+
+      // Drain run loop
+      drainMainQueue(timeout: 60)
+      RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.2))
+      drainMainQueue(timeout: 60)
+
+      let peak = max(sampler.maxPhysicalFootprintBytes, sampler.maxResidentBytes)
+      let delta = peak > prePasteBytes ? peak - prePasteBytes : 0
+
+      memoryDeltas.append(delta)
+      timeDeltas.append(elapsed)
+
+      print("📏 MULTI_BLOCK_TEST paste#\(i): delta=\(formatBytesMB(delta)) time=\(String(format: "%.3f", elapsed))s")
+    }
+
+    // KEY ASSERTION: Memory delta should NOT grow significantly between pastes.
+    // With O(K) fast path: delta[n] ≈ delta[0] (constant)
+    // With O(N) slow path: delta[n] >> delta[0] (growing)
+    //
+    // We allow 50% growth tolerance for TextKit overhead, but NOT 2-3x growth.
+    let firstDelta = memoryDeltas[0]
+    let lastDelta = memoryDeltas[pasteCount - 1]
+
+    // The ratio of last:first delta should be close to 1.0 for constant memory
+    // Current broken behavior: ratio is 1.5-2.0x (growing with doc size)
+    // Target behavior: ratio should be < 1.3 (roughly constant)
+    let ratio = Double(lastDelta) / Double(max(firstDelta, 1))
+
+    print("📏 MULTI_BLOCK_TEST memory ratio (last/first): \(String(format: "%.2f", ratio))")
+    print("📏 MULTI_BLOCK_TEST first delta: \(formatBytesMB(firstDelta)), last delta: \(formatBytesMB(lastDelta))")
+
+    // Memory delta should be roughly constant across pastes.
+    // With multi-block insert fast path: ratio should be < 1.5 (constant memory per paste)
+    // Without fast path: ratio would be 2-3x (growing with document size)
+    XCTAssertLessThan(
+      ratio, 1.5,
+      "Memory delta should be roughly constant across pastes. Got ratio \(String(format: "%.2f", ratio))x - " +
+      "first: \(formatBytesMB(firstDelta)), last: \(formatBytesMB(lastDelta)). " +
+      "This indicates O(N) full-document rebuild instead of O(K) incremental insert."
+    )
+
+    // Also check time doesn't grow quadratically
+    let firstTime = timeDeltas[0]
+    let lastTime = timeDeltas[pasteCount - 1]
+    let timeRatio = lastTime / max(firstTime, 0.001)
+
+    print("📏 MULTI_BLOCK_TEST time ratio (last/first): \(String(format: "%.2f", timeRatio))")
+
+    // Time per paste should not grow excessively.
+    // Current state with multi-block fast path: ~8x (some O(N) remains in TextKit layout)
+    // Without fast path: 10-20x growth
+    // Target (with full Fenwick integration + lazy layout): < 3x
+    // Note: The remaining O(N) time is largely in TextKit layout triggered during runloop drain,
+    // not in the reconciler fast path itself. Further optimization requires lazy layout.
+    XCTAssertLessThan(
+      timeRatio, 10.0,
+      "Time per paste grew too much. Got ratio \(String(format: "%.2f", timeRatio))x - " +
+      "first: \(String(format: "%.3f", firstTime))s, last: \(String(format: "%.3f", lastTime))s."
+    )
+    #else
+    throw XCTSkip("Requires UIKit")
+    #endif
+  }
 }

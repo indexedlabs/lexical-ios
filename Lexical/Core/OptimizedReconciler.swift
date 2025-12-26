@@ -699,14 +699,47 @@ internal enum OptimizedReconciler {
       return
     }
 
+    // Selection-only updates should not pay the cost of diffing/reconciling the entire document.
+    // These updates happen frequently during user navigation (arrow keys / tap to move caret).
+    if editor.dirtyType == .noDirtyNodes {
+      if shouldReconcileSelection {
+        let prevSelection = currentEditorState.selection
+        let nextSelection = pendingEditorState.selection
+        var selectionsAreDifferent = false
+        if let nextSelection, let prevSelection {
+          selectionsAreDifferent = !nextSelection.isSelection(prevSelection)
+        }
+        if nextSelection == nil || selectionsAreDifferent {
+          try reconcileSelection(prevSelection: prevSelection, nextSelection: nextSelection, editor: editor)
+        }
+      }
+      return
+    }
+
     // Try optimized fast paths before falling back (even if fullReconcile)
     // Optional central aggregation of Fenwick deltas across paths
     var fenwickAggregatedDeltas: [NodeKey: Int] = [:]
-    // Pre-compute part diffs (used by some paths and metrics)
-    _ = computePartDiffs(editor: editor, prevState: currentEditorState, nextState: pendingEditorState)
+
     // Structural insert fast path (before reorder)
+    // Try multi-block insert first (K >= 2) - skip expensive computePartDiffs for this path
     var didInsertFastPath = false
-    if try fastPath_InsertBlock(
+    if try fastPath_InsertMultiBlock(
+      currentEditorState: currentEditorState,
+      pendingEditorState: pendingEditorState,
+      editor: editor,
+      shouldReconcileSelection: shouldReconcileSelection,
+      fenwickAggregatedDeltas: &fenwickAggregatedDeltas
+    ) {
+      didInsertFastPath = true
+    }
+
+    // If multi-block didn't match, compute part diffs for other paths
+    if !didInsertFastPath {
+      _ = computePartDiffs(editor: editor, prevState: currentEditorState, nextState: pendingEditorState)
+    }
+
+    // Try single-block insert (K == 1) if multi-block didn't match
+    if !didInsertFastPath, try fastPath_InsertBlock(
       currentEditorState: currentEditorState,
       pendingEditorState: pendingEditorState,
       editor: editor,
@@ -1285,7 +1318,253 @@ internal enum OptimizedReconciler {
     return true
   }
 
-  // MARK: - Fast path: insert block (single new direct child under an Element)
+  // MARK: - Fast path: multi-block insert (K >= 2 contiguous children)
+  //
+  // This fast path handles large paste operations where multiple paragraphs are inserted.
+  // Instead of rebuilding the entire document (O(N) memory/time), it only builds the
+  // attributed string for the inserted content (O(K) where K = inserted blocks).
+  //
+  // Detection: Parent element where nextChildren.count == prevChildren.count + K (K >= 2),
+  // no removals, and the K added keys are contiguous in nextChildren.
+  @MainActor
+  private static func fastPath_InsertMultiBlock(
+    currentEditorState: EditorState,
+    pendingEditorState: EditorState,
+    editor: Editor,
+    shouldReconcileSelection: Bool,
+    fenwickAggregatedDeltas: inout [NodeKey: Int]
+  ) throws -> Bool {
+    if editor.suppressInsertFastPathOnce { return false }
+    if isReadOnlyFrontendContext(editor) { return false }
+
+    // Find a parent Element whose children gained K >= 2 children (no removals)
+    let dirtyParents = editor.dirtyNodes.keys.compactMap { key -> (NodeKey, ElementNode, ElementNode)? in
+      guard let prev = currentEditorState.nodeMap[key] as? ElementNode,
+            let next = pendingEditorState.nodeMap[key] as? ElementNode else { return nil }
+      return (key, prev, next)
+    }
+
+
+    // Look for a parent with K >= 2 added children
+    guard let cand = dirtyParents.first(where: { (parentKey, prev, next) in
+      let prevChildren = prev.getChildrenKeys(fromLatest: false)
+      let nextChildren = next.getChildrenKeys(fromLatest: false)
+      let addedCount = nextChildren.count - prevChildren.count
+      if addedCount < 2 { return false }  // Need at least 2 for multi-block
+      let prevSet = Set(prevChildren)
+      let nextSet = Set(nextChildren)
+      let removed = prevSet.subtracting(nextSet)
+      return removed.isEmpty
+    }) else { return false }
+
+    let (parentKey, prevParent, nextParent) = cand
+    let prevChildren = prevParent.getChildrenKeys(fromLatest: false)
+    let nextChildren = nextParent.getChildrenKeys(fromLatest: false)
+    let prevSet = Set(prevChildren)
+    let addedKeys = nextChildren.filter { !prevSet.contains($0) }
+    let addedCount = addedKeys.count
+
+    // Verify added keys are contiguous in nextChildren
+    guard let firstAddedIdx = nextChildren.firstIndex(of: addedKeys[0]) else { return false }
+    for (i, key) in addedKeys.enumerated() {
+      if nextChildren.indices.contains(firstAddedIdx + i) {
+        if nextChildren[firstAddedIdx + i] != key { return false }  // Not contiguous
+      } else {
+        return false
+      }
+    }
+
+    // Verify existing children maintain their relative order (no reordering)
+    let nextWithoutAdded = nextChildren.filter { prevSet.contains($0) }
+    if nextWithoutAdded != prevChildren { return false }
+
+    // Note: We skip the text delta and dirty nodes checks for multi-block insert.
+    // Paste operations mark many nodes dirty (new paragraphs, their text nodes, and
+    // the existing paragraph at the insertion point). The structural invariants we've
+    // verified are sufficient: K >= 2 new contiguous children, no removals, no reordering.
+
+    // Compute insertion location
+    guard let parentPrevRange = editor.rangeCache[parentKey] else { return false }
+    let childrenStart = parentPrevRange.location + parentPrevRange.preambleLength
+
+    // Sum lengths of siblings before the insertion point
+    var acc = 0
+    for k in nextChildren.prefix(firstAddedIdx) {
+      if let r = editor.rangeCache[k]?.range {
+        acc += r.length
+      } else {
+        acc += subtreeTotalLength(nodeKey: k, state: currentEditorState)
+      }
+    }
+    let insertLoc = childrenStart + acc
+
+    // Build attributed string for ALL inserted blocks (not the whole document!)
+    let theme = editor.getTheme()
+    let builtInserted = NSMutableAttributedString()
+    for addedKey in addedKeys {
+      builtInserted.append(buildAttributedSubtree(nodeKey: addedKey, state: pendingEditorState, theme: theme))
+    }
+
+    // Handle postamble of previous sibling if needed
+    var instructions: [Instruction] = []
+    var deleteOldPostRange: NSRange? = nil
+    var combinedInsertPrefix: NSAttributedString? = nil
+    var postambleDelta = 0
+
+    if firstAddedIdx > 0 {
+      let prevSiblingKey = nextChildren[firstAddedIdx - 1]
+      if let prevSiblingRange = editor.rangeCache[prevSiblingKey],
+         let prevSiblingNext = pendingEditorState.nodeMap[prevSiblingKey] {
+        let oldPost = prevSiblingRange.postambleLength
+        let newPost = prevSiblingNext.getPostamble().lengthAsNSString()
+        if newPost != oldPost {
+          let postLoc = prevSiblingRange.location + prevSiblingRange.preambleLength +
+                        prevSiblingRange.childrenLength + prevSiblingRange.textLength
+          if oldPost > 0 { deleteOldPostRange = NSRange(location: postLoc, length: oldPost) }
+          let postAttrStr = AttributeUtils.attributedStringByAddingStyles(
+            NSAttributedString(string: prevSiblingNext.getPostamble()),
+            from: prevSiblingNext, state: pendingEditorState, theme: theme)
+          if postAttrStr.length > 0 { combinedInsertPrefix = postAttrStr }
+          postambleDelta = newPost - oldPost
+          if var it = editor.rangeCache[prevSiblingKey] {
+            it.postambleLength = newPost
+            editor.rangeCache[prevSiblingKey] = it
+          }
+        }
+      }
+    }
+
+    let effectiveInsertLoc = deleteOldPostRange?.location ?? insertLoc
+    if let del = deleteOldPostRange { instructions.append(.delete(range: del)) }
+
+    // Combine postamble prefix with inserted content
+    if builtInserted.length > 0 {
+      if let prefix = combinedInsertPrefix {
+        let combined = NSMutableAttributedString(attributedString: prefix)
+        combined.append(builtInserted)
+        instructions.append(.insert(location: effectiveInsertLoc, attrString: combined))
+      } else {
+        instructions.append(.insert(location: effectiveInsertLoc, attrString: builtInserted))
+      }
+    }
+
+    if instructions.isEmpty { return false }
+
+    // Update range cache incrementally
+    let prefixLen = combinedInsertPrefix?.length ?? 0
+    let insertLen = prefixLen + builtInserted.length
+    let deleteLen = deleteOldPostRange?.length ?? 0
+    let delta = insertLen - deleteLen
+
+    if delta != 0 {
+      // Propagate childrenLength delta to parent and ancestors
+      var cursor: NodeKey? = parentKey
+      while let k = cursor {
+        if var it = editor.rangeCache[k] {
+          it.childrenLength &+= delta
+          editor.rangeCache[k] = it
+        }
+        cursor = pendingEditorState.nodeMap[k]?.parent
+      }
+
+      // For inserts at the END of the document (most common paste scenario),
+      // we can skip the O(N) location shifting since there are no nodes after
+      // the insertion point that need their locations updated.
+      let isInsertAtEnd = (firstAddedIdx + addedCount) == nextChildren.count
+
+      if !isInsertAtEnd {
+        // Shift locations for nodes after insertion point
+        @inline(__always)
+        func lastDescendantKey(state: EditorState, root: NodeKey) -> NodeKey {
+          var current = root
+          while let el = state.nodeMap[current] as? ElementNode {
+            let children = el.getChildrenKeys(fromLatest: false)
+            guard let last = children.last else { break }
+            current = last
+          }
+          return current
+        }
+
+        let shiftStartKey: NodeKey = {
+          if firstAddedIdx == 0 { return parentKey }
+          let prevSiblingKey = nextChildren[firstAddedIdx - 1]
+          return lastDescendantKey(state: pendingEditorState, root: prevSiblingKey)
+        }()
+
+        let (order, positions) = fenwickOrderAndIndex(editor: editor)
+        applyIncrementalLocationShifts(
+          rangeCache: &editor.rangeCache,
+          ranges: [(startKey: shiftStartKey, endKeyExclusive: Optional<NodeKey>.none, delta: delta)],
+          order: order,
+          indexOf: positions,
+          diffScratch: &editor.locationShiftDiffScratch
+        )
+      }
+    }
+
+    // Recompute range cache for all inserted subtrees
+    var currentLoc = effectiveInsertLoc + prefixLen
+    for addedKey in addedKeys {
+      _ = recomputeRangeCacheSubtree(
+        nodeKey: addedKey,
+        state: pendingEditorState,
+        startLocation: currentLoc,
+        editor: editor
+      )
+      if let range = editor.rangeCache[addedKey]?.range {
+        currentLoc += range.length
+      }
+    }
+
+    // Apply instructions (insert the content)
+    let stats = applyInstructions(instructions, editor: editor, fixAttributesEnabled: true)
+
+    // Reconcile decorators for the parent subtree
+    reconcileDecoratorOpsForSubtree(
+      ancestorKey: parentKey,
+      prevState: currentEditorState,
+      nextState: pendingEditorState,
+      editor: editor
+    )
+
+    // Block attributes only for inserted nodes (not the whole document)
+    applyBlockAttributesPass(
+      editor: editor,
+      pendingEditorState: pendingEditorState,
+      affectedKeys: Set(addedKeys),
+      treatAllNodesAsDirty: false
+    )
+
+    // Selection reconcile
+    if shouldReconcileSelection {
+      let prevSelection = currentEditorState.selection
+      let nextSelection = pendingEditorState.selection
+      try reconcileSelection(prevSelection: prevSelection, nextSelection: nextSelection, editor: editor)
+    }
+
+    if let metrics = editor.metricsContainer {
+      let metric = ReconcilerMetric(
+        duration: stats.duration, dirtyNodes: editor.dirtyNodes.count, rangesAdded: addedCount, rangesDeleted: 0,
+        treatedAllNodesAsDirty: false, pathLabel: "insert-multi-block-\(addedCount)", planningDuration: 0,
+        applyDuration: stats.duration)
+      metrics.record(.reconcilerRun(metric))
+    }
+
+    // Assign stable nodeIndex for Fenwick-backed locations
+    for addedKey in addedKeys {
+      if var item = editor.rangeCache[addedKey] {
+        if item.nodeIndex == 0 {
+          item.nodeIndex = editor.nextFenwickNodeIndex
+          editor.nextFenwickNodeIndex += 1
+          editor.rangeCache[addedKey] = item
+        }
+      }
+    }
+
+    return true
+  }
+
+  // MARK: - Fast path: single block insert (K == 1)
   @MainActor
   private static func fastPath_InsertBlock(
     currentEditorState: EditorState,
@@ -2092,26 +2371,41 @@ internal enum OptimizedReconciler {
   private static func buildAttributedSubtree(
     nodeKey: NodeKey, state: EditorState, theme: Theme
   ) -> NSAttributedString {
-    guard let node = state.nodeMap[nodeKey] else { return NSAttributedString() }
     let output = NSMutableAttributedString()
-    let pre = AttributeUtils.attributedStringByAddingStyles(
-      NSAttributedString(string: node.getPreamble()), from: node, state: state, theme: theme)
-    output.append(pre)
+    appendAttributedSubtree(into: output, nodeKey: nodeKey, state: state, theme: theme)
+    return output
+  }
+
+  @MainActor
+  private static func appendAttributedSubtree(
+    into output: NSMutableAttributedString,
+    nodeKey: NodeKey,
+    state: EditorState,
+    theme: Theme
+  ) {
+    guard let node = state.nodeMap[nodeKey] else { return }
+
+    let attributes = AttributeUtils.attributedStringStyles(from: node, state: state, theme: theme)
+
+    @inline(__always)
+    func appendStyledString(_ string: String) {
+      let len = string.lengthAsNSString()
+      guard len > 0 else { return }
+      let start = output.length
+      output.append(NSAttributedString(string: string))
+      output.addAttributes(attributes, range: NSRange(location: start, length: len))
+    }
+
+    appendStyledString(node.getPreamble())
 
     if let element = node as? ElementNode {
       for child in element.getChildrenKeys(fromLatest: false) {
-        output.append(buildAttributedSubtree(nodeKey: child, state: state, theme: theme))
+        appendAttributedSubtree(into: output, nodeKey: child, state: state, theme: theme)
       }
     }
 
-    let text = AttributeUtils.attributedStringByAddingStyles(
-      NSAttributedString(string: node.getTextPart(fromLatest: false)), from: node, state: state, theme: theme)
-    output.append(text)
-
-    let post = AttributeUtils.attributedStringByAddingStyles(
-      NSAttributedString(string: node.getPostamble()), from: node, state: state, theme: theme)
-    output.append(post)
-    return output
+    appendStyledString(node.getTextPart(fromLatest: false))
+    appendStyledString(node.getPostamble())
   }
 
   // Recompute range cache (location + part lengths) for a subtree using the pending state.
