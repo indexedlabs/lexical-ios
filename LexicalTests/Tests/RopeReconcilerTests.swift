@@ -172,7 +172,8 @@ final class RopeReconcilerTests: XCTestCase {
   /// They don't test RopeReconciler directly, but ensure the test setup is valid.
 
   func testEditorInsertNode() throws {
-    let editor = try createTestEditor()
+    let view = createTestEditorView()
+    let editor = view.editor
 
     try editor.update {
       guard let root = getRoot() else { return }
@@ -183,12 +184,12 @@ final class RopeReconcilerTests: XCTestCase {
     }
 
     // Verify text storage has content
-    let textStorage = editor.textStorage
-    XCTAssertTrue(textStorage?.string.contains("hello") ?? false)
+    XCTAssertTrue(view.text.contains("hello"))
   }
 
   func testEditorMultipleNodes() throws {
-    let editor = try createTestEditor()
+    let view = createTestEditorView()
+    let editor = view.editor
 
     try editor.update {
       guard let root = getRoot() else { return }
@@ -204,13 +205,14 @@ final class RopeReconcilerTests: XCTestCase {
       try root.append([p1, p2])
     }
 
-    let content = editor.textStorage?.string ?? ""
+    let content = view.text
     XCTAssertTrue(content.contains("first"))
     XCTAssertTrue(content.contains("second"))
   }
 
   func testEditorMultipleUpdates() throws {
-    let editor = try createTestEditor()
+    let view = createTestEditorView()
+    let editor = view.editor
 
     for i in 0..<10 {
       try editor.update {
@@ -222,7 +224,7 @@ final class RopeReconcilerTests: XCTestCase {
       }
     }
 
-    let content = editor.textStorage?.string ?? ""
+    let content = view.text
     for i in 0..<10 {
       XCTAssertTrue(content.contains("line \(i)"), "Missing line \(i)")
     }
@@ -231,7 +233,8 @@ final class RopeReconcilerTests: XCTestCase {
   // MARK: 4.5 - Selection reconciliation
 
   func testSelectionState() throws {
-    let editor = try createTestEditor()
+    let view = createTestEditorView()
+    let editor = view.editor
 
     try editor.update {
       guard let root = getRoot() else { return }

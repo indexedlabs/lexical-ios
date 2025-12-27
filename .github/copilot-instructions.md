@@ -4,6 +4,8 @@
 
 This project uses **bd (beads)** for issue tracking - a Git-backed tracker designed for AI-supervised coding workflows.
 
+**Quick start**: Run `bd prime` for full workflow context, or install hooks (`bd hooks install`) for auto-injection at session start.
+
 **Key Features:**
 - Dependency-aware issue tracking
 - Auto-sync with Git via JSONL

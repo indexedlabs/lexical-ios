@@ -588,12 +588,20 @@ public enum RopeReconciler {
     guard let cacheItem = editor.rangeCache[node.key] else { return }
 
     let range = cacheItem.range
-    if range.length > 0 && range.location + range.length <= textStorage.length {
+    let deletedLength = range.length
+    let deletedLocation = range.location
+
+    if deletedLength > 0 && deletedLocation + deletedLength <= textStorage.length {
       textStorage.deleteCharacters(in: range)
     }
 
     // Remove from range cache
     editor.rangeCache.removeValue(forKey: node.key)
+
+    // Shift all nodes after the deleted range
+    if deletedLength > 0 {
+      shiftRangeCacheAfter(location: deletedLocation, delta: -deletedLength, excludingKeys: [node.key], editor: editor)
+    }
   }
 
   /// Update a node that has been modified.
