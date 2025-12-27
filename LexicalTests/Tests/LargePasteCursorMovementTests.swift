@@ -1129,6 +1129,148 @@ final class LargePasteCursorMovementTests: XCTestCase {
     #endif
   }
 
+  // MARK: - Marked Text (IME/Composition) Tests
+
+  /// Test: Marked text (IME composition) after large paste should not force O(N) Fenwick materialization.
+  /// This regression test ensures that entering Japanese/Chinese characters via IME
+  /// on a large document remains fast.
+  func testMarkedTextAfterLargePaste_NoFullMaterialization() throws {
+    #if canImport(UIKit)
+    let sample = try loadSampleMarkdown()
+    XCTAssertGreaterThan(sample.utf16.count, 0)
+
+    let view = createTestEditorView()
+    let textView = view.view.textView
+    setupWindowWithView(view)
+    textView.becomeFirstResponder()
+
+    // Build a large document by pasting multiple times
+    for _ in 1...3 {
+      view.setSelectedRange(NSRange(location: textView.textStorage.length, length: 0))
+      try view.editor.update {
+        guard let selection = try getSelection() as? RangeSelection else { return }
+        try insertPlainText(selection: selection, text: sample)
+      }
+      drainMainQueue(timeout: 60)
+    }
+
+    let docLength = textView.textStorage.length
+    XCTAssertGreaterThan(docLength, 100_000, "Document should be > 100KB")
+
+    print("\n" + String(repeating: "=", count: 80))
+    print("TEST: Marked text after large paste")
+    print("Document length: \(docLength) chars")
+    print(String(repeating: "=", count: 80))
+
+    // Test 1: Marked text at the END of document
+    do {
+      view.setSelectedRange(NSRange(location: textView.textStorage.length, length: 0))
+      let preMem = currentProcessMemorySnapshot()?.bestCurrentBytes ?? 0
+      let sampler = ProcessMemorySampler(interval: 0.001)
+      sampler.start()
+
+      let t0 = CFAbsoluteTimeGetCurrent()
+      // Simulate IME composition: set marked text, then commit
+      view.setMarkedText("漢", selectedRange: NSRange(location: 1, length: 0))
+      view.setMarkedText("漢字", selectedRange: NSRange(location: 2, length: 0))
+      view.unmarkText()
+      let elapsed = CFAbsoluteTimeGetCurrent() - t0
+      sampler.stop()
+
+      drainMainQueue(timeout: 60)
+
+      let peak = max(sampler.maxPhysicalFootprintBytes, sampler.maxResidentBytes)
+      let delta = peak > preMem ? peak - preMem : 0
+
+      print("📏 Marked text at END: delta=\(formatBytesMB(delta)) time=\(String(format: "%.3f", elapsed))s")
+
+      // With Fenwick-lazy composition, this should be fast (< 200ms) and not cause memory spikes
+      XCTAssertLessThan(delta, 2_000_000_000, "Marked text at end should not spike memory")
+      XCTAssertLessThan(elapsed, 0.2, "Marked text at end should complete in < 200ms")
+    }
+
+    // Test 2: Marked text at the MIDDLE of document
+    do {
+      let midPoint = textView.textStorage.length / 2
+      view.setSelectedRange(NSRange(location: midPoint, length: 0))
+      let preMem = currentProcessMemorySnapshot()?.bestCurrentBytes ?? 0
+      let sampler = ProcessMemorySampler(interval: 0.001)
+      sampler.start()
+
+      let t0 = CFAbsoluteTimeGetCurrent()
+      // Simulate IME composition
+      view.setMarkedText("あ", selectedRange: NSRange(location: 1, length: 0))
+      view.setMarkedText("あい", selectedRange: NSRange(location: 2, length: 0))
+      view.unmarkText()
+      let elapsed = CFAbsoluteTimeGetCurrent() - t0
+      sampler.stop()
+
+      drainMainQueue(timeout: 60)
+
+      let peak = max(sampler.maxPhysicalFootprintBytes, sampler.maxResidentBytes)
+      let delta = peak > preMem ? peak - preMem : 0
+
+      print("📏 Marked text at MIDDLE: delta=\(formatBytesMB(delta)) time=\(String(format: "%.3f", elapsed))s")
+
+      // Middle of document is the worst case for O(N) materialization
+      XCTAssertLessThan(delta, 2_000_000_000, "Marked text at middle should not spike memory")
+      XCTAssertLessThan(elapsed, 0.2, "Marked text at middle should complete in < 200ms")
+    }
+
+    // Test 3: Multiple composition cycles (simulating continuous IME usage)
+    do {
+      var totalTime: TimeInterval = 0
+      var maxDelta: UInt64 = 0
+      let cycles = 5
+
+      for i in 0..<cycles {
+        let pos = (i % 2 == 0) ? textView.textStorage.length : textView.textStorage.length / 2
+        view.setSelectedRange(NSRange(location: pos, length: 0))
+
+        let preMem = currentProcessMemorySnapshot()?.bestCurrentBytes ?? 0
+        let sampler = ProcessMemorySampler(interval: 0.001)
+        sampler.start()
+
+        let t0 = CFAbsoluteTimeGetCurrent()
+        view.setMarkedText("か", selectedRange: NSRange(location: 1, length: 0))
+        view.setMarkedText("かな", selectedRange: NSRange(location: 2, length: 0))
+        view.unmarkText()
+        let elapsed = CFAbsoluteTimeGetCurrent() - t0
+        sampler.stop()
+
+        let peak = max(sampler.maxPhysicalFootprintBytes, sampler.maxResidentBytes)
+        let delta = peak > preMem ? peak - preMem : 0
+
+        totalTime += elapsed
+        maxDelta = max(maxDelta, delta)
+      }
+
+      drainMainQueue(timeout: 60)
+
+      print("📏 Multiple compositions (\(cycles)x): maxDelta=\(formatBytesMB(maxDelta)) totalTime=\(String(format: "%.3f", totalTime))s avgTime=\(String(format: "%.3f", totalTime / Double(cycles)))s")
+
+      // Average time per composition should be fast
+      let avgTime = totalTime / Double(cycles)
+      XCTAssertLessThan(avgTime, 0.1, "Average composition time should be < 100ms")
+      XCTAssertLessThan(maxDelta, 2_000_000_000, "Multiple compositions should not spike memory")
+    }
+
+    // Verify document integrity after all compositions
+    var finalText = ""
+    try view.editor.read {
+      finalText = getRoot()?.getTextContent() ?? ""
+    }
+    // Should contain the original sample content plus our IME insertions
+    XCTAssertTrue(finalText.contains("漢字"), "Should contain first IME insertion")
+    XCTAssertTrue(finalText.contains("あい"), "Should contain second IME insertion")
+
+    print("✅ All marked text operations completed successfully")
+    print(String(repeating: "=", count: 80) + "\n")
+    #else
+    throw XCTSkip("Requires UIKit")
+    #endif
+  }
+
   #if canImport(UIKit)
   private func setupWindowWithView(_ view: TestEditorView) {
     window?.isHidden = true

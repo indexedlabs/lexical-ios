@@ -114,15 +114,8 @@ public enum RopeReconciler {
       }
     }
 
-    // Marked text reconciliation uses legacy absolute locations + O(N) cache shifts.
-    // If we have pending Fenwick deltas, materialize them first so cache + TextStorage stay aligned.
-    if editor.useFenwickLocations, editor.fenwickHasDeltas,
-       let mto = markedTextOperation, mto.createMarkedText
-    {
-      materializeFenwickLocations(editor: editor)
-    }
-
     // Composition (marked text) fast path first
+    // NOTE: handleComposition uses Fenwick-aware pointAtStringLocation, so no pre-materialization needed.
     if let mto = markedTextOperation, mto.createMarkedText {
       pathLabel = "rope-composition"
       if try handleComposition(
@@ -1680,11 +1673,16 @@ public enum RopeReconciler {
 
     propagateChildrenLengthDelta(fromParentKey: getNodeByKey(key: nodeKey)?.parent, delta: delta, editor: editor)
 
-    // Shift all nodes after this one
-    for (key, var item) in editor.rangeCache where key != nodeKey {
-      if item.location > cacheItem.location {
-        item.location += delta
-        editor.rangeCache[key] = item
+    // Shift all nodes after this one using O(log N) Fenwick delta when available.
+    if editor.useFenwickLocations {
+      applyFenwickSuffixShift(afterKey: nodeKey, delta: delta, editor: editor)
+    } else {
+      // Fallback to O(N) loop when Fenwick is disabled
+      for (key, var item) in editor.rangeCache where key != nodeKey {
+        if item.location > cacheItem.location {
+          item.location += delta
+          editor.rangeCache[key] = item
+        }
       }
     }
   }
