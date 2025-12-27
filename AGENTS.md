@@ -229,6 +229,8 @@ This repo contains Lexical iOS — a Swift Package with a modular plugin archite
 
 **IMPORTANT**: This project uses **bd (beads)** for ALL issue tracking. Do NOT use markdown TODOs, task lists, or other tracking methods.
 
+**Quick start**: Run `bd prime` for full workflow context, or install hooks (`bd hooks install`) for auto-injection at session start.
+
 ### Why bd?
 
 - Dependency-aware: Track blockers and relationships between issues
