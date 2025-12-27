@@ -282,7 +282,13 @@ public enum RopeReconciler {
       try insertNode(node, into: textStorage, state: nextState, editor: editor, theme: theme)
     }
 
-    // Process updates
+    updates.sort { a, b in
+      let aLoc = editor.rangeCache[a.key]?.location ?? 0
+      let bLoc = editor.rangeCache[b.key]?.location ?? 0
+      if aLoc != bLoc { return aLoc < bLoc }
+      return a.key < b.key
+    }
+
     for (_, prev, next) in updates {
       try updateNode(from: prev, to: next, in: textStorage, state: nextState, editor: editor, theme: theme)
     }
