@@ -353,6 +353,114 @@ final class LargePastePositionAndContentTests: XCTestCase {
     XCTAssertGreaterThan(nodeCount, 0, "Should have nodes in selection")
   }
 
+  /// Comprehensive memory tracking test for paste + select all scenario.
+  /// Run with: swift test --filter testPaste3xSelectAll_MemoryProfile
+  func testPaste3xSelectAll_MemoryProfile() throws {
+    let testView = createTestEditorView()
+    let largeContent = generateLargeContent(lines: lineCount)
+
+    let baselineMem = currentProcessMemorySnapshot()
+    print("[Memory] Baseline: \(formatBytesMB(baselineMem?.bestCurrentBytes ?? 0))")
+
+    let sampler = ProcessMemorySampler(interval: 0.001)
+    sampler.start()
+
+    // Paste 2k lines 3 times with memory tracking
+    for i in 1...3 {
+      let prePaste = currentProcessMemorySnapshot()
+      let currentLength = testView.textStorageLength
+      testView.setSelectedRange(NSRange(location: currentLength, length: 0))
+
+      try testView.editor.update {
+        guard let selection = try getSelection() as? RangeSelection else {
+          XCTFail("Expected RangeSelection")
+          return
+        }
+        try insertPlainText(selection: selection, text: largeContent)
+      }
+
+      let postPaste = currentProcessMemorySnapshot()
+      print("[Memory] Paste \(i): before=\(formatBytesMB(prePaste?.bestCurrentBytes ?? 0)) after=\(formatBytesMB(postPaste?.bestCurrentBytes ?? 0)) chars=\(testView.textStorageLength)")
+    }
+
+    let preSelectAll = currentProcessMemorySnapshot()
+    print("[Memory] Pre-SelectAll: \(formatBytesMB(preSelectAll?.bestCurrentBytes ?? 0))")
+
+    // Now select all - this is where memory might spike
+    let totalLength = testView.textStorageLength
+    testView.setSelectedRange(NSRange(location: 0, length: totalLength))
+
+    let postSelectAll = currentProcessMemorySnapshot()
+    print("[Memory] Post-SelectAll: \(formatBytesMB(postSelectAll?.bestCurrentBytes ?? 0))")
+
+    // Give time for any async work
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+
+    let afterRunloop = currentProcessMemorySnapshot()
+    print("[Memory] After runloop: \(formatBytesMB(afterRunloop?.bestCurrentBytes ?? 0))")
+
+    sampler.stop()
+    print("[Memory] Peak during test: \(formatBytesMB(sampler.maxPhysicalFootprintBytes))")
+
+    // Verify selection
+    let selectedRange = testView.selectedRange
+    XCTAssertEqual(selectedRange.location, 0, "Selection should start at 0")
+    XCTAssertEqual(selectedRange.length, totalLength, "Selection should cover entire document")
+
+    // Check if memory is unreasonable (>1GB would be a sign of the 50GB issue)
+    let peakMB = Double(sampler.maxPhysicalFootprintBytes) / (1024.0 * 1024.0)
+    XCTAssertLessThan(peakMB, 1024.0, "Memory should not spike to >1GB")
+  }
+
+  /// Test to isolate WHERE the memory spike happens during select all.
+  /// Run with: swift test --filter testSelectAll_IsolateMemorySpike
+  func testSelectAll_IsolateMemorySpike() throws {
+    let testView = createTestEditorView()
+    let largeContent = generateLargeContent(lines: lineCount)
+
+    // Paste 3x
+    for i in 1...3 {
+      let currentLength = testView.textStorageLength
+      testView.setSelectedRange(NSRange(location: currentLength, length: 0))
+      try testView.editor.update {
+        guard let selection = try getSelection() as? RangeSelection else { return }
+        try insertPlainText(selection: selection, text: largeContent)
+      }
+      print("[Test] Paste \(i) complete: \(testView.textStorageLength) chars")
+    }
+
+    let sampler = ProcessMemorySampler(interval: 0.001)
+    sampler.start()
+
+    let preSelect = currentProcessMemorySnapshot()
+    print("[Memory] Before setSelectedRange: \(formatBytesMB(preSelect?.bestCurrentBytes ?? 0))")
+
+    // Step 1: Just set the range (no runloop)
+    let totalLength = testView.textStorageLength
+    testView.setSelectedRange(NSRange(location: 0, length: totalLength))
+
+    let postSelect = currentProcessMemorySnapshot()
+    print("[Memory] After setSelectedRange (no runloop): \(formatBytesMB(postSelect?.bestCurrentBytes ?? 0))")
+
+    // Step 2: Run a tiny bit of runloop (0.01s)
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.01))
+    let afterShortRunloop = currentProcessMemorySnapshot()
+    print("[Memory] After 0.01s runloop: \(formatBytesMB(afterShortRunloop?.bestCurrentBytes ?? 0))")
+
+    // Step 3: Run more runloop (0.05s)
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+    let afterMedRunloop = currentProcessMemorySnapshot()
+    print("[Memory] After 0.06s total runloop: \(formatBytesMB(afterMedRunloop?.bestCurrentBytes ?? 0))")
+
+    // Step 4: Run more runloop (0.1s)
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+    let afterLongRunloop = currentProcessMemorySnapshot()
+    print("[Memory] After 0.16s total runloop: \(formatBytesMB(afterLongRunloop?.bestCurrentBytes ?? 0))")
+
+    sampler.stop()
+    print("[Memory] Peak during test: \(formatBytesMB(sampler.maxPhysicalFootprintBytes))")
+  }
+
   // MARK: - Helper for asserting Int equality with tolerance
 
   private func assertEqualWithTolerance(_ a: Int, _ b: Int, tolerance: Int, _ message: String, file: StaticString = #file, line: UInt = #line) {
