@@ -262,8 +262,10 @@ public class TextStorage: NSTextStorage, ReconcilerTextStorage {
 
 extension TextStorage {
   @MainActor override public var debugDescription: String {
-    return
-      "TextStorage[\(backingAttributedString.string.utf16.enumerated().map { "(\($0)=U+\(String(format:"%04X",$1)))" }.joined())]"
+    let codes = string.utf16.enumerated().map {
+      "(\($0)=U+\(String(format: "%04X", $1)))"
+    }.joined()
+    return "TextStorage[\(codes)]"
   }
 }
 #endif  // canImport(UIKit)

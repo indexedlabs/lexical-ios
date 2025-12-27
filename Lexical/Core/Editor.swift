@@ -343,7 +343,21 @@ public class Editor: NSObject {
     } else {
       mode = UpdateBehaviourModificationMode()
     }
-    try beginUpdate(closure, mode: mode, reason: reason)
+
+    // Ensure autoreleased objects created during an update (closure/normalize/reconcile/layout)
+    // are drained promptly between update calls. This stabilizes memory usage for tests that
+    // sample physical footprint during tight update loops.
+    var updateError: Error?
+    autoreleasepool {
+      do {
+        try beginUpdate(closure, mode: mode, reason: reason)
+      } catch {
+        updateError = error
+      }
+    }
+    if let updateError {
+      throw updateError
+    }
   }
 
   /// Convenience function to read the Editor's current EditorState.
@@ -1229,13 +1243,25 @@ public class Editor: NSObject {
         #endif
         #if canImport(UIKit)
         if !headless {
-          try RopeReconciler.updateEditorState(
-            currentEditorState: editorState,
-            pendingEditorState: pendingEditorState,
-            editor: self,
-            shouldReconcileSelection: !mode.suppressReconcilingSelection,
-            markedTextOperation: mode.markedTextOperation
-          )
+          // Keep Objective-C autoreleased temporaries from accumulating across update phases
+          // (important for large-paste + typing memory tests).
+          var reconcileError: Error?
+          autoreleasepool {
+            do {
+              try RopeReconciler.updateEditorState(
+                currentEditorState: editorState,
+                pendingEditorState: pendingEditorState,
+                editor: self,
+                shouldReconcileSelection: !mode.suppressReconcilingSelection,
+                markedTextOperation: mode.markedTextOperation
+              )
+            } catch {
+              reconcileError = error
+            }
+          }
+          if let reconcileError {
+            throw reconcileError
+          }
         }
         #elseif os(macOS) && !targetEnvironment(macCatalyst)
         // AppKit reconciliation path
@@ -1244,13 +1270,23 @@ public class Editor: NSObject {
           frontendAppKit?.isUpdatingNativeSelection = true
           defer { frontendAppKit?.isUpdatingNativeSelection = false }
 
-          try RopeReconciler.updateEditorState(
-            currentEditorState: editorState,
-            pendingEditorState: pendingEditorState,
-            editor: self,
-            shouldReconcileSelection: !mode.suppressReconcilingSelection,
-            markedTextOperation: mode.markedTextOperation
-          )
+          var reconcileError: Error?
+          autoreleasepool {
+            do {
+              try RopeReconciler.updateEditorState(
+                currentEditorState: editorState,
+                pendingEditorState: pendingEditorState,
+                editor: self,
+                shouldReconcileSelection: !mode.suppressReconcilingSelection,
+                markedTextOperation: mode.markedTextOperation
+              )
+            } catch {
+              reconcileError = error
+            }
+          }
+          if let reconcileError {
+            throw reconcileError
+          }
         }
         #endif
         #if DEBUG

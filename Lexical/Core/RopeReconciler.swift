@@ -23,6 +23,11 @@ import AppKit
 public enum RopeReconciler {
 
   // MARK: - Public API
+#if DEBUG
+  private static var debugLoggingEnabled: Bool {
+    ProcessInfo.processInfo.environment["LEXICAL_ROPE_RECONCILER_DEBUG"] == "1"
+  }
+#endif
 
   /// Reconcile changes from prevState to nextState.
   /// - Parameters:
@@ -204,7 +209,12 @@ public enum RopeReconciler {
       case (let prev?, nil):
         removes.append((key, prev))
       case (let prev?, let next?):
-        updates.append((key, prev, next))
+        // `getWritable()` on an ElementNode marks all descendants as dirty, even when their
+        // actual content hasn't changed (e.g. mutating RootNode children marks the entire
+        // document dirty). Avoid updating nodes that were not cloned/mutated in this update.
+        if prev !== next {
+          updates.append((key, prev, next))
+        }
       case (nil, nil):
         continue
       }
@@ -262,6 +272,16 @@ public enum RopeReconciler {
       textStorage.beginEditing()
     }
 
+#if DEBUG
+    let t_apply0 = CFAbsoluteTimeGetCurrent()
+    var t_afterRemoves = t_apply0
+    var t_afterInserts = t_apply0
+    var t_afterUpdates = t_apply0
+    var t_afterBlockAttrs = t_apply0
+    var t_afterEndEditing = t_apply0
+    var t_afterSelection = t_apply0
+#endif
+
     // Process removes first (in reverse document order to avoid shifting issues)
     removes.sort { a, b in
       let aLoc = editor.rangeCache[a.key]?.location ?? 0
@@ -271,16 +291,91 @@ public enum RopeReconciler {
     for (_, node) in removes {
       try removeNode(node, from: textStorage, editor: editor)
     }
+#if DEBUG
+    t_afterRemoves = CFAbsoluteTimeGetCurrent()
+#endif
 
     // Process inserts in document order
-    inserts.sort { a, b in
-      let posA = documentPosition(of: a.node, in: nextState)
-      let posB = documentPosition(of: b.node, in: nextState)
-      return comparePaths(posA, posB)
+#if DEBUG
+    let t_insertSort0 = CFAbsoluteTimeGetCurrent()
+#endif
+    do {
+      // Sorting inserts by repeatedly computing document positions inside the comparator is extremely
+      // expensive for large pastes (O(N² log N) due to repeated linear sibling scans).
+      // Precompute positions once per node using a cached child-index map per parent.
+      var childIndexCache: [NodeKey: [NodeKey: Int]] = [:]
+      childIndexCache.reserveCapacity(8)
+
+      @inline(__always)
+      func indexMap(forParentKey parentKey: NodeKey, parent: ElementNode) -> [NodeKey: Int] {
+        if let cached = childIndexCache[parentKey] { return cached }
+        let children = parent.getChildrenKeys(fromLatest: false)
+        var map: [NodeKey: Int] = [:]
+        map.reserveCapacity(children.count)
+        for (i, key) in children.enumerated() {
+          map[key] = i
+        }
+        childIndexCache[parentKey] = map
+        return map
+      }
+
+      @inline(__always)
+      func documentPositionFast(of node: Node) -> [Int] {
+        var path: [Int] = []
+        path.reserveCapacity(4)
+        var current: Node? = node
+        while let cur = current, let parentKey = cur.parent,
+              let parent = nextState.nodeMap[parentKey] as? ElementNode
+        {
+          let map = indexMap(forParentKey: parentKey, parent: parent)
+          if let index = map[cur.key] {
+            path.insert(index, at: 0)
+          }
+          current = parent
+        }
+        return path
+      }
+
+      var positioned: [(pos: [Int], key: NodeKey, node: Node)] = []
+      positioned.reserveCapacity(inserts.count)
+      for (key, node) in inserts {
+        positioned.append((documentPositionFast(of: node), key, node))
+      }
+
+      positioned.sort { comparePaths($0.pos, $1.pos) }
+      inserts = positioned.map { (key: $0.key, node: $0.node) }
     }
-    for (_, node) in inserts {
+#if DEBUG
+    let insertSortMs = (CFAbsoluteTimeGetCurrent() - t_insertSort0) * 1000
+    if debugLoggingEnabled && insertSortMs > 50 {
+      let insertSortStr = String(format: "%.2f", insertSortMs)
+      print(
+        "🔥 ROPE_RECONCILER insert sort: count=\(inserts.count) time=\(insertSortStr)ms"
+      )
+    }
+#endif
+    var insertIndex = 0
+    while insertIndex < inserts.count {
+      let consumed = try bulkInsertElementSiblingRunIfPossible(
+        inserts,
+        startingAt: insertIndex,
+        into: textStorage,
+        state: nextState,
+        editor: editor,
+        theme: theme
+      )
+      if consumed > 0 {
+        insertIndex += consumed
+        continue
+      }
+
+      let node = inserts[insertIndex].node
       try insertNode(node, into: textStorage, state: nextState, editor: editor, theme: theme)
+      insertIndex += 1
     }
+#if DEBUG
+    t_afterInserts = CFAbsoluteTimeGetCurrent()
+#endif
 
     updates.sort { a, b in
       let aLoc = editor.rangeCache[a.key]?.location ?? 0
@@ -292,19 +387,42 @@ public enum RopeReconciler {
     for (_, prev, next) in updates {
       try updateNode(from: prev, to: next, in: textStorage, state: nextState, editor: editor, theme: theme)
     }
+#if DEBUG
+    t_afterUpdates = CFAbsoluteTimeGetCurrent()
+#endif
 
     #if canImport(UIKit)
     if hasEdits {
+      // `getWritable()` on ElementNodes (notably RootNode) marks entire subtrees dirty.
+      // Avoid treating all those descendants as block-attribute candidates; apply only for
+      // nodes that were actually inserted/updated in this reconciliation pass.
+      var blockAttributeDirty: DirtyNodeMap = [:]
+      blockAttributeDirty.reserveCapacity(inserts.count + updates.count + removes.count)
+      for (key, _) in inserts {
+        blockAttributeDirty[key] = .editorInitiated
+      }
+      for (key, _, _) in updates {
+        blockAttributeDirty[key] = .editorInitiated
+      }
+      for (_, node) in removes {
+        if let parentKey = node.parent {
+          blockAttributeDirty[parentKey] = .editorInitiated
+        }
+      }
+
       applyBlockLevelAttributesIfNeeded(
         editor: editor,
         state: nextState,
-        dirtyNodes: dirtyNodes,
+        dirtyNodes: blockAttributeDirty,
         treatAllNodesAsDirty: false,
         theme: theme,
         textStorage: textStorage
       )
     }
     #endif
+#if DEBUG
+    t_afterBlockAttrs = CFAbsoluteTimeGetCurrent()
+#endif
 
     // End editing BEFORE selection reconciliation to avoid glyph generation crash
     if hasEdits {
@@ -317,6 +435,9 @@ public enum RopeReconciler {
       (textStorage as? ReconcilerTextStorageAppKit)?.mode = previousMode
       #endif
     }
+#if DEBUG
+    t_afterEndEditing = CFAbsoluteTimeGetCurrent()
+#endif
     applyDuration = CFAbsoluteTimeGetCurrent() - applyStart
 
     if !removedKeys.isEmpty {
@@ -345,6 +466,33 @@ public enum RopeReconciler {
         editor: editor
       )
     }
+#if DEBUG
+    t_afterSelection = CFAbsoluteTimeGetCurrent()
+
+    let removesMs = (t_afterRemoves - t_apply0) * 1000
+    let insertsMs = (t_afterInserts - t_afterRemoves) * 1000
+    let updatesMs = (t_afterUpdates - t_afterInserts) * 1000
+    let blockAttrsMs = (t_afterBlockAttrs - t_afterUpdates) * 1000
+    let endEditingMs = (t_afterEndEditing - t_afterBlockAttrs) * 1000
+    let selectionMs = (t_afterSelection - t_afterEndEditing) * 1000
+    let totalMs = (t_afterSelection - t_apply0) * 1000
+
+    if debugLoggingEnabled && totalMs > 50 {
+      let removesStr = String(format: "%.2f", removesMs)
+      let insertsStr = String(format: "%.2f", insertsMs)
+      let updatesStr = String(format: "%.2f", updatesMs)
+      let blockAttrsStr = String(format: "%.2f", blockAttrsMs)
+      let endEditingStr = String(format: "%.2f", endEditingMs)
+      let selectionStr = String(format: "%.2f", selectionMs)
+      let totalStr = String(format: "%.2f", totalMs)
+      print(
+        "🔥 ROPE_RECONCILER counts: dirty=\(dirtyNodesCount) removes=\(removes.count) inserts=\(inserts.count) updates=\(updates.count) rangeCache=\(editor.rangeCache.count) storageLen=\(textStorage.length)"
+      )
+      print(
+        "🔥 ROPE_RECONCILER phases: removes=\(removesStr)ms inserts=\(insertsStr)ms updates=\(updatesStr)ms blockAttrs=\(blockAttrsStr)ms endEditing=\(endEditingStr)ms selection=\(selectionStr)ms total=\(totalStr)ms"
+      )
+    }
+#endif
   }
 
   // MARK: - Fresh Document Hydration
@@ -713,6 +861,98 @@ public enum RopeReconciler {
     }
   }
 
+  private static func bulkInsertElementSiblingRunIfPossible(
+    _ inserts: [(key: NodeKey, node: Node)],
+    startingAt startIndex: Int,
+    into textStorage: NSTextStorage,
+    state: EditorState,
+    editor: Editor,
+    theme: Theme
+  ) throws -> Int {
+    guard startIndex < inserts.count else { return 0 }
+    guard let first = inserts[startIndex].node as? ElementNode else { return 0 }
+    guard let parentKey = first.parent,
+          let parent = state.nodeMap[parentKey] as? ElementNode
+    else { return 0 }
+
+    var endIndex = startIndex
+    while endIndex < inserts.count {
+      guard let el = inserts[endIndex].node as? ElementNode else { break }
+      guard el.parent == parentKey else { break }
+      endIndex += 1
+    }
+
+    let runCount = endIndex - startIndex
+    // Avoid paying the overhead for small runs; this is primarily for multi-block pastes.
+    guard runCount >= 32 else { return 0 }
+
+    // Only handle append-at-end runs to avoid needing global location shifts.
+    // Large paste tests append blocks at the end repeatedly.
+    if let prevSibling = first.getPreviousSibling() {
+      try updateSiblingPostamble(prevSibling, in: textStorage, state: state, editor: editor, theme: theme)
+    }
+
+    let insertLocation = computeInsertLocation(for: first, parent: parent, editor: editor)
+#if DEBUG
+    if debugLoggingEnabled {
+      if insertLocation != textStorage.length {
+        print(
+          "🔥 ROPE_RECONCILER bulkInsert SKIP runCount=\(runCount) insertLocation=\(insertLocation) storageLen=\(textStorage.length) parent=\(parentKey)"
+        )
+      } else {
+        print("🔥 ROPE_RECONCILER bulkInsert runCount=\(runCount) insertLocation=\(insertLocation)")
+      }
+    }
+#endif
+    guard insertLocation == textStorage.length else { return 0 }
+
+#if DEBUG
+    let t_build_start = CFAbsoluteTimeGetCurrent()
+#endif
+    let combined = NSMutableAttributedString()
+    combined.beginEditing()
+    for i in startIndex..<endIndex {
+      let nodeKey = inserts[i].node.key
+      autoreleasepool {
+        appendAttributedSubtree(into: combined, nodeKey: nodeKey, state: state, theme: theme)
+      }
+    }
+    combined.endEditing()
+#if DEBUG
+    let t_build_end = CFAbsoluteTimeGetCurrent()
+#endif
+
+    if combined.length > 0 {
+#if DEBUG
+      let t_insert_start = CFAbsoluteTimeGetCurrent()
+#endif
+      textStorage.insert(combined, at: insertLocation)
+#if DEBUG
+      let t_insert_end = CFAbsoluteTimeGetCurrent()
+      let buildMs = (t_build_end - t_build_start) * 1000
+      let insertMs = (t_insert_end - t_insert_start) * 1000
+      if debugLoggingEnabled {
+        let buildStr = String(format: "%.2f", buildMs)
+        let insertStr = String(format: "%.2f", insertMs)
+        print(
+          "🔥 ROPE_RECONCILER bulkInsert timings: build=\(buildStr)ms insert=\(insertStr)ms len=\(combined.length)"
+        )
+      }
+#endif
+    }
+
+    // Populate range cache entries for all inserted nodes and their descendants.
+    var cursor = insertLocation
+    for i in startIndex..<endIndex {
+      let nodeKey = inserts[i].node.key
+      let len = recomputeRangeCacheSubtree(nodeKey: nodeKey, state: state, startLocation: cursor, editor: editor)
+      cursor += len
+    }
+    propagateChildrenLengthDelta(fromParentKey: parentKey, delta: combined.length, editor: editor)
+
+    return runCount
+  }
+
   /// Update a sibling's postamble after a new sibling is inserted.
   private static func updateSiblingPostamble(
     _ sibling: Node,
@@ -825,30 +1065,91 @@ public enum RopeReconciler {
   ) throws {
     guard let cacheItem = editor.rangeCache[prev.key] else { return }
 
-    let newContent = buildAttributedContent(for: next, state: state, theme: theme)
+    let oldText = prev.getTextPart(fromLatest: false)
+    let newText = next.getTextPart(fromLatest: false)
+
     let oldLength = cacheItem.textLength
-    let newLength = newContent.length
+    let oldTextLen = oldText.lengthAsNSString()
+    let newLength = newText.lengthAsNSString()
     let delta = newLength - oldLength
 
-    let range = NSRange(location: cacheItem.location + cacheItem.preambleLength, length: oldLength)
+    let textStart = cacheItem.location + cacheItem.preambleLength + cacheItem.childrenLength
+    let textRange = NSRange(location: textStart, length: oldLength)
 
-    if range.location + range.length <= textStorage.length {
-      textStorage.replaceCharacters(in: range, with: newContent)
+    guard textRange.location + textRange.length <= textStorage.length else { return }
 
-      // Update range cache for this node
-      var updatedItem = cacheItem
-      updatedItem.textLength = newLength
-      editor.rangeCache[next.key] = updatedItem
-
-      // Shift all nodes after this one if length changed
-      if delta != 0 {
-        let afterLocation = cacheItem.location + cacheItem.preambleLength + newLength
-        let excludingKeys = ancestorKeys(fromParentKey: next.parent)
-        shiftRangeCacheAfter(location: afterLocation, delta: delta, excludingKeys: excludingKeys, editor: editor)
-
-        // Update parent's childrenLength
-        propagateChildrenLengthDelta(fromParentKey: next.parent, delta: delta, editor: editor)
+    // Incremental text updates: avoid replacing the entire TextNode content (which can be large
+    // after big pastes) for small edits like typing.
+    if oldText == newText {
+      // Attribute-only update: keep content, re-apply styles.
+      let attributes = AttributeUtils.attributedStringStyles(from: next, state: state, theme: theme)
+      textStorage.setAttributes(attributes, range: textRange)
+      if textRange.length > 0 {
+        textStorage.fixAttributes(in: textRange)
       }
+    } else if oldTextLen == oldLength {
+      // Minimal replace algorithm (LCP/LCS): replace only the changed span.
+      let oldStr = oldText as NSString
+      let newStr = newText as NSString
+      let maxPref = min(oldTextLen, newLength)
+      var lcp = 0
+      while lcp < maxPref && oldStr.character(at: lcp) == newStr.character(at: lcp) { lcp += 1 }
+      let oldRem = oldTextLen - lcp
+      let newRem = newLength - lcp
+      let maxSuf = min(oldRem, newRem)
+      var lcs = 0
+      while lcs < maxSuf && oldStr.character(at: oldTextLen - 1 - lcs) == newStr.character(at: newLength - 1 - lcs) { lcs += 1 }
+
+      let changedOldLen = max(0, oldRem - lcs)
+      let changedNewLen = max(0, newRem - lcs)
+      let replaceLoc = textStart + lcp
+      let replaceRange = NSRange(location: replaceLoc, length: changedOldLen)
+
+      let newSegment =
+        changedNewLen > 0 ? newStr.substring(with: NSRange(location: lcp, length: changedNewLen)) : ""
+      let styled = AttributeUtils.attributedStringByAddingStyles(
+        NSAttributedString(string: newSegment),
+        from: next,
+        state: state,
+        theme: theme
+      )
+
+      if styled.length == 0 && changedOldLen > 0 {
+        // Pure deletion is cheaper and avoids attribute churn.
+        textStorage.deleteCharacters(in: replaceRange)
+        let fixStart = max(0, replaceLoc - 1)
+        let fixLen = min(2, (textStorage.length - fixStart))
+        if fixLen > 0 {
+          textStorage.fixAttributes(in: NSRange(location: fixStart, length: fixLen))
+        }
+      } else {
+        textStorage.replaceCharacters(in: replaceRange, with: styled)
+        let fixLen = max(changedOldLen, styled.length)
+        let fixCandidate = NSRange(location: replaceLoc, length: fixLen)
+        let safeFix = NSIntersectionRange(fixCandidate, NSRange(location: 0, length: textStorage.length))
+        if safeFix.length > 0 {
+          textStorage.fixAttributes(in: safeFix)
+        }
+      }
+    } else {
+      // Fallback (should be rare): replace full content.
+      let newContent = buildTextNodeContent(next, state: state, theme: theme)
+      textStorage.replaceCharacters(in: textRange, with: newContent)
+    }
+
+    // Update range cache for this node
+    var updatedItem = cacheItem
+    updatedItem.textLength = newLength
+    editor.rangeCache[next.key] = updatedItem
+
+    // Shift all nodes after this one if length changed
+    if delta != 0 {
+      let afterLocation = textStart + oldLength
+      let excludingKeys = ancestorKeys(fromParentKey: next.parent)
+      shiftRangeCacheAfter(location: afterLocation, delta: delta, excludingKeys: excludingKeys, editor: editor)
+
+      // Update parent's childrenLength
+      propagateChildrenLengthDelta(fromParentKey: next.parent, delta: delta, editor: editor)
     }
   }
 
@@ -874,7 +1175,7 @@ public enum RopeReconciler {
     if nextPreambleLength != oldPreambleLength
       || (oldPreambleLength > 0
         && NSMaxRange(NSRange(location: cacheItem.location, length: oldPreambleLength)) <= textStorage.length
-        && (textStorage.string as NSString).substring(with: NSRange(location: cacheItem.location, length: oldPreambleLength)) != nextPreamble)
+        && textStorage.attributedSubstring(from: NSRange(location: cacheItem.location, length: oldPreambleLength)).string != nextPreamble)
     {
       let preambleRange = NSRange(location: cacheItem.location, length: oldPreambleLength)
       let styledPreamble = NSAttributedString(string: nextPreamble, attributes: attributes)
@@ -909,12 +1210,12 @@ public enum RopeReconciler {
             length: oldPostambleLength
           )
         ) <= textStorage.length
-        && (textStorage.string as NSString).substring(
-          with: NSRange(
+        && textStorage.attributedSubstring(
+          from: NSRange(
             location: cacheItem.location + cacheItem.preambleLength + cacheItem.childrenLength + cacheItem.textLength,
             length: oldPostambleLength
           )
-        ) != nextPostamble)
+        ).string != nextPostamble)
     {
       let postambleStart = cacheItem.location + cacheItem.preambleLength + cacheItem.childrenLength + cacheItem.textLength
       let postambleRange = NSRange(location: postambleStart, length: oldPostambleLength)
@@ -1175,8 +1476,13 @@ public enum RopeReconciler {
   ) {
     guard delta != 0 else { return }
 
-    for (key, var item) in editor.rangeCache {
-      if !excludingKeys.contains(key) && item.location >= location {
+    // Avoid mutating the dictionary while iterating it: this can trigger expensive internal copies
+    // and becomes a hot path on large documents. Snapshot the keys and then apply updates.
+    let keys = Array(editor.rangeCache.keys)
+    for key in keys {
+      if excludingKeys.contains(key) { continue }
+      guard var item = editor.rangeCache[key] else { continue }
+      if item.location >= location {
         item.location += delta
         editor.rangeCache[key] = item
       }

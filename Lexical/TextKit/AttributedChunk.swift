@@ -185,14 +185,29 @@ public struct AttributedChunk: RopeChunk, Sendable {
       return [:]
     }
 
-    for run in attributeRuns {
-      if run.range.contains(index) {
+    guard !attributeRuns.isEmpty else {
+      effectiveRange = 0..<length
+      return [:]
+    }
+
+    // Runs are expected to be ordered by increasing range.lowerBound and non-overlapping.
+    // Binary search keeps attribute lookup fast even when a chunk has many runs (e.g. large pastes).
+    var low = 0
+    var high = attributeRuns.count - 1
+    while low <= high {
+      let mid = (low + high) / 2
+      let run = attributeRuns[mid]
+      if index < run.range.lowerBound {
+        high = mid - 1
+      } else if index >= run.range.upperBound {
+        low = mid + 1
+      } else {
         effectiveRange = run.range
         return run.attributes
       }
     }
 
-    // No run found - return empty with full range
+    // No run found - return empty with full range.
     effectiveRange = 0..<length
     return [:]
   }

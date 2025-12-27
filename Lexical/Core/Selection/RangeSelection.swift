@@ -616,6 +616,45 @@ public class RangeSelection: BaseSelection {
       try removeText()
     }
 
+    // Large paste fast path: when inserting many block nodes at the end of the document, avoid
+    // inserting each block one-by-one via insertAfter (which becomes O(N²) as the document grows).
+    // This keeps large pastes closer to O(K) where K is inserted content.
+    if nodes.count >= 256,
+       let root = getRoot(),
+       let firstInline = nodes.first as? TextNode,
+       nodes.dropFirst().allSatisfy({ node in
+         guard let el = node as? ElementNode else { return false }
+         return !el.isInline()
+       }),
+       anchor.type == .text,
+       let anchorTextNode = try anchor.getNode() as? TextNode
+    {
+      let anchorTextLen = anchorTextNode.getTextPart().lengthAsNSString()
+      if anchor.offset == anchorTextLen {
+        let topLevelElement = anchorTextNode.getTopLevelElement() ?? anchorTextNode
+        if topLevelElement.getNextSiblings().isEmpty {
+          // Insert the first inline chunk into the current paragraph.
+          let prefix = firstInline.getTextPart()
+          if !prefix.isEmpty {
+            try insertText(prefix)
+          }
+
+          // Append remaining blocks as top-level nodes.
+          let blocks = Array(nodes.dropFirst())
+          if !blocks.isEmpty {
+            try root.append(blocks)
+          }
+
+          if selectStart {
+            try root.selectStart()
+          } else {
+            try root.selectEnd()
+          }
+          return true
+        }
+      }
+    }
+
     let anchor = anchor
     let anchorOffset = anchor.offset
     let anchorNode = try anchor.getNode()
