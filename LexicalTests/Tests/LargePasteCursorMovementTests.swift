@@ -734,9 +734,9 @@ final class LargePasteCursorMovementTests: XCTestCase {
     print(String(repeating: "-", count: 80))
 
     // Assertions: typing operations should NOT cause large memory spikes
-    // Memory threshold is lenient (2.5GB) due to iOS Simulator/runtime variability
+    // Memory threshold is lenient (3GB) due to iOS Simulator/runtime variability
     // (actual memory usage for the insert is minimal, but system noise can spike measurements)
-    let maxAllowedDelta: UInt64 = 2_500_000_000  // 2.5GB
+    let maxAllowedDelta: UInt64 = 3_000_000_000  // 3GB
 
     for (op, delta, time) in typingDeltas {
       XCTAssertLessThan(
@@ -845,6 +845,158 @@ final class LargePasteCursorMovementTests: XCTestCase {
     XCTAssertLessThan(p1.time, 10.0)
     XCTAssertLessThan(p2.time, 10.0)
     XCTAssertLessThan(p3.time, 10.0)
+    #else
+    throw XCTSkip("Requires UIKit")
+    #endif
+  }
+
+  // MARK: - Regression/benchmark: 2k+ line paste
+
+  /// Coverage for lexical-ios-ihl.6:
+  /// A 2k+ line plain-text paste should not cause runaway memory spikes and caret moves
+  /// should remain reasonably fast.
+  func testPasteGenerated2000Lines_MemoryAndCaretMoves() throws {
+    #if canImport(UIKit)
+    let lineCount = perfEnvInt("LEXICAL_BENCH_PASTE_LINES", default: 2200)
+    XCTAssertGreaterThanOrEqual(lineCount, 2000)
+
+    func makeLine(_ i: Int) -> String {
+      "Line \(i) lorem ipsum dolor sit amet"
+    }
+
+    let generated = (0..<lineCount).map(makeLine).joined(separator: "\n")
+    XCTAssertGreaterThan(generated.utf16.count, 0)
+
+    let view = createTestEditorView()
+    let textView = view.view.textView
+    setupWindowWithView(view)
+    textView.becomeFirstResponder()
+
+    view.setSelectedRange(NSRange(location: 0, length: 0))
+
+    let baselineMem = currentProcessMemorySnapshot()
+    let baselineBest = baselineMem?.bestCurrentBytes ?? 0
+
+    let updateMemSampler = ProcessMemorySampler(interval: 0.001)
+    updateMemSampler.start()
+
+    let insertStart = CFAbsoluteTimeGetCurrent()
+    try view.editor.update {
+      guard let selection = try getSelection() as? RangeSelection else {
+        XCTFail("Expected RangeSelection")
+        return
+      }
+      try insertPlainText(selection: selection, text: generated)
+    }
+    updateMemSampler.stop()
+    let insertWall = CFAbsoluteTimeGetCurrent() - insertStart
+
+    let postUpdateMem = currentProcessMemorySnapshot()
+
+    let drainMemSampler = ProcessMemorySampler(interval: 0.001)
+    drainMemSampler.start()
+    drainMainQueue(timeout: 60)
+    RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.5))
+    drainMainQueue(timeout: 60)
+    drainMemSampler.stop()
+
+    let length = textView.textStorage.length
+    let nodeCount: Int = {
+      var count = 0
+      try? view.editor.read { count = view.editor.getEditorState().nodeMap.count }
+      return count
+    }()
+
+    let endMem = currentProcessMemorySnapshot()
+    let postUpdateBest = postUpdateMem?.bestCurrentBytes ?? 0
+    let endBest = endMem?.bestCurrentBytes ?? 0
+    let peakDuringUpdate = max(updateMemSampler.maxPhysicalFootprintBytes, updateMemSampler.maxResidentBytes)
+    let peakDuringDrain = max(drainMemSampler.maxPhysicalFootprintBytes, drainMemSampler.maxResidentBytes)
+    let peak = max(peakDuringUpdate, peakDuringDrain)
+    let peakDelta = (peak >= baselineBest) ? (peak - baselineBest) : 0
+    let endDelta = (endBest >= baselineBest) ? (endBest - baselineBest) : 0
+
+    print(
+      "🔥 LARGE_PASTE_2000 insert wall=\(String(format: "%.3f", insertWall))s lines=\(lineCount) length(utf16)=\(length) nodes=\(nodeCount) mem_base=\(formatBytesMB(baselineBest)) mem_postUpdate=\(formatBytesMB(postUpdateBest)) mem_peak=\(formatBytesMB(peak)) mem_end=\(formatBytesMB(endBest))"
+    )
+
+    XCTAssertGreaterThan(length, 0)
+    XCTAssertGreaterThan(nodeCount, 0)
+    XCTAssertLessThan(insertWall, 15.0)
+    // Be tolerant of simulator variability; this mainly guards against runaway spikes.
+    XCTAssertLessThan(peakDelta, 4_000_000_000) // 4GB
+
+    func driveSelectionChange(to location: Int) throws -> TimeInterval {
+      let target = max(0, min(location, textView.textStorage.length))
+      let delegate = textView.delegate
+      XCTAssertNotNil(delegate)
+
+      textView.delegate = nil
+      textView.selectedRange = NSRange(location: target, length: 0)
+      textView.delegate = delegate
+
+      let start = CFAbsoluteTimeGetCurrent()
+      delegate?.textViewDidChangeSelection?(textView)
+      drainMainQueue(timeout: 60)
+      return CFAbsoluteTimeGetCurrent() - start
+    }
+
+    let moveEnd = try driveSelectionChange(to: length)
+    let moveStart = try driveSelectionChange(to: 0)
+    let moveMiddle = try driveSelectionChange(to: length / 2)
+
+    print(
+      "🔥 LARGE_PASTE_2000 caretMove wall_end=\(String(format: "%.3f", moveEnd))s wall_start=\(String(format: "%.3f", moveStart))s wall_mid=\(String(format: "%.3f", moveMiddle))s"
+    )
+
+    XCTAssertLessThan(moveEnd, 1.0)
+    XCTAssertLessThan(moveStart, 1.0)
+    XCTAssertLessThan(moveMiddle, 1.0)
+
+    struct PastePerfJSON: Codable {
+      let schemaVersion: Int
+      let suite: String
+      let test: String
+      let scenario: String
+      let lines: Int
+      let lengthUTF16: Int
+      let insertWallSeconds: TimeInterval
+      let caretMoveEndSeconds: TimeInterval
+      let caretMoveStartSeconds: TimeInterval
+      let caretMoveMiddleSeconds: TimeInterval
+      let memBaselineBytes: UInt64
+      let memPeakBytes: UInt64
+      let memEndBytes: UInt64
+      let memPeakDeltaBytes: UInt64
+      let memEndDeltaBytes: UInt64
+      let nodeCount: Int
+    }
+
+    let record = PastePerfJSON(
+      schemaVersion: 1,
+      suite: String(describing: Self.self),
+      test: #function,
+      scenario: "paste-2k-lines",
+      lines: lineCount,
+      lengthUTF16: length,
+      insertWallSeconds: insertWall,
+      caretMoveEndSeconds: moveEnd,
+      caretMoveStartSeconds: moveStart,
+      caretMoveMiddleSeconds: moveMiddle,
+      memBaselineBytes: baselineBest,
+      memPeakBytes: peak,
+      memEndBytes: endBest,
+      memPeakDeltaBytes: peakDelta,
+      memEndDeltaBytes: endDelta,
+      nodeCount: nodeCount
+    )
+
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    if let data = try? encoder.encode(record),
+       let json = String(data: data, encoding: .utf8) {
+      print("🔥 PERF_JSON \(json)")
+    }
     #else
     throw XCTSkip("Requires UIKit")
     #endif
