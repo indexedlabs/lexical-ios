@@ -15,6 +15,20 @@ import UIKit
 
 @MainActor
 final class LargePasteCursorMovementTests: XCTestCase {
+  #if canImport(UIKit)
+  private var window: UIWindow?
+  #endif
+
+  override func tearDown() {
+    #if canImport(UIKit)
+    window?.isHidden = true
+    window?.rootViewController = nil
+    window = nil
+    #endif
+
+    super.tearDown()
+  }
+
   private func drainMainQueue(timeout: TimeInterval = 10) {
     let exp = expectation(description: "drain main queue")
     DispatchQueue.main.async {
@@ -41,13 +55,7 @@ final class LargePasteCursorMovementTests: XCTestCase {
 
     let view = createTestEditorView()
     let textView = view.view.textView
-    let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
-    let root = UIViewController()
-    window.rootViewController = root
-    window.makeKeyAndVisible()
-    root.view.addSubview(view.view)
-    view.view.frame = window.bounds
-    view.view.layoutIfNeeded()
+    setupWindowWithView(view)
 
     // Paste (plain text) at the start.
     view.setSelectedRange(NSRange(location: 0, length: 0))
@@ -148,13 +156,7 @@ final class LargePasteCursorMovementTests: XCTestCase {
 
     let view = createTestEditorView()
     let textView = view.view.textView
-    let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
-    let root = UIViewController()
-    window.rootViewController = root
-    window.makeKeyAndVisible()
-    root.view.addSubview(view.view)
-    view.view.frame = window.bounds
-    view.view.layoutIfNeeded()
+    setupWindowWithView(view)
 
     textView.becomeFirstResponder()
 
@@ -253,13 +255,7 @@ final class LargePasteCursorMovementTests: XCTestCase {
 
     let view = createTestEditorView()
     let textView = view.view.textView
-    let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
-    let root = UIViewController()
-    window.rootViewController = root
-    window.makeKeyAndVisible()
-    root.view.addSubview(view.view)
-    view.view.frame = window.bounds
-    view.view.layoutIfNeeded()
+    setupWindowWithView(view)
 
     textView.becomeFirstResponder()
 
@@ -333,13 +329,7 @@ final class LargePasteCursorMovementTests: XCTestCase {
 
     let view = createTestEditorView()
     let textView = view.view.textView
-    let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
-    let root = UIViewController()
-    window.rootViewController = root
-    window.makeKeyAndVisible()
-    root.view.addSubview(view.view)
-    view.view.frame = window.bounds
-    view.view.layoutIfNeeded()
+    setupWindowWithView(view)
 
     textView.becomeFirstResponder()
 
@@ -494,13 +484,7 @@ final class LargePasteCursorMovementTests: XCTestCase {
 
     let view = createTestEditorView()
     let textView = view.view.textView
-    let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
-    let root = UIViewController()
-    window.rootViewController = root
-    window.makeKeyAndVisible()
-    root.view.addSubview(view.view)
-    view.view.frame = window.bounds
-    view.view.layoutIfNeeded()
+    setupWindowWithView(view)
 
     textView.becomeFirstResponder()
 
@@ -600,13 +584,7 @@ final class LargePasteCursorMovementTests: XCTestCase {
 
     let view = createTestEditorView()
     let textView = view.view.textView
-    let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
-    let root = UIViewController()
-    window.rootViewController = root
-    window.makeKeyAndVisible()
-    root.view.addSubview(view.view)
-    view.view.frame = window.bounds
-    view.view.layoutIfNeeded()
+    setupWindowWithView(view)
 
     textView.becomeFirstResponder()
 
@@ -783,6 +761,95 @@ final class LargePasteCursorMovementTests: XCTestCase {
     #endif
   }
 
+  // MARK: - Regression: repeated large paste + newlines
+
+  /// Regression for lexical-ios-hx1:
+  /// Pasting `sample.md` repeatedly with some newlines inserted between pastes should not
+  /// cause runaway memory growth (e.g. multi-GB / OOM spikes).
+  func testRepeatedLargePasteWithInterleavedNewlines_DoesNotExplodeMemory() throws {
+    #if canImport(UIKit)
+    let sample = try loadSampleMarkdown()
+    XCTAssertGreaterThan(sample.utf16.count, 0)
+
+    let view = createTestEditorView()
+    let textView = view.view.textView
+    setupWindowWithView(view)
+    textView.becomeFirstResponder()
+
+    func pasteAtEnd(label: String) throws -> (delta: UInt64, time: TimeInterval) {
+      view.setSelectedRange(NSRange(location: textView.textStorage.length, length: 0))
+      let preMem = currentProcessMemorySnapshot()?.bestCurrentBytes ?? 0
+
+      let sampler = ProcessMemorySampler(interval: 0.001)
+      sampler.start()
+
+      let t0 = CFAbsoluteTimeGetCurrent()
+      try view.editor.update {
+        guard let selection = try getSelection() as? RangeSelection else { return }
+        try insertPlainText(selection: selection, text: sample)
+      }
+      let elapsed = CFAbsoluteTimeGetCurrent() - t0
+
+      sampler.stop()
+
+      // Drain run loop/layout work so peak captures follow-on layout costs.
+      drainMainQueue(timeout: 60)
+      RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.2))
+      drainMainQueue(timeout: 60)
+
+      let peak = max(sampler.maxPhysicalFootprintBytes, sampler.maxResidentBytes)
+      let delta = peak > preMem ? peak - preMem : 0
+
+      // In the real UITextView paste path, UIKit typically leaves the caret at the end.
+      // Our test harness uses `insertPlainText`, which can leave the caret slightly before the
+      // absolute end depending on paragraph/newline semantics; assert it lands near the end.
+      XCTAssertEqual(textView.selectedRange.length, 0, "\(label): expected collapsed selection")
+      let caret = textView.selectedRange.location
+      let length = textView.textStorage.length
+      XCTAssertLessThanOrEqual(
+        max(0, length - caret),
+        128,
+        "\(label): expected caret near end-of-document (caret=\(caret), length=\(length))"
+      )
+
+      print("📏 HX1 \(label): delta=\(formatBytesMB(delta)) time=\(String(format: "%.3f", elapsed))s len=\(textView.textStorage.length)")
+      return (delta, elapsed)
+    }
+
+    func insertNewlines(count: Int) throws {
+      guard count > 0 else { return }
+      view.setSelectedRange(NSRange(location: textView.textStorage.length, length: 0))
+      try view.editor.update {
+        guard let selection = try getSelection() as? RangeSelection else { return }
+        for _ in 0..<count {
+          try selection.insertParagraph()
+        }
+      }
+      drainMainQueue(timeout: 60)
+      RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
+    }
+
+    let p1 = try pasteAtEnd(label: "paste#1")
+    try insertNewlines(count: 5)
+    let p2 = try pasteAtEnd(label: "paste#2")
+    try insertNewlines(count: 5)
+    let p3 = try pasteAtEnd(label: "paste#3")
+
+    // Be tolerant of simulator variability; this primarily guards against runaway spikes (multi-GB / OOM).
+    let maxAllowedPasteDelta: UInt64 = 3_000_000_000  // 3GB
+    XCTAssertLessThan(p1.delta, maxAllowedPasteDelta, "paste#1 memory spike too large")
+    XCTAssertLessThan(p2.delta, maxAllowedPasteDelta, "paste#2 memory spike too large")
+    XCTAssertLessThan(p3.delta, maxAllowedPasteDelta, "paste#3 memory spike too large")
+
+    // Avoid pathological slowdowns.
+    XCTAssertLessThan(p1.time, 10.0)
+    XCTAssertLessThan(p2.time, 10.0)
+    XCTAssertLessThan(p3.time, 10.0)
+    #else
+    throw XCTSkip("Requires UIKit")
+    #endif
+  }
+
   // MARK: - Fenwick Tree Algorithm Tests
   // These tests verify that the Fenwick tree optimization makes typing after paste O(log N).
 
@@ -912,13 +979,19 @@ final class LargePasteCursorMovementTests: XCTestCase {
 
   #if canImport(UIKit)
   private func setupWindowWithView(_ view: TestEditorView) {
-    let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+    window?.isHidden = true
+    window?.rootViewController = nil
+
+    let newWindow = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
     let root = UIViewController()
-    window.rootViewController = root
-    window.makeKeyAndVisible()
+    newWindow.rootViewController = root
+    newWindow.makeKeyAndVisible()
+
     root.view.addSubview(view.view)
-    view.view.frame = window.bounds
+    view.view.frame = newWindow.bounds
     view.view.layoutIfNeeded()
+
+    window = newWindow
   }
   #endif
 }
