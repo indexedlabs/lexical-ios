@@ -74,37 +74,85 @@ public enum RopeReconciler {
   ) throws {
     guard let textStorage = editor.textStorage else { return }
 
+    let shouldRecordMetrics =
+      editor.metricsContainer != nil
+      && (editor.dirtyType != .noDirtyNodes || markedTextOperation != nil)
+
+    let metricsStart = CFAbsoluteTimeGetCurrent()
+    let dirtyNodesCount = editor.dirtyNodes.count
+    let rangeCacheCountBefore = editor.rangeCache.count
+    let treatedAllNodesAsDirty = editor.dirtyType == .fullReconcile
+    var pathLabel: String? = nil
+    var planningDuration: TimeInterval = 0
+    var applyDuration: TimeInterval = 0
+    var didReconcile = false
+
+    defer {
+      if shouldRecordMetrics, didReconcile, let metrics = editor.metricsContainer {
+        let duration = CFAbsoluteTimeGetCurrent() - metricsStart
+        let rangeCacheCountAfter = editor.rangeCache.count
+        let rangesAdded = max(0, rangeCacheCountAfter - rangeCacheCountBefore)
+        let rangesDeleted = max(0, rangeCacheCountBefore - rangeCacheCountAfter)
+
+        metrics.record(.reconcilerRun(
+          ReconcilerMetric(
+            duration: duration,
+            dirtyNodes: dirtyNodesCount,
+            rangesAdded: rangesAdded,
+            rangesDeleted: rangesDeleted,
+            treatedAllNodesAsDirty: treatedAllNodesAsDirty,
+            pathLabel: pathLabel,
+            planningDuration: planningDuration,
+            applyDuration: applyDuration
+          )
+        ))
+      }
+    }
+
     // Composition (marked text) fast path first
     if let mto = markedTextOperation, mto.createMarkedText {
+      pathLabel = "rope-composition"
       if try handleComposition(
         nextState: nextState,
         editor: editor,
         textStorage: textStorage,
         operation: mto
       ) {
+        didReconcile = true
+        applyDuration = CFAbsoluteTimeGetCurrent() - metricsStart
         return
       }
     }
 
     // Full-editor-state swaps (e.g. `Editor.setEditorState`) must rebuild the entire TextStorage.
     if editor.dirtyType == .fullReconcile {
+      didReconcile = true
+      pathLabel = "rope-full-reconcile"
+      let applyStart = CFAbsoluteTimeGetCurrent()
+      planningDuration = applyStart - metricsStart
       try fullReconcile(
         nextState: nextState,
         editor: editor,
         textStorage: textStorage,
         shouldReconcileSelection: shouldReconcileSelection
       )
+      applyDuration = CFAbsoluteTimeGetCurrent() - applyStart
       return
     }
 
     // Fresh-document fast hydration: build full string + cache in one pass
     if shouldHydrateFreshDocument(pendingState: nextState, editor: editor, textStorage: textStorage) {
+      didReconcile = true
+      pathLabel = "rope-hydrate-fresh"
+      let applyStart = CFAbsoluteTimeGetCurrent()
+      planningDuration = applyStart - metricsStart
       try hydrateFreshDocumentFully(
         pendingState: nextState,
         editor: editor,
         textStorage: textStorage,
         shouldReconcileSelection: shouldReconcileSelection
       )
+      applyDuration = CFAbsoluteTimeGetCurrent() - applyStart
       return
     }
 
@@ -173,6 +221,20 @@ public enum RopeReconciler {
     // This prevents layout manager from generating glyphs mid-edit
     let hasEdits = !removes.isEmpty || !inserts.isEmpty || !updates.isEmpty
 
+    didReconcile = true
+    if !inserts.isEmpty && removes.isEmpty && updates.isEmpty {
+      pathLabel = "rope-insert-only"
+    } else if inserts.isEmpty && !removes.isEmpty && updates.isEmpty {
+      pathLabel = "rope-remove-only"
+    } else if inserts.isEmpty && removes.isEmpty && updates.allSatisfy({ $0.prev is TextNode && $0.next is TextNode }) {
+      pathLabel = "rope-text-only"
+    } else {
+      pathLabel = "rope-mixed"
+    }
+
+    let applyStart = CFAbsoluteTimeGetCurrent()
+    planningDuration = applyStart - metricsStart
+
     // Set mode to controllerMode so TextStorage accepts our attributed strings
     #if canImport(UIKit)
     var previousMode: TextStorageEditingMode = .none
@@ -228,6 +290,7 @@ public enum RopeReconciler {
       (textStorage as? ReconcilerTextStorageAppKit)?.mode = previousMode
       #endif
     }
+    applyDuration = CFAbsoluteTimeGetCurrent() - applyStart
 
     // Reconcile decorator operations
     if let prevState = prevState {
