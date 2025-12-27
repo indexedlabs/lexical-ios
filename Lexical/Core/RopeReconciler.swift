@@ -293,6 +293,19 @@ public enum RopeReconciler {
       try updateNode(from: prev, to: next, in: textStorage, state: nextState, editor: editor, theme: theme)
     }
 
+    #if canImport(UIKit)
+    if hasEdits {
+      applyBlockLevelAttributesIfNeeded(
+        editor: editor,
+        state: nextState,
+        dirtyNodes: dirtyNodes,
+        treatAllNodesAsDirty: false,
+        theme: theme,
+        textStorage: textStorage
+      )
+    }
+    #endif
+
     // End editing BEFORE selection reconciliation to avoid glyph generation crash
     if hasEdits {
       textStorage.endEditing()
@@ -404,6 +417,22 @@ public enum RopeReconciler {
     textStorage.beginEditing()
     textStorage.replaceCharacters(in: NSRange(location: 0, length: textStorage.length), with: built)
     textStorage.fixAttributes(in: NSRange(location: 0, length: built.length))
+
+    // Recompute range cache from root
+    _ = recomputeRangeCacheSubtree(nodeKey: kRootNodeKey, state: pendingState, startLocation: 0, editor: editor)
+    editor.invalidateDFSOrderCache()
+
+    #if canImport(UIKit)
+    applyBlockLevelAttributesIfNeeded(
+      editor: editor,
+      state: pendingState,
+      dirtyNodes: [:],
+      treatAllNodesAsDirty: true,
+      theme: theme,
+      textStorage: textStorage
+    )
+    #endif
+
     textStorage.endEditing()
 
     // Restore previous mode
@@ -412,10 +441,6 @@ public enum RopeReconciler {
     #elseif os(macOS) && !targetEnvironment(macCatalyst)
     (textStorage as? ReconcilerTextStorageAppKit)?.mode = previousMode
     #endif
-
-    // Recompute range cache from root
-    _ = recomputeRangeCacheSubtree(nodeKey: kRootNodeKey, state: pendingState, startLocation: 0, editor: editor)
-    editor.invalidateDFSOrderCache()
 
     // Reconcile decorator operations
     reconcileDecoratorOpsForSubtree(
@@ -468,6 +493,23 @@ public enum RopeReconciler {
     let fullRange = NSRange(location: 0, length: textStorage.length)
     textStorage.replaceCharacters(in: fullRange, with: built)
     textStorage.fixAttributes(in: NSRange(location: 0, length: built.length))
+
+    // Recompute entire range cache
+    _ = recomputeRangeCacheSubtree(nodeKey: kRootNodeKey, state: nextState, startLocation: 0, editor: editor)
+    pruneRangeCacheGlobally(nextState: nextState, editor: editor)
+    editor.invalidateDFSOrderCache()
+
+    #if canImport(UIKit)
+    applyBlockLevelAttributesIfNeeded(
+      editor: editor,
+      state: nextState,
+      dirtyNodes: [:],
+      treatAllNodesAsDirty: true,
+      theme: theme,
+      textStorage: textStorage
+    )
+    #endif
+
     textStorage.endEditing()
 
     // Restore previous mode
@@ -476,11 +518,6 @@ public enum RopeReconciler {
     #elseif os(macOS) && !targetEnvironment(macCatalyst)
     (textStorage as? ReconcilerTextStorageAppKit)?.mode = previousMode
     #endif
-
-    // Recompute entire range cache
-    _ = recomputeRangeCacheSubtree(nodeKey: kRootNodeKey, state: nextState, startLocation: 0, editor: editor)
-    pruneRangeCacheGlobally(nextState: nextState, editor: editor)
-    editor.invalidateDFSOrderCache()
 
     // Reconcile decorator operations
     reconcileDecoratorOpsForSubtree(
@@ -529,6 +566,58 @@ public enum RopeReconciler {
     appendStyledString(node.getTextPart(fromLatest: true))
     appendStyledString(node.getPostamble())
   }
+
+  #if canImport(UIKit)
+  private static func applyBlockLevelAttributesIfNeeded(
+    editor: Editor,
+    state: EditorState,
+    dirtyNodes: DirtyNodeMap,
+    treatAllNodesAsDirty: Bool,
+    theme: Theme,
+    textStorage: NSTextStorage
+  ) {
+    guard let textStorage = textStorage as? ReconcilerTextStorage else { return }
+
+    let lastDescendentAttributes =
+      getRoot()?.getLastChild()?.getAttributedStringAttributes(theme: theme) ?? [:]
+
+    var nodesToApply = Set<NodeKey>()
+    if treatAllNodesAsDirty {
+      nodesToApply = Set(state.nodeMap.keys)
+    } else {
+      for nodeKey in dirtyNodes.keys {
+        guard let node = getNodeByKey(key: nodeKey) else { continue }
+        nodesToApply.insert(nodeKey)
+        for parentKey in node.getParentKeys() {
+          nodesToApply.insert(parentKey)
+        }
+      }
+    }
+
+    let sortedKeys = nodesToApply.sorted { a, b in
+      let aLoc = editor.rangeCache[a]?.location ?? 0
+      let bLoc = editor.rangeCache[b]?.location ?? 0
+      if aLoc != bLoc { return aLoc < bLoc }
+      return a < b
+    }
+
+    for nodeKey in sortedKeys {
+      guard let node = getNodeByKey(key: nodeKey),
+            node.isAttached(),
+            let cacheItem = editor.rangeCache[nodeKey],
+            let attributes = node.getBlockLevelAttributes(theme: theme)
+      else { continue }
+
+      AttributeUtils.applyBlockLevelAttributes(
+        attributes,
+        cacheItem: cacheItem,
+        textStorage: textStorage,
+        nodeKey: nodeKey,
+        lastDescendentAttributes: lastDescendentAttributes
+      )
+    }
+  }
+  #endif
 
   /// Recompute range cache for a subtree. Returns total length written.
   @discardableResult
