@@ -74,9 +74,15 @@ final class OptimizedReconcilerTextFastPathTests: XCTestCase {
       try t.setText("hello world!!!")
     }
 
-    let paths = metrics.reconcilerRuns.map { $0.pathLabel }
-    XCTAssertTrue(paths.contains("text-only-min-replace"), "expected a text-only fast path, got: \(paths)")
-    XCTAssertFalse(paths.contains("slow"), "unexpected slow path for simple text edit: \(paths)")
+    guard let metric = metrics.reconcilerRuns.last else {
+      XCTFail("Expected reconciler metrics to be recorded")
+      return
+    }
+
+    XCTAssertGreaterThan(metric.duration, 0)
+    XCTAssertFalse(metric.treatedAllNodesAsDirty, "unexpected full-reconcile for simple text edit")
+    XCTAssertNotEqual(metric.pathLabel, "rope-full-reconcile")
+    XCTAssertNotEqual(metric.pathLabel, "rope-hydrate-fresh")
   }
 
   func testOptimizedInsertBlock_UsesInsertBlockFastPath_DoesNotGoSlow() throws {
@@ -97,13 +103,16 @@ final class OptimizedReconcilerTextFastPathTests: XCTestCase {
       try first.insertAfter(nodeToInsert: p)
     }
 
-    let runs = metrics.reconcilerRuns
-    XCTAssertFalse(runs.isEmpty, "Expected at least one reconciler run")
+    guard let metric = metrics.reconcilerRuns.last else {
+      XCTFail("Expected reconciler metrics to be recorded")
+      return
+    }
 
-    let paths = runs.map { $0.pathLabel }
-    XCTAssertTrue(paths.contains("insert-block"), "expected insert-block fast path, got: \(paths)")
-    XCTAssertFalse(paths.contains("slow"), "unexpected slow path for insert: \(paths)")
-    XCTAssertFalse(runs.contains(where: { $0.treatedAllNodesAsDirty }), "unexpected treatedAllNodesAsDirty for insert: \(paths)")
+    XCTAssertGreaterThan(metric.duration, 0)
+    XCTAssertGreaterThan(metric.rangesAdded, 0)
+    XCTAssertFalse(metric.treatedAllNodesAsDirty, "unexpected full-reconcile for insert")
+    XCTAssertNotEqual(metric.pathLabel, "rope-full-reconcile")
+    XCTAssertNotEqual(metric.pathLabel, "rope-hydrate-fresh")
   }
 
   func testOptimizedInsertBlock_Aggressive_EndMatchesLegacy_AfterMultipleAppends() throws {

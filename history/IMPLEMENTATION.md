@@ -2,7 +2,8 @@
 
 ## 2025-12-27
 - lexical-ios-k5i.6 (done): Added reconciler metrics recording to `RopeReconciler` (path label + planning/apply timing + dirty/range counts) so `EditorMetricsContainer` receives `.reconcilerRun` events again after the migration.
-- Tests: `xcodebuild -workspace Playground/LexicalPlayground.xcodeproj/project.xcworkspace -scheme Lexical-Package -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.0' -only-testing:LexicalTests/MetricsTests test` (passed).
+- lexical-ios-k5i.1 (in progress): Updated the old OptimizedReconciler fast-path tests to assert RopeReconciler behavior (metrics recorded; no full-reconcile/hydrate) instead of OptimizedReconciler path labels.
+- Tests: `xcodebuild -workspace Playground/LexicalPlayground.xcodeproj/project.xcworkspace -scheme Lexical-Package -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.0' -only-testing:LexicalTests/MetricsTests test` (passed); `xcodebuild -workspace Playground/LexicalPlayground.xcodeproj/project.xcworkspace -scheme Lexical-Package -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.0' -only-testing:LexicalTests/OptimizedReconcilerTextFastPathTests test` (passed).
 
 ## 2025-12-26
 - lexical-ios-qmk (done): Added regression test that pastes `sample.md` (~1200 lines) into a real window-backed editor and verifies caret moves stay fast; optimized selection-only updates by skipping the reconciler diff pipeline when there are no dirty nodes (selection-only navigation), preventing massive CPU spikes on cursor movement.
