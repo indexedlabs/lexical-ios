@@ -250,6 +250,109 @@ final class LargePastePositionAndContentTests: XCTestCase {
     }
   }
 
+  // MARK: - Memory profiling: Paste + Select All
+
+  /// Test for memory profiling: paste 2k lines then select all.
+  /// Run with: swift test --filter testPaste2kLines_ThenSelectAll
+  func testPaste2kLines_ThenSelectAll() throws {
+    let testView = createTestEditorView()
+    let largeContent = generateLargeContent(lines: lineCount)
+
+    // Paste 2k lines
+    try testView.editor.update {
+      guard let selection = try getSelection() as? RangeSelection else {
+        XCTFail("Expected RangeSelection")
+        return
+      }
+      try insertPlainText(selection: selection, text: largeContent)
+    }
+
+    // Now select all - this is where memory spikes
+    let totalLength = testView.textStorageLength
+    testView.setSelectedRange(NSRange(location: 0, length: totalLength))
+
+    // Verify selection covers entire document
+    let selectedRange = testView.selectedRange
+    XCTAssertEqual(selectedRange.location, 0, "Selection should start at 0")
+    XCTAssertEqual(selectedRange.length, totalLength, "Selection should cover entire document")
+  }
+
+  /// Test for memory profiling: paste 2k lines 3x then select all.
+  /// This is the scenario that spikes memory to 50GB.
+  /// Run with: swift test --filter testPaste2kLines3x_ThenSelectAll
+  func testPaste2kLines3x_ThenSelectAll() throws {
+    let testView = createTestEditorView()
+    let largeContent = generateLargeContent(lines: lineCount)
+
+    // Paste 2k lines 3 times
+    for i in 1...3 {
+      let currentLength = testView.textStorageLength
+      testView.setSelectedRange(NSRange(location: currentLength, length: 0))
+
+      try testView.editor.update {
+        guard let selection = try getSelection() as? RangeSelection else {
+          XCTFail("Expected RangeSelection")
+          return
+        }
+        try insertPlainText(selection: selection, text: largeContent)
+      }
+      print("[Memory Test] After paste \(i): \(testView.textStorageLength) chars")
+    }
+
+    print("[Memory Test] Before select all: \(testView.textStorageLength) chars, ~\(testView.textStorageLength / 1000)k")
+
+    // Now select all - this is where memory spikes
+    let totalLength = testView.textStorageLength
+    testView.setSelectedRange(NSRange(location: 0, length: totalLength))
+
+    print("[Memory Test] After select all")
+
+    // Verify selection covers entire document
+    let selectedRange = testView.selectedRange
+    XCTAssertEqual(selectedRange.location, 0, "Selection should start at 0")
+    XCTAssertEqual(selectedRange.length, totalLength, "Selection should cover entire document")
+  }
+
+  /// Test to investigate getNodes() behavior with large selection.
+  /// Run with: swift test --filter testSelectAllThenGetNodes
+  func testSelectAllThenGetNodes() throws {
+    let testView = createTestEditorView()
+    let largeContent = generateLargeContent(lines: lineCount)
+
+    // Paste once
+    try testView.editor.update {
+      guard let selection = try getSelection() as? RangeSelection else {
+        XCTFail("Expected RangeSelection")
+        return
+      }
+      try insertPlainText(selection: selection, text: largeContent)
+    }
+
+    print("[Memory Test] After paste: \(testView.textStorageLength) chars")
+
+    // Now select all via native range
+    let totalLength = testView.textStorageLength
+    testView.setSelectedRange(NSRange(location: 0, length: totalLength))
+
+    print("[Memory Test] After select all via native")
+
+    // Now call getNodes() on the selection - this might be the expensive operation
+    var nodeCount = 0
+    try testView.editor.read {
+      guard let selection = try getSelection() as? RangeSelection else {
+        XCTFail("Expected RangeSelection")
+        return
+      }
+      let t0 = CFAbsoluteTimeGetCurrent()
+      let nodes = try selection.getNodes()
+      let t1 = CFAbsoluteTimeGetCurrent()
+      nodeCount = nodes.count
+      print("[Memory Test] getNodes() returned \(nodeCount) nodes in \(String(format: "%.3f", t1 - t0))s")
+    }
+
+    XCTAssertGreaterThan(nodeCount, 0, "Should have nodes in selection")
+  }
+
   // MARK: - Helper for asserting Int equality with tolerance
 
   private func assertEqualWithTolerance(_ a: Int, _ b: Int, tolerance: Int, _ message: String, file: StaticString = #file, line: UInt = #line) {
