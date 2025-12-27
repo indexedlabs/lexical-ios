@@ -192,6 +192,29 @@ public enum RopeNode<T: RopeChunk> {
   public static func branch(left: RopeNode<T>, right: RopeNode<T>) -> RopeNode<T> {
     makeBranch(left: left, right: right)
   }
+
+  // MARK: - Chunk Iteration
+
+  /// Iterate over all chunks in order, calling the body for each.
+  /// This is O(N) total time, visiting each leaf exactly once.
+  /// - Parameter body: Closure called with each chunk in order.
+  public func forEachChunk(_ body: (T) throws -> Void) rethrows {
+    switch self {
+    case .leaf(let chunk):
+      try body(chunk)
+    case .branch(let left, let right, _, _):
+      try left.forEachChunk(body)
+      try right.forEachChunk(body)
+    }
+  }
+
+  /// Collect all chunks into an array in order.
+  /// This is O(N) total time.
+  public var chunks: [T] {
+    var result: [T] = []
+    forEachChunk { result.append($0) }
+    return result
+  }
 }
 
 // MARK: - Rope
@@ -317,5 +340,20 @@ public struct Rope<T: RopeChunk> {
   /// Internal initializer from an optional root.
   private init(root: RopeNode<T>?) {
     self.root = root
+  }
+
+  // MARK: - Chunk Iteration
+
+  /// Iterate over all chunks in order, calling the body for each.
+  /// This is O(N) total time, visiting each leaf exactly once.
+  /// - Parameter body: Closure called with each chunk in order.
+  public func forEachChunk(_ body: (T) throws -> Void) rethrows {
+    try root?.forEachChunk(body)
+  }
+
+  /// Collect all chunks into an array in order.
+  /// This is O(N) total time.
+  public var chunks: [T] {
+    root?.chunks ?? []
   }
 }

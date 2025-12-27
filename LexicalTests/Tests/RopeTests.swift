@@ -450,6 +450,13 @@ extension Rope where T == TestChunk {
     guard let root = root else { return "" }
     return root.collectText()
   }
+
+  /// Collect text using the new forEachChunk iterator (for testing).
+  func collectTextViaIterator() -> String {
+    var parts: [String] = []
+    forEachChunk { parts.append($0.text) }
+    return parts.joined()
+  }
 }
 
 extension RopeNode where T == TestChunk {
@@ -460,6 +467,81 @@ extension RopeNode where T == TestChunk {
     case .branch(let left, let right, _, _):
       return left.collectText() + right.collectText()
     }
+  }
+}
+
+// MARK: - Chunk Iterator Tests
+
+final class RopeChunkIteratorTests: XCTestCase {
+
+  func testForEachChunkEmpty() {
+    let rope = Rope<TestChunk>()
+    var count = 0
+    rope.forEachChunk { _ in count += 1 }
+    XCTAssertEqual(count, 0)
+  }
+
+  func testForEachChunkSingle() {
+    let rope = Rope(chunk: TestChunk(text: "hello"))
+    var chunks: [String] = []
+    rope.forEachChunk { chunks.append($0.text) }
+    XCTAssertEqual(chunks, ["hello"])
+  }
+
+  func testForEachChunkMultiple() {
+    var rope = Rope(chunk: TestChunk(text: "hello"))
+    rope.insert(TestChunk(text: " "), at: 5)
+    rope.insert(TestChunk(text: "world"), at: 6)
+
+    var chunks: [String] = []
+    rope.forEachChunk { chunks.append($0.text) }
+
+    // The chunks should be in order
+    XCTAssertEqual(chunks.joined(), "hello world")
+  }
+
+  func testForEachChunkManyInserts() {
+    var rope = Rope<TestChunk>()
+    for i in 0..<100 {
+      rope.insert(TestChunk(text: String(i)), at: rope.length)
+    }
+
+    var chunks: [String] = []
+    rope.forEachChunk { chunks.append($0.text) }
+
+    // Should collect all chunks in order
+    XCTAssertEqual(chunks.count, 100)
+    XCTAssertEqual(chunks.joined(), (0..<100).map(String.init).joined())
+  }
+
+  func testChunksProperty() {
+    var rope = Rope(chunk: TestChunk(text: "a"))
+    rope.insert(TestChunk(text: "b"), at: 1)
+    rope.insert(TestChunk(text: "c"), at: 2)
+
+    let chunks = rope.chunks
+    XCTAssertEqual(chunks.count, 3)
+    XCTAssertEqual(chunks.map(\.text).joined(), "abc")
+  }
+
+  func testCollectTextViaIterator() {
+    var rope = Rope(chunk: TestChunk(text: "hello"))
+    rope.insert(TestChunk(text: " "), at: 5)
+    rope.insert(TestChunk(text: "world"), at: 6)
+
+    XCTAssertEqual(rope.collectTextViaIterator(), "hello world")
+    XCTAssertEqual(rope.collectTextViaIterator(), rope.collectText())
+  }
+
+  func testIteratorMatchesDirectTraversal() {
+    var rope = Rope<TestChunk>()
+    for i in 0..<50 {
+      let pos = (i * 7) % max(1, rope.length + 1)
+      rope.insert(TestChunk(text: "x\(i)"), at: pos)
+    }
+
+    // Both methods should produce identical results
+    XCTAssertEqual(rope.collectTextViaIterator(), rope.collectText())
   }
 }
 

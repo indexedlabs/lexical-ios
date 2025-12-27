@@ -1229,7 +1229,7 @@ public class Editor: NSObject {
         #endif
         #if canImport(UIKit)
         if !headless {
-          try OptimizedReconciler.updateEditorState(
+          try RopeReconciler.updateEditorState(
             currentEditorState: editorState,
             pendingEditorState: pendingEditorState,
             editor: self,
@@ -1244,7 +1244,7 @@ public class Editor: NSObject {
           frontendAppKit?.isUpdatingNativeSelection = true
           defer { frontendAppKit?.isUpdatingNativeSelection = false }
 
-          try OptimizedReconciler.updateEditorState(
+          try RopeReconciler.updateEditorState(
             currentEditorState: editorState,
             pendingEditorState: pendingEditorState,
             editor: self,

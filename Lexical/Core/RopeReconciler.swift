@@ -36,33 +36,113 @@ public enum RopeReconciler {
     editor: Editor,
     shouldReconcileSelection: Bool = true
   ) throws {
+    try reconcileInternal(
+      from: prevState,
+      to: nextState,
+      editor: editor,
+      shouldReconcileSelection: shouldReconcileSelection,
+      markedTextOperation: nil
+    )
+  }
+
+  /// Internal reconcile with marked text operation support.
+  /// Called from Editor.swift during update cycle.
+  @MainActor
+  internal static func updateEditorState(
+    currentEditorState: EditorState,
+    pendingEditorState: EditorState,
+    editor: Editor,
+    shouldReconcileSelection: Bool,
+    markedTextOperation: MarkedTextOperation?
+  ) throws {
+    try reconcileInternal(
+      from: currentEditorState,
+      to: pendingEditorState,
+      editor: editor,
+      shouldReconcileSelection: shouldReconcileSelection,
+      markedTextOperation: markedTextOperation
+    )
+  }
+
+  /// Internal implementation of reconciliation.
+  private static func reconcileInternal(
+    from prevState: EditorState?,
+    to nextState: EditorState,
+    editor: Editor,
+    shouldReconcileSelection: Bool,
+    markedTextOperation: MarkedTextOperation?
+  ) throws {
     guard let textStorage = editor.textStorage else { return }
+
+    // Composition (marked text) fast path first
+    if let mto = markedTextOperation, mto.createMarkedText {
+      if try handleComposition(
+        nextState: nextState,
+        editor: editor,
+        textStorage: textStorage,
+        operation: mto
+      ) {
+        return
+      }
+    }
 
     let theme = editor.getTheme()
     let dirtyNodes = editor.dirtyNodes
 
-    // Process each dirty node
-    for (key, dirtyType) in dirtyNodes {
+    // Categorize dirty nodes
+    var inserts: [(key: NodeKey, node: Node)] = []
+    var removes: [(key: NodeKey, node: Node)] = []
+    var updates: [(key: NodeKey, prev: Node, next: Node)] = []
+
+    for (key, _) in dirtyNodes {
       let prevNode = prevState?.nodeMap[key]
       let nextNode = nextState.nodeMap[key]
 
-      switch (prevNode, nextNode, dirtyType) {
-      case (nil, let next?, _):
-        // Node was added
-        try insertNode(next, into: textStorage, state: nextState, editor: editor, theme: theme)
+      // Check if this is actually a remove: node exists in both states but
+      // has no parent in nextState (was detached)
+      if let prev = prevNode, let next = nextNode {
+        if next.parent == nil && !(next is RootNode) {
+          // Node was detached from tree - treat as remove
+          removes.append((key, prev))
+          continue
+        }
+      }
 
-      case (let prev?, nil, _):
-        // Node was removed
-        try removeNode(prev, from: textStorage, editor: editor)
-
-      case (let prev?, let next?, _):
-        // Node was modified
-        try updateNode(from: prev, to: next, in: textStorage, state: nextState, editor: editor, theme: theme)
-
-      case (nil, nil, _):
-        // Shouldn't happen - skip
+      switch (prevNode, nextNode) {
+      case (nil, let next?):
+        inserts.append((key, next))
+      case (let prev?, nil):
+        removes.append((key, prev))
+      case (let prev?, let next?):
+        updates.append((key, prev, next))
+      case (nil, nil):
         continue
       }
+    }
+
+    // Process removes first (in reverse document order to avoid shifting issues)
+    removes.sort { a, b in
+      let aLoc = editor.rangeCache[a.key]?.location ?? 0
+      let bLoc = editor.rangeCache[b.key]?.location ?? 0
+      return aLoc > bLoc  // Reverse order
+    }
+    for (_, node) in removes {
+      try removeNode(node, from: textStorage, editor: editor)
+    }
+
+    // Process inserts in document order
+    inserts.sort { a, b in
+      let posA = documentPosition(of: a.node, in: nextState)
+      let posB = documentPosition(of: b.node, in: nextState)
+      return comparePaths(posA, posB)
+    }
+    for (_, node) in inserts {
+      try insertNode(node, into: textStorage, state: nextState, editor: editor, theme: theme)
+    }
+
+    // Process updates
+    for (_, prev, next) in updates {
+      try updateNode(from: prev, to: next, in: textStorage, state: nextState, editor: editor, theme: theme)
     }
 
     // Reconcile selection
@@ -96,10 +176,11 @@ public enum RopeReconciler {
 
     if content.length > 0 {
       textStorage.insert(content, at: location)
-
-      // Update range cache for this node
-      updateRangeCache(for: node, at: location, length: content.length, editor: editor)
     }
+
+    // Always update range cache for the node, even if empty.
+    // This is needed because children will reference parent's cache.
+    updateRangeCache(for: node, at: location, length: content.length, editor: editor)
   }
 
   /// Remove a node from the text storage.
@@ -157,15 +238,31 @@ public enum RopeReconciler {
     guard let cacheItem = editor.rangeCache[prev.key] else { return }
 
     let newContent = buildAttributedContent(for: next, state: state, theme: theme)
-    let range = NSRange(location: cacheItem.location + cacheItem.preambleLength, length: cacheItem.textLength)
+    let oldLength = cacheItem.textLength
+    let newLength = newContent.length
+    let delta = newLength - oldLength
+
+    let range = NSRange(location: cacheItem.location + cacheItem.preambleLength, length: oldLength)
 
     if range.location + range.length <= textStorage.length {
       textStorage.replaceCharacters(in: range, with: newContent)
 
-      // Update range cache
+      // Update range cache for this node
       var updatedItem = cacheItem
-      updatedItem.textLength = newContent.length
+      updatedItem.textLength = newLength
       editor.rangeCache[next.key] = updatedItem
+
+      // Shift all nodes after this one if length changed
+      if delta != 0 {
+        let afterLocation = cacheItem.location + cacheItem.preambleLength + newLength
+        shiftRangeCacheAfter(location: afterLocation, delta: delta, excludingKeys: [next.key], editor: editor)
+
+        // Update parent's childrenLength
+        if let parent = next.getParent(), var parentCache = editor.rangeCache[parent.key] {
+          parentCache.childrenLength += delta
+          editor.rangeCache[parent.key] = parentCache
+        }
+      }
     }
   }
 
@@ -314,18 +411,46 @@ public enum RopeReconciler {
     return result
   }
 
+  // MARK: - Document Position
+
+  /// Compute a comparable document position for a node.
+  /// Returns an array of indices representing the path from root to the node.
+  private static func documentPosition(of node: Node, in state: EditorState) -> [Int] {
+    var path: [Int] = []
+    var current: Node? = node
+
+    while let cur = current, let parent = cur.getParent() {
+      let siblings = parent.getChildrenKeys()
+      if let index = siblings.firstIndex(of: cur.key) {
+        path.insert(index, at: 0)
+      }
+      current = parent
+    }
+
+    return path
+  }
+
+  /// Compare two document paths. Returns true if a comes before b.
+  private static func comparePaths(_ a: [Int], _ b: [Int]) -> Bool {
+    for i in 0..<min(a.count, b.count) {
+      if a[i] < b[i] { return true }
+      if a[i] > b[i] { return false }
+    }
+    // Shorter path comes first (parent before children)
+    return a.count < b.count
+  }
+
   // MARK: - Location Computation
 
   /// Compute where to insert a node in the text storage.
+  /// Assumes nodes are processed in document order, so preceding siblings are already in cache.
   private static func computeInsertLocation(
     for node: Node,
     parent: ElementNode,
     editor: Editor
   ) -> Int {
     // Get parent's cache item
-    guard let parentCache = editor.rangeCache[parent.key] else {
-      return 0
-    }
+    guard let parentCache = editor.rangeCache[parent.key] else { return 0 }
 
     // Find the index of this node in parent's children
     let children = parent.getChildrenKeys()
@@ -334,7 +459,7 @@ public enum RopeReconciler {
       return parentCache.location + parentCache.preambleLength + parentCache.childrenLength
     }
 
-    // Sum lengths of preceding siblings
+    // Sum lengths of preceding siblings (should all be in cache since we process in order)
     var offset = parentCache.location + parentCache.preambleLength
 
     for i in 0..<nodeIndex {
@@ -347,12 +472,25 @@ public enum RopeReconciler {
   }
 
   /// Update range cache for a newly inserted node.
+  /// Shifts all nodes after the insertion point and updates parent's childrenLength.
   private static func updateRangeCache(
     for node: Node,
     at location: Int,
     length: Int,
     editor: Editor
   ) {
+    // Collect ancestor keys - we shouldn't shift ancestors since the insertion is inside them
+    var ancestorKeys = Set<NodeKey>()
+    var ancestor = node.getParent()
+    while let a = ancestor {
+      ancestorKeys.insert(a.key)
+      ancestor = a.getParent()
+    }
+
+    // Shift all existing nodes that come after this insertion point (excluding ancestors)
+    shiftRangeCacheAfter(location: location, delta: length, excludingKeys: ancestorKeys, editor: editor)
+
+    // Create cache item for the new node
     var cacheItem = RangeCacheItem()
     cacheItem.location = location
 
@@ -361,9 +499,136 @@ public enum RopeReconciler {
     } else if let elementNode = node as? ElementNode {
       cacheItem.preambleLength = elementNode.getPreamble().utf16.count
       cacheItem.postambleLength = elementNode.getPostamble().utf16.count
-      // Children lengths are tracked separately
+      // For element nodes, we need to compute childrenLength from the content
+      // The length includes preamble + children + postamble
+      let preambleLen = cacheItem.preambleLength
+      let postambleLen = cacheItem.postambleLength
+      cacheItem.childrenLength = length - preambleLen - postambleLen
     }
 
     editor.rangeCache[node.key] = cacheItem
+
+    // Update parent's childrenLength
+    if let parent = node.getParent(), var parentCache = editor.rangeCache[parent.key] {
+      parentCache.childrenLength += length
+      editor.rangeCache[parent.key] = parentCache
+    }
+  }
+
+  /// Shift all range cache entries after the given location by delta.
+  /// - Parameters:
+  ///   - location: The insertion point
+  ///   - delta: The length change
+  ///   - excludingKeys: Keys to exclude from shifting (typically ancestors of the inserted node)
+  ///   - editor: The editor instance
+  private static func shiftRangeCacheAfter(
+    location: Int,
+    delta: Int,
+    excludingKeys: Set<NodeKey> = [],
+    editor: Editor
+  ) {
+    guard delta != 0 else { return }
+
+    for (key, var item) in editor.rangeCache {
+      if !excludingKeys.contains(key) && item.location >= location {
+        item.location += delta
+        editor.rangeCache[key] = item
+      }
+    }
+  }
+
+  // MARK: - Composition (Marked Text) Handling
+
+  /// Handle composition (marked text / IME) operations.
+  /// - Returns: `true` if the composition was handled, `false` to fall through to normal reconciliation.
+  private static func handleComposition(
+    nextState: EditorState,
+    editor: Editor,
+    textStorage: NSTextStorage,
+    operation: MarkedTextOperation
+  ) throws -> Bool {
+    // Locate Point at replacement start if possible
+    let startLocation = operation.selectionRangeToReplace.location
+    let point = try? pointAtStringLocation(
+      startLocation,
+      searchDirection: .forward,
+      rangeCache: editor.rangeCache
+    )
+
+    // Prepare attributed marked text with styles from owning node if available
+    var attrs: [NSAttributedString.Key: Any] = [:]
+    if let p = point, let node = nextState.nodeMap[p.key] {
+      attrs = AttributeUtils.attributedStringStyles(
+        from: node,
+        state: nextState,
+        theme: editor.getTheme()
+      )
+    }
+    let markedAttr = NSAttributedString(string: operation.markedTextString, attributes: attrs)
+
+    // Replace characters in storage at requested range
+    textStorage.beginEditing()
+    textStorage.replaceCharacters(in: operation.selectionRangeToReplace, with: markedAttr)
+    textStorage.fixAttributes(
+      in: NSRange(location: operation.selectionRangeToReplace.location, length: markedAttr.length)
+    )
+    textStorage.endEditing()
+
+    // Update range cache if we can resolve to a TextNode
+    if let p = point, let _ = nextState.nodeMap[p.key] as? TextNode {
+      let delta = markedAttr.length - operation.selectionRangeToReplace.length
+      updateRangeCacheForTextChange(nodeKey: p.key, delta: delta, editor: editor)
+    }
+
+    // Set marked text via frontend API
+    if let p = point {
+      let startPoint = p
+      let endPoint = Point(key: p.key, offset: p.offset + markedAttr.length, type: .text)
+      try updateNativeSelection(
+        editor: editor,
+        selection: RangeSelection(anchor: startPoint, focus: endPoint, format: TextFormat())
+      )
+    }
+    setMarkedTextFromReconciler(
+      editor: editor,
+      markedText: markedAttr,
+      selectedRange: operation.markedTextInternalSelection
+    )
+
+    return true
+  }
+
+  /// Update range cache after a text change.
+  private static func updateRangeCacheForTextChange(
+    nodeKey: NodeKey,
+    delta: Int,
+    editor: Editor
+  ) {
+    guard delta != 0 else { return }
+    guard var cacheItem = editor.rangeCache[nodeKey] else { return }
+
+    cacheItem.textLength += delta
+    editor.rangeCache[nodeKey] = cacheItem
+
+    // Shift all nodes after this one
+    for (key, var item) in editor.rangeCache where key != nodeKey {
+      if item.location > cacheItem.location {
+        item.location += delta
+        editor.rangeCache[key] = item
+      }
+    }
+  }
+
+  /// Set marked text via frontend.
+  private static func setMarkedTextFromReconciler(
+    editor: Editor,
+    markedText: NSAttributedString,
+    selectedRange: NSRange
+  ) {
+    #if canImport(UIKit)
+    editor.frontend?.setMarkedTextFromReconciler(markedText, selectedRange: selectedRange)
+    #elseif os(macOS) && !targetEnvironment(macCatalyst)
+    editor.frontendAppKit?.setMarkedTextFromReconciler(markedText, selectedRange: selectedRange)
+    #endif
   }
 }
