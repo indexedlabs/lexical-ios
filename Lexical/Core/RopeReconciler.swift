@@ -120,6 +120,19 @@ public enum RopeReconciler {
       }
     }
 
+    // Batch all text storage edits in a single editing session
+    // This prevents layout manager from generating glyphs mid-edit
+    let hasEdits = !removes.isEmpty || !inserts.isEmpty || !updates.isEmpty
+    if hasEdits {
+      textStorage.beginEditing()
+    }
+
+    defer {
+      if hasEdits {
+        textStorage.endEditing()
+      }
+    }
+
     // Process removes first (in reverse document order to avoid shifting issues)
     removes.sort { a, b in
       let aLoc = editor.rangeCache[a.key]?.location ?? 0
