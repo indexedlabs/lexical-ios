@@ -888,17 +888,9 @@ public enum RopeReconciler {
     state: EditorState,
     theme: Theme
   ) -> NSAttributedString {
-    if let textNode = node as? TextNode {
-      return buildTextNodeContent(textNode, state: state, theme: theme)
-    }
-
-    if let elementNode = node as? ElementNode {
-      return buildElementNodeContent(elementNode, state: state, theme: theme)
-    }
-
-    // For other node types, return their text representation
-    let text = node.getTextPart()
-    return NSAttributedString(string: text)
+    let result = NSMutableAttributedString()
+    appendAttributedSubtree(into: result, nodeKey: node.getKey(), state: state, theme: theme)
+    return result
   }
 
   /// Build content for a text node.
