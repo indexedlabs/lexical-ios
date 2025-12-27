@@ -137,6 +137,7 @@ open class ElementNode: Node {
         }
 
         writeableParent.children.remove(at: index)
+        getActiveEditor()?.invalidateChildIndexCache(forParent: writeableParent.key)
       }
 
       // Set child parent to self
@@ -148,6 +149,7 @@ open class ElementNode: Node {
     }
 
     writeableSelf.children = writeableSelfChildren
+    getActiveEditor()?.invalidateChildIndexCache(forParent: writeableSelfKey)
   }
 
   public func getFirstChild<T: Node>() -> T? {
@@ -356,6 +358,59 @@ open class ElementNode: Node {
       // we're not inline
       return "\n"
     }
+  }
+
+  /// Optimized method that computes both preamble and postamble with a single index lookup.
+  /// Use this in hot paths like the reconciler to avoid redundant sibling searches.
+  internal func getPreambleAndPostamble() -> (preamble: String, postamble: String) {
+    let selfInline = isInline()
+
+    // Inline elements have empty preamble
+    if selfInline {
+      // Still need to compute postamble
+      let nextSibling = getNextSibling()
+      if nextSibling == nil {
+        return ("", "")
+      } else if let nextSibling, !nextSibling.isInline() {
+        return ("", "\n")
+      } else {
+        return ("", "")
+      }
+    }
+
+    // Non-inline element: need to look up parent and siblings
+    guard let parent = getParent() else {
+      return ("", "\n")
+    }
+
+    guard let index = getIndexWithinParent() else {
+      return ("", "")
+    }
+
+    let children = parent.children
+
+    // Get siblings using the cached index
+    let prevSibling: Node? = index > 0 ? getNodeByKey(key: children[index - 1]) : nil
+    let nextSibling: Node? = index < children.count - 1 ? getNodeByKey(key: children[index + 1]) : nil
+
+    // Compute preamble (same logic as getPreamble())
+    let preamble: String
+    if let prevSibling {
+      if isRootNode(node: parent) {
+        preamble = isDecoratorBlockNode(prevSibling) ? "\n" : ""
+      } else if prevSibling is ElementNode {
+        preamble = ""
+      } else {
+        preamble = "\n"
+      }
+    } else {
+      preamble = ""
+    }
+
+    // Compute postamble (same logic as getPostamble() for non-inline)
+    let postamble: String = nextSibling == nil ? "" : "\n"
+
+    return (preamble, postamble)
   }
 
   public func getAllTextNodes(includeInert: Bool = false) -> [TextNode] {

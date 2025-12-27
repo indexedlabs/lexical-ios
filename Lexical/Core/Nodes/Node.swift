@@ -191,10 +191,18 @@ open class Node: @preconcurrency Codable {
 
   /// Returns the zero-based index of this node within the parent.
   public func getIndexWithinParent() -> Int? {
-    guard let parent = self.getParent() else {
-      return nil
+    guard let parentKey = getLatest().parent else { return nil }
+
+    // Try cached O(1) lookup first
+    if let editor = getActiveEditor(),
+       let index = editor.getChildIndex(of: self.key, inParent: parentKey) {
+      return index
     }
 
+    // Fallback to linear scan (e.g., when no active editor context)
+    guard let parent = getNodeByKey(key: parentKey) as? ElementNode else {
+      return nil
+    }
     return parent.children.firstIndex(of: self.key)
   }
 
@@ -291,45 +299,24 @@ open class Node: @preconcurrency Codable {
   /// Returns the "previous" siblings - that is, the node that comes before this one in the same parent.
   public func getPreviousSibling() -> Node? {
     guard let parent = self.getParent() else { return nil }
-
-    guard let index = parent.children.firstIndex(of: self.key) else {
-      return nil
-    }
-
-    let childrenIndex = index - 1
-
-    if childrenIndex < 0 {
-      return nil
-    }
-
-    return getNodeByKey(key: parent.children[childrenIndex])
+    guard let index = getIndexWithinParent(), index > 0 else { return nil }
+    return getNodeByKey(key: parent.children[index - 1])
   }
 
   /// Returns the "next" sibling - that is, the node that comes after this one in the same parent
   public func getNextSibling() -> Node? {
     guard let parent = self.getParent() else { return nil }
-
-    guard let index = parent.children.firstIndex(of: self.key) else {
-      return nil
-    }
-
-    if index >= parent.children.count - 1 {
-      return nil
-    }
-
-    let childrenIndex = index + 1
-
-    return getNodeByKey(key: parent.children[childrenIndex])
+    guard let index = getIndexWithinParent() else { return nil }
+    guard index < parent.children.count - 1 else { return nil }
+    return getNodeByKey(key: parent.children[index + 1])
   }
 
   /// Returns the "previous" siblings - that is, the nodes that come between this one and the first child of it's parent, inclusive.
   public func getPreviousSiblings() -> [Node] {
     guard let parent = getParent() else { return [] }
+    guard let index = getIndexWithinParent() else { return [] }
 
-    let children = parent.children
-    guard let index = children.firstIndex(of: key) else { return [] }
-
-    let siblings = children[0..<index]
+    let siblings = parent.children[0..<index]
     return siblings.compactMap({ childKey in
       getNodeByKey(key: childKey)
     })
@@ -338,15 +325,10 @@ open class Node: @preconcurrency Codable {
   /// Returns all "next" siblings - that is, the nodes that come between this one and the last child of its parent, inclusive.
   public func getNextSiblings() -> [Node] {
     guard let parent = getParent() else { return [] }
+    guard let index = getIndexWithinParent() else { return [] }
+    guard index < parent.children.count - 1 else { return [] }
 
-    let children = parent.children
-    if children.count == 1 {
-      return []
-    }
-
-    guard let index = children.firstIndex(of: key) else { return [] }
-
-    let siblings = children[(index + 1)...]
+    let siblings = parent.children[(index + 1)...]
     return siblings.compactMap { childKey in
       getNodeByKey(key: childKey)
     }
@@ -582,6 +564,7 @@ open class Node: @preconcurrency Codable {
 
     internallyMarkNodeAsDirty(node: nodeToRemove, cause: .userInitiated)
     writeableParent.children.remove(at: index)
+    getActiveEditor()?.invalidateChildIndexCache(forParent: writeableParent.key)
     let writableNodeToRemove = try nodeToRemove.getWritable()
     writableNodeToRemove.parent = nil
 
@@ -638,6 +621,7 @@ open class Node: @preconcurrency Codable {
     }
 
     writableParent.children.insert(insertKey, at: index + 1)
+    getActiveEditor()?.invalidateChildIndexCache(forParent: writableParent.key)
     internallyMarkSiblingsAsDirty(node: writableNodeToInsert, status: .userInitiated)
 
     if let selection = selection as? RangeSelection {
@@ -673,6 +657,7 @@ open class Node: @preconcurrency Codable {
 
       if let index {
         writableParent.children.remove(at: index)
+        getActiveEditor()?.invalidateChildIndexCache(forParent: writableParent.key)
       } else {
         throw LexicalError.invariantViolation("Node is not a child of its parent")
       }
@@ -688,6 +673,7 @@ open class Node: @preconcurrency Codable {
 
     if let index {
       writableParent.children.insert(insertKey, at: index)
+      getActiveEditor()?.invalidateChildIndexCache(forParent: writableParent.key)
     } else {
       throw LexicalError.invariantViolation("Node is not a child of its parent")
     }
@@ -735,6 +721,7 @@ open class Node: @preconcurrency Codable {
 
     if let index {
       writableParent.children.insert(newKey, at: index)
+      getActiveEditor()?.invalidateChildIndexCache(forParent: writableParent.key)
     } else {
       throw LexicalError.invariantViolation("Node is not a child of its parent")
     }

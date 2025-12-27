@@ -730,7 +730,15 @@ public enum RopeReconciler {
       output.append(styledString)
     }
 
-    appendStyledString(node.getPreamble())
+    // Use combined method for ElementNode to avoid redundant sibling lookups
+    let (preamble, postamble): (String, String)
+    if let element = node as? ElementNode {
+      (preamble, postamble) = element.getPreambleAndPostamble()
+    } else {
+      (preamble, postamble) = (node.getPreamble(), node.getPostamble())
+    }
+
+    appendStyledString(preamble)
 
     if let element = node as? ElementNode {
       for childKey in element.getChildrenKeys(fromLatest: true) {
@@ -739,7 +747,7 @@ public enum RopeReconciler {
     }
 
     appendStyledString(node.getTextPart(fromLatest: true))
-    appendStyledString(node.getPostamble())
+    appendStyledString(postamble)
   }
 
   #if canImport(UIKit)
@@ -811,7 +819,15 @@ public enum RopeReconciler {
     }
     item.location = startLocation
 
-    let preLen = node.getPreamble().utf16.count
+    // Use combined method for ElementNode to avoid redundant sibling lookups
+    let (preamble, postamble): (String, String)
+    if let element = node as? ElementNode {
+      (preamble, postamble) = element.getPreambleAndPostamble()
+    } else {
+      (preamble, postamble) = (node.getPreamble(), node.getPostamble())
+    }
+
+    let preLen = preamble.utf16.count
     item.preambleLength = preLen
 
     var cursor = startLocation + preLen
@@ -831,7 +847,7 @@ public enum RopeReconciler {
     item.textLength = textLen
     cursor += textLen
 
-    let postLen = node.getPostamble().utf16.count
+    let postLen = postamble.utf16.count
     item.postambleLength = postLen
 
     editor.rangeCache[nodeKey] = item

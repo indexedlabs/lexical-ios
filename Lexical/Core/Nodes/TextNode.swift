@@ -479,9 +479,11 @@ open class TextNode: Node {
 
     if hasReplacedSelf {
       writableParent.children.insert(contentsOf: splitNodesKeys, at: insertionIndex)
+      getActiveEditor()?.invalidateChildIndexCache(forParent: writableParent.key)
       try remove()
     } else {
       writableParent.children.replaceSubrange(insertionIndex...insertionIndex, with: splitNodesKeys)
+      getActiveEditor()?.invalidateChildIndexCache(forParent: writableParent.key)
     }
 
     if let selection = selection as? RangeSelection {

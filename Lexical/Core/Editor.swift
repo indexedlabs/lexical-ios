@@ -178,6 +178,10 @@ public class Editor: NSObject {
   internal var cloneNotNeeded: Set<NodeKey> = Set()
   internal var normalizedNodes: Set<NodeKey> = Set()
 
+  // Cache mapping parent -> (child -> index) for O(1) sibling lookups.
+  // Lazily built per-parent, invalidated on children mutations, cleared at transaction boundaries.
+  internal var childIndexCache: [NodeKey: [NodeKey: Int]] = [:]
+
   // Used for deserialization and registration of nodes. Lexical's built-in nodes are registered
   // by default.
   internal var registeredNodes: [NodeType: Node.Type] = [
@@ -570,6 +574,7 @@ public class Editor: NSObject {
     rangeCache[kRootNodeKey] = RangeCacheItem()
     dfsOrderCache = nil
     dfsOrderIndexCache = nil
+    childIndexCache.removeAll()
 
     #if canImport(UIKit)
     if let textStorage = frontend?.textStorage {
@@ -1023,6 +1028,44 @@ public class Editor: NSObject {
     #endif
   }
 
+  // MARK: - Child Index Cache (for O(1) sibling lookups)
+
+  /// Returns the index of a child within its parent, using a lazily-built cache.
+  /// Returns nil if the parent is not in the node map or the child is not in the parent's children.
+  internal func getChildIndex(of childKey: NodeKey, inParent parentKey: NodeKey) -> Int? {
+    // Check if we already have a cached mapping for this parent
+    if let parentCache = childIndexCache[parentKey] {
+      return parentCache[childKey]
+    }
+
+    // Build cache for this parent - check pendingEditorState first (during updates),
+    // then fall back to editorState
+    let nodeMap = pendingEditorState?.nodeMap ?? editorState.nodeMap
+    guard let parent = nodeMap[parentKey] as? ElementNode else {
+      return nil
+    }
+
+    var map: [NodeKey: Int] = [:]
+    map.reserveCapacity(parent.children.count)
+    for (i, key) in parent.children.enumerated() {
+      map[key] = i
+    }
+    childIndexCache[parentKey] = map
+    return map[childKey]
+  }
+
+  /// Invalidates the child index cache for a specific parent.
+  /// Call this when a parent's children array is modified.
+  internal func invalidateChildIndexCache(forParent parentKey: NodeKey) {
+    childIndexCache.removeValue(forKey: parentKey)
+  }
+
+  /// Clears the entire child index cache.
+  /// Call this at transaction boundaries.
+  internal func clearChildIndexCache() {
+    childIndexCache.removeAll(keepingCapacity: true)
+  }
+
   internal func cachedDFSOrderAndIndex() -> ([NodeKey], [NodeKey: Int]) {
     if let cached = dfsOrderCache, let cachedIndex = dfsOrderIndexCache {
       return (cached, cachedIndex)
@@ -1412,6 +1455,7 @@ public class Editor: NSObject {
       dirtyNodes.removeAll()
       dirtyType = .noDirtyNodes
       cloneNotNeeded.removeAll()
+      clearChildIndexCache()
 
       #if DEBUG
       let t_dec_start = CFAbsoluteTimeGetCurrent()
