@@ -189,30 +189,87 @@ private func evaluateNode(
   }
 
   if let node = node as? ElementNode {
-    let childrenArray =
-      (searchDirection == .forward) ? node.getChildrenKeys() : node.getChildrenKeys().reversed()
-
+    let childrenKeys = node.getChildrenKeys()
     var possibleBoundaryElementResult: RangeCacheSearchResult?
-    for childKey in childrenArray {
-      // note: I'm using try? because that lets us attempt to still return a selection even if there's an error deeper in the tree.
-      // This might be a mistake, in which case we can change it to just `try` and propagate the exception. @amyworrall
-      guard
-        let result = try? evaluateNode(
-          childKey, stringLocation: stringLocation, searchDirection: searchDirection,
-          rangeCache: rangeCache)
-      else { continue }
-      if result.type == .text || result.type == .element {
-        return result
+    if !childrenKeys.isEmpty {
+      var low = 0
+      var high = childrenKeys.count
+      while low < high {
+        let mid = (low + high) / 2
+        guard let item = rangeCache[childrenKeys[mid]] else {
+          low = childrenKeys.count
+          break
+        }
+        let end = item.location + item.entireLength
+        if end < stringLocation {
+          low = mid + 1
+        } else {
+          high = mid
+        }
       }
-      guard let childIndex = node.getChildrenKeys().firstIndex(of: childKey) else { continue }
-      if result.type == .startBoundary {
-        // the boundary of a child, so return self key with appropriate offset
-        possibleBoundaryElementResult = RangeCacheSearchResult(
-          nodeKey: nodeKey, type: .element, offset: childIndex)
-      }
-      if result.type == .endBoundary {
-        possibleBoundaryElementResult = RangeCacheSearchResult(
-          nodeKey: nodeKey, type: .element, offset: childIndex + 1)
+
+      if low < childrenKeys.count {
+        let leftIndex = low
+        var firstIndex = leftIndex
+        var secondIndex: Int?
+        if let leftItem = rangeCache[childrenKeys[leftIndex]] {
+          let leftEnd = leftItem.location + leftItem.entireLength
+          let rightCandidate = leftIndex + 1
+          if leftEnd == stringLocation,
+             rightCandidate < childrenKeys.count,
+             let rightItem = rangeCache[childrenKeys[rightCandidate]],
+             rightItem.location == stringLocation
+          {
+            if searchDirection == .forward {
+              secondIndex = rightCandidate
+            } else {
+              firstIndex = rightCandidate
+              secondIndex = leftIndex
+            }
+          }
+        }
+
+        // note: I'm using try? because that lets us attempt to still return a selection even if there's an error deeper in the tree.
+        // This might be a mistake, in which case we can change it to just `try` and propagate the exception. @amyworrall
+        do {
+          let childKey = childrenKeys[firstIndex]
+          if let result = try? evaluateNode(
+            childKey, stringLocation: stringLocation, searchDirection: searchDirection,
+            rangeCache: rangeCache)
+          {
+            if result.type == .text || result.type == .element {
+              return result
+            }
+            if result.type == .startBoundary {
+              possibleBoundaryElementResult = RangeCacheSearchResult(
+                nodeKey: nodeKey, type: .element, offset: firstIndex)
+            }
+            if result.type == .endBoundary {
+              possibleBoundaryElementResult = RangeCacheSearchResult(
+                nodeKey: nodeKey, type: .element, offset: firstIndex + 1)
+            }
+          }
+        }
+
+        if let secondIndex {
+          let childKey = childrenKeys[secondIndex]
+          if let result = try? evaluateNode(
+            childKey, stringLocation: stringLocation, searchDirection: searchDirection,
+            rangeCache: rangeCache)
+          {
+            if result.type == .text || result.type == .element {
+              return result
+            }
+            if result.type == .startBoundary {
+              possibleBoundaryElementResult = RangeCacheSearchResult(
+                nodeKey: nodeKey, type: .element, offset: secondIndex)
+            }
+            if result.type == .endBoundary {
+              possibleBoundaryElementResult = RangeCacheSearchResult(
+                nodeKey: nodeKey, type: .element, offset: secondIndex + 1)
+            }
+          }
+        }
       }
     }
 
