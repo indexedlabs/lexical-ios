@@ -159,6 +159,11 @@ final class ViewController: NSViewController, NSSplitViewDelegate {
         redoButton.bezelStyle = .rounded
         toolbar.addArrangedSubview(redoButton)
 
+        // Clear editor button (useful for memory testing after large pastes)
+        let clearEditorButton = NSButton(title: "Clear Editor", target: self, action: #selector(clearEditor))
+        clearEditorButton.bezelStyle = .rounded
+        toolbar.addArrangedSubview(clearEditorButton)
+
         // Separator
         let separator3 = NSBox()
         separator3.boxType = .separator
@@ -434,6 +439,24 @@ final class ViewController: NSViewController, NSSplitViewDelegate {
 
     @objc private func performRedo() {
         lexicalView.editor.dispatchCommand(type: .redo, payload: nil)
+    }
+
+    @objc private func clearEditor() {
+        // For memory testing: clear the TextKit backing store first (so any TextKit caches can release),
+        // then reset the Lexical editor state.
+        if let textStorage = lexicalView.textStorage as? TextStorageAppKit {
+            let previousMode = textStorage.mode
+            textStorage.mode = .controllerMode
+            textStorage.beginEditing()
+            textStorage.setAttributedString(NSAttributedString(string: ""))
+            textStorage.endEditing()
+            textStorage.mode = previousMode
+        } else {
+            lexicalView.textStorage.setAttributedString(NSAttributedString(string: ""))
+        }
+
+        try? lexicalView.editor.clearEditor()
+        lexicalView.showPlaceholderText()
     }
 
     @objc private func toggleDebugPanel() {

@@ -169,6 +169,51 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
   }
 
   override public func selectionRects(for range: UITextRange) -> [UITextSelectionRect] {
+    let largeSelectionCharacterThreshold = 10_000
+
+    let startOffset = offset(from: beginningOfDocument, to: range.start)
+    let endOffset = offset(from: beginningOfDocument, to: range.end)
+    let selectionLength = abs(endOffset - startOffset)
+
+    // For very large selections (e.g. Select All on a large document), avoid asking TextKit to compute
+    // geometry for the entire selection. That can force layout of the whole document and cause huge
+    // transient memory spikes. Instead, return selection rects only for the currently visible viewport.
+    if selectionLength >= largeSelectionCharacterThreshold {
+      var visibleRectInTextContainerCoords = bounds
+      visibleRectInTextContainerCoords.origin.x -= textContainerInset.left
+      visibleRectInTextContainerCoords.origin.y -= textContainerInset.top
+
+      let visibleGlyphRange = layoutManager.glyphRange(
+        forBoundingRect: visibleRectInTextContainerCoords, in: textContainer)
+      let visibleCharRange = layoutManager.characterRange(
+        forGlyphRange: visibleGlyphRange, actualGlyphRange: nil)
+
+      let selectionRange = NSRange(location: min(startOffset, endOffset), length: selectionLength)
+      let clamped = NSIntersectionRange(selectionRange, visibleCharRange)
+      guard clamped.length > 0 else {
+        return []
+      }
+
+      guard
+        let clampedStart = position(from: beginningOfDocument, offset: clamped.location),
+        let clampedEnd = position(from: beginningOfDocument, offset: clamped.location + clamped.length),
+        let clampedTextRange = textRange(from: clampedStart, to: clampedEnd)
+      else {
+        return []
+      }
+
+      let visibleRects = super.selectionRects(for: clampedTextRange)
+      return CaretAndSelectionRectsAdjuster.adjustSelectionRects(
+        visibleRects,
+        for: clampedTextRange,
+        in: self,
+        originalSelectionStartOffset: startOffset,
+        originalSelectionEndOffset: endOffset,
+        clampedSelectionStartOffset: clamped.location,
+        clampedSelectionEndOffset: clamped.location + clamped.length
+      )
+    }
+
     let originalRects = super.selectionRects(for: range)
     return CaretAndSelectionRectsAdjuster.adjustSelectionRects(originalRects, for: range, in: self)
   }
@@ -486,18 +531,34 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
     isUpdatingNativeSelection = true
     defer { isUpdatingNativeSelection = false }
     let nativeSelection = try createNativeSelection(from: selection, editor: editor)
+    let previousSelectedRange = selectedRange
 
     if let range = nativeSelection.range {
       selectedRange = range
-      requestScrollSelectionToVisible()
+      if range.location != previousSelectedRange.location || range.length != previousSelectedRange.length {
+        let delta =
+          abs(range.location - previousSelectedRange.location)
+          + abs(range.length - previousSelectedRange.length)
+        if delta <= 2048 {
+          requestScrollSelectionToVisible()
+        }
+      }
     } else {
       // If we can't map the Lexical selection back to a native range (usually because the range cache
       // is temporarily out of sync after a structural edit), ensure we still set a valid caret.
       // Otherwise UIKit can end up with an invalid/hidden caret until the user taps to force a selection change.
       let len = textStorage.length
       let clampedLoc = min(max(0, selectedRange.location), len)
-      selectedRange = NSRange(location: clampedLoc, length: 0)
-      requestScrollSelectionToVisible()
+      let clampedRange = NSRange(location: clampedLoc, length: 0)
+      selectedRange = clampedRange
+      if clampedRange.location != previousSelectedRange.location || clampedRange.length != previousSelectedRange.length {
+        let delta =
+          abs(clampedRange.location - previousSelectedRange.location)
+          + abs(clampedRange.length - previousSelectedRange.length)
+        if delta <= 2048 {
+          requestScrollSelectionToVisible()
+        }
+      }
     }
   }
 
@@ -512,18 +573,22 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
       guard let self, self.window != nil, self.isScrollEnabled else { return }
       let rangeToScroll = self.selectedRange
       let len = self.textStorage.length
+
+      // Ensure the caret range is laid out (especially with non-contiguous layout) so that
+      // caretRect/scrolling work reliably.
       if len > 0 {
         let caret = min(max(0, rangeToScroll.location), len)
         let ensureLoc = min(max(0, (caret == len) ? (caret - 1) : caret), len - 1)
         self.layoutManager.ensureLayout(forCharacterRange: NSRange(location: ensureLoc, length: 1))
       }
+
       self.layoutIfNeeded()
       if let end = self.selectedTextRange?.end {
         var caretRect = self.caretRect(for: end)
         caretRect = caretRect.insetBy(dx: 0, dy: -8)
         let padding: CGFloat = 8
         let minY = -self.adjustedContentInset.top
-        let maxY = max(minY, self.contentSize.height - self.bounds.height + self.adjustedContentInset.bottom)
+
         let visibleTop = self.contentOffset.y
         let visibleBottom = visibleTop + self.bounds.height
 
@@ -534,7 +599,15 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
           targetY = caretRect.minY - padding
         }
 
-        targetY = min(max(targetY, minY), maxY)
+        targetY = max(targetY, minY)
+        // Avoid forcing full layout/contentSize calculation for very large documents.
+        if len <= 20_000 {
+          let maxY = max(
+            minY,
+            self.contentSize.height - self.bounds.height + self.adjustedContentInset.bottom)
+          targetY = min(targetY, maxY)
+        }
+
         self.setContentOffset(CGPoint(x: self.contentOffset.x, y: targetY), animated: false)
       } else {
         self.scrollRangeToVisible(rangeToScroll)
@@ -637,13 +710,6 @@ private class TextViewDelegate: NSObject, UITextViewDelegate {
 
     textView.validateNativeSelection(textView)
     onSelectionChange(editor: textView.editor)
-
-    // Keep caret visible when UIKit moves selection as part of text storage edits (e.g. Return/Enter),
-    // since controller-driven editing doesn't always trigger UITextView's built-in autoscroll.
-    let range = textView.selectedRange
-    if range.length == 0 {
-      textView.requestScrollSelectionToVisible()
-    }
   }
 
   public func textView(
@@ -739,24 +805,89 @@ private class CaretAndSelectionRectsAdjuster {
   }
 
   static func adjustSelectionRects(
-    _ originalRects: [UITextSelectionRect], for range: UITextRange, in textView: UITextView
+    _ originalRects: [UITextSelectionRect],
+    for range: UITextRange,
+    in textView: UITextView,
+    originalSelectionStartOffset: Int? = nil,
+    originalSelectionEndOffset: Int? = nil,
+    clampedSelectionStartOffset: Int? = nil,
+    clampedSelectionEndOffset: Int? = nil
   ) -> [UITextSelectionRect] {
-    // Create a modified array of selection rects with adjusted heights
-    let modifiedRects = originalRects.map { originalRect -> UITextSelectionRect in
-      let rect = originalRect.rect
-      if originalRect.containsStart {
-        let adjustedRect = adjustCaretRect(rect, for: range.start, in: textView)
-        return CustomSelectionRect(baseRect: originalRect, adjustedRect: adjustedRect)
+    // Avoid wrapping every rect: for large selections UIKit can return many selection rects and
+    // this method may be called frequently. We only need to adjust the start/end handles.
+    var didAdjust = false
+    var out: [UITextSelectionRect] = []
+    out.reserveCapacity(originalRects.count)
+
+    for rect in originalRects {
+      let isClampedSelection = originalSelectionStartOffset != nil
+        && originalSelectionEndOffset != nil
+        && clampedSelectionStartOffset != nil
+        && clampedSelectionEndOffset != nil
+
+      let shouldMarkContainsStart: Bool = {
+        guard isClampedSelection else { return rect.containsStart }
+        // Only mark the start handle if the start of the *original* selection is visible in this clamped range.
+        return rect.containsStart && clampedSelectionStartOffset == originalSelectionStartOffset
+      }()
+
+      let shouldMarkContainsEnd: Bool = {
+        guard isClampedSelection else { return rect.containsEnd }
+        // Only mark the end handle if the end of the *original* selection is visible in this clamped range.
+        return rect.containsEnd && clampedSelectionEndOffset == originalSelectionEndOffset
+      }()
+
+      if shouldMarkContainsStart && shouldMarkContainsEnd {
+        let adjusted = adjustCaretRect(rect.rect, for: range.start, in: textView)
+        out.append(
+          CustomSelectionRect(
+            baseRect: rect,
+            adjustedRect: adjusted,
+            containsStartOverride: true,
+            containsEndOverride: true
+          )
+        )
+        didAdjust = true
+      } else if shouldMarkContainsStart {
+        let adjusted = adjustCaretRect(rect.rect, for: range.start, in: textView)
+        out.append(
+          CustomSelectionRect(
+            baseRect: rect,
+            adjustedRect: adjusted,
+            containsStartOverride: true,
+            containsEndOverride: false
+          )
+        )
+        didAdjust = true
+      } else if shouldMarkContainsEnd {
+        let adjusted = adjustCaretRect(rect.rect, for: range.end, in: textView)
+        out.append(
+          CustomSelectionRect(
+            baseRect: rect,
+            adjustedRect: adjusted,
+            containsStartOverride: false,
+            containsEndOverride: true
+          )
+        )
+        didAdjust = true
+      } else if isClampedSelection {
+        // For clamped (viewport-only) selection rects, never mark containsStart/End unless the
+        // actual selection boundary is within the viewport.
+        out.append(
+          CustomSelectionRect(
+            baseRect: rect,
+            adjustedRect: rect.rect,
+            containsStartOverride: false,
+            containsEndOverride: false
+          )
+        )
+        didAdjust = true
+      } else {
+        out.append(rect)
       }
-      if originalRect.containsEnd {
-        let adjustedRect = adjustCaretRect(rect, for: range.end, in: textView)
-        return CustomSelectionRect(baseRect: originalRect, adjustedRect: adjustedRect)
-      }
-      // no change
-      return CustomSelectionRect(baseRect: originalRect, adjustedRect: originalRect.rect)
     }
 
-    return modifiedRects
+    return didAdjust ? out : originalRects
   }
 
 }
@@ -765,10 +896,19 @@ private class CaretAndSelectionRectsAdjuster {
 private class CustomSelectionRect: UITextSelectionRect {
   private let baseRect: UITextSelectionRect
   private let customRect: CGRect
+  private let containsStartOverride: Bool?
+  private let containsEndOverride: Bool?
 
-  init(baseRect: UITextSelectionRect, adjustedRect: CGRect) {
+  init(
+    baseRect: UITextSelectionRect,
+    adjustedRect: CGRect,
+    containsStartOverride: Bool? = nil,
+    containsEndOverride: Bool? = nil
+  ) {
     self.baseRect = baseRect
     self.customRect = adjustedRect
+    self.containsStartOverride = containsStartOverride
+    self.containsEndOverride = containsEndOverride
     super.init()
   }
 
@@ -777,15 +917,19 @@ private class CustomSelectionRect: UITextSelectionRect {
   }
 
   override var containsStart: Bool {
-    return baseRect.containsStart
+    return containsStartOverride ?? baseRect.containsStart
   }
 
   override var containsEnd: Bool {
-    return baseRect.containsEnd
+    return containsEndOverride ?? baseRect.containsEnd
   }
 
   override var isVertical: Bool {
     return baseRect.isVertical
+  }
+
+  override var writingDirection: UITextWritingDirection {
+    return baseRect.writingDirection
   }
 }
 #endif  // canImport(UIKit)

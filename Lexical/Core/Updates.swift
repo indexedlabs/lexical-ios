@@ -68,6 +68,9 @@ func triggerErrorListeners(
 public func triggerTextContentListeners(
   activeEditor: Editor, activeEditorState: EditorState, previousEditorState: EditorState
 ) throws {
+  // Fast path: skip expensive O(N) text content computation when no listeners registered
+  guard !activeEditor.listeners.textContent.isEmpty else { return }
+
   let activeTextContent = try getEditorStateTextContent(editorState: activeEditorState)
   let previousTextContent = try getEditorStateTextContent(editorState: previousEditorState)
 

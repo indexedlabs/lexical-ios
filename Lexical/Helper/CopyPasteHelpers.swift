@@ -64,6 +64,8 @@ internal func setPasteboard(selection: BaseSelection, pasteboard: UIPasteboard) 
 internal func insertDataTransferForRichText(selection: RangeSelection, pasteboard: UIPasteboard)
   throws
 {
+  let largePasteCharacterThreshold = 10_000
+
   let itemSet: IndexSet?
   if #available(iOS 14.0, *) {
     itemSet = pasteboard.itemSet(
@@ -93,6 +95,38 @@ internal func insertDataTransferForRichText(selection: RangeSelection, pasteboar
 
     _ = try insertGeneratedNodes(
       editor: editor, nodes: deserializedNodes.nodeArray, selection: selection)
+    return
+  }
+
+  // For very large pastes, prefer plain text even if rich text (RTF) is present.
+  // Parsing large RTF payloads can be extremely expensive and memory intensive, and most
+  // large pastes are better treated as plain text (e.g., markdown/code).
+  if #available(iOS 14.0, *) {
+    if let pasteboardStringData = pasteboard.data(
+      forPasteboardType: (UTType.utf8PlainText.identifier),
+      inItemSet: itemSet)?.last
+    {
+      let plain = String(decoding: pasteboardStringData, as: UTF8.self)
+      if plain.utf16.count >= largePasteCharacterThreshold {
+        try insertPlainText(selection: selection, text: plain)
+        return
+      }
+    }
+  } else {
+    if let pasteboardStringData = pasteboard.data(
+      forPasteboardType: (kUTTypeUTF8PlainText as String),
+      inItemSet: itemSet)?.last
+    {
+      let plain = String(decoding: pasteboardStringData, as: UTF8.self)
+      if plain.utf16.count >= largePasteCharacterThreshold {
+        try insertPlainText(selection: selection, text: plain)
+        return
+      }
+    }
+  }
+
+  if let plain = pasteboard.string, plain.utf16.count >= largePasteCharacterThreshold {
+    try insertPlainText(selection: selection, text: plain)
     return
   }
 

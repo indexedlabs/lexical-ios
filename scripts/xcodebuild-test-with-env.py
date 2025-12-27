@@ -91,6 +91,9 @@ def filter_for_build_for_testing(args: List[str]) -> List[str]:
         "-retry-tests-on-failure",
         "-run-tests-until-failure",
         "-enumerate-tests",
+        "-test-timeouts-enabled",
+        "-default-test-execution-time-allowance",
+        "-maximum-test-execution-time-allowance",
     }
 
     for i, a in enumerate(args):

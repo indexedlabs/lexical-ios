@@ -190,6 +190,13 @@ public class Editor: NSObject {
   // Optimized reconciler groundwork: index source for future Fenwick-backed locations.
   internal var nextFenwickNodeIndex: Int = 1
 
+  // Fenwick tree for lazy location computation. Stores deltas indexed by node DFS position.
+  // Location = baseLocation + fenwickTree.prefixSum(nodeIndex - 1)
+  internal var locationFenwickTree: FenwickTree = FenwickTree(0)
+
+  // Flag to enable Fenwick-based lazy locations - O(log N) instead of O(N) for location shifts
+  internal var useFenwickLocations: Bool = true
+
   // Used to help co-ordinate selection and events
   internal var compositionKey: NodeKey?
   public var dirtyType: DirtyType = .noDirtyNodes  // TODO: I made this public to work around an issue in playground. @amyworrall
@@ -994,6 +1001,11 @@ public class Editor: NSObject {
   internal func invalidateDFSOrderCache() {
     dfsOrderCache = nil
     dfsOrderIndexCache = nil
+    #if DEBUG
+    if rangeCache.count > 100 {
+      print("[Editor] DFS cache INVALIDATED (rangeCache.count=\(rangeCache.count))")
+    }
+    #endif
   }
 
   internal func cachedDFSOrderAndIndex() -> ([NodeKey], [NodeKey: Int]) {
@@ -1001,13 +1013,30 @@ public class Editor: NSObject {
       return (cached, cachedIndex)
     }
 
+    #if DEBUG
+    let startTime = CFAbsoluteTimeGetCurrent()
+    #endif
     let ordered = sortedNodeKeysByLocation(rangeCache: rangeCache)
     var index: [NodeKey: Int] = [:]
     index.reserveCapacity(ordered.count)
-    for (i, key) in ordered.enumerated() { index[key] = i + 1 }
+    for (i, key) in ordered.enumerated() {
+      let pos = i + 1
+      index[key] = pos
+      // Store DFS position in each RangeCacheItem for O(1) lookup
+      if var item = rangeCache[key] {
+        item.dfsPosition = pos
+        rangeCache[key] = item
+      }
+    }
 
     dfsOrderCache = ordered
     dfsOrderIndexCache = index
+    #if DEBUG
+    let elapsed = CFAbsoluteTimeGetCurrent() - startTime
+    if ordered.count > 100 {
+      print("[Editor] DFS cache COMPUTED: \(ordered.count) nodes in \(String(format: "%.3f", elapsed*1000))ms")
+    }
+    #endif
     return (ordered, index)
   }
 
@@ -1015,16 +1044,89 @@ public class Editor: NSObject {
     cachedDFSOrderAndIndex().0
   }
 
+  // MARK: - Fenwick Tree Operations
+
+  /// Ensures the Fenwick tree has capacity for at least `count` nodes.
+  /// Called when new nodes are added to the document.
+  internal func ensureFenwickCapacity(_ count: Int) {
+    guard useFenwickLocations else { return }
+    if locationFenwickTree.size < count {
+      // Rebuild with larger capacity - preserves existing deltas
+      var newTree = FenwickTree(count)
+      // Copy existing deltas (requires iterating, but only on resize)
+      for i in 1...locationFenwickTree.size {
+        let delta = locationFenwickTree.prefixSum(i) - locationFenwickTree.prefixSum(i - 1)
+        if delta != 0 {
+          newTree.add(i, delta)
+        }
+      }
+      locationFenwickTree = newTree
+    }
+  }
+
+  /// Adds a delta to the Fenwick tree at the given node index.
+  /// This replaces O(N) location shifting with O(log N) update.
+  internal func addFenwickDelta(atIndex index: Int, delta: Int) {
+    guard useFenwickLocations, delta != 0, index >= 1, index <= locationFenwickTree.size else { return }
+    locationFenwickTree.add(index, delta)
+  }
+
+  /// Gets the accumulated location delta for a node at the given index.
+  /// Returns prefixSum(index - 1) since deltas affect nodes AFTER the changed node.
+  internal func getFenwickLocationDelta(forIndex index: Int) -> Int {
+    guard useFenwickLocations, index >= 1 else { return 0 }
+    return locationFenwickTree.prefixSum(min(index - 1, locationFenwickTree.size))
+  }
+
+  /// Resets the Fenwick tree (called when locations are fully recomputed).
+  internal func resetFenwickTree(capacity: Int) {
+    locationFenwickTree = FenwickTree(max(capacity, 1))
+  }
+
+  /// Gets the actual location for a node, accounting for Fenwick tree deltas.
+  /// Uses cached DFS positions for O(log N) lookup when `useFenwickLocations` is enabled.
+  /// - Parameter key: The node key to look up.
+  /// - Returns: The actual location in the text storage, or nil if not in range cache.
+  internal func actualLocation(for key: NodeKey) -> Int? {
+    guard let item = rangeCache[key] else { return nil }
+    guard useFenwickLocations else { return item.location }
+
+    // Get DFS position from cached order (O(1) if cached, O(N) to compute once)
+    let (_, positions) = cachedDFSOrderAndIndex()
+    guard let dfsPosition = positions[key], dfsPosition > 0 else { return item.location }
+
+    // Compute actual location: baseLocation + accumulated delta from Fenwick tree
+    let delta = locationFenwickTree.prefixSum(dfsPosition - 1)
+    return max(0, item.location + delta)
+  }
+
+  /// Gets the actual location for a node with provided DFS position (avoids cache lookup).
+  /// Used in hot paths where DFS positions are already computed.
+  internal func actualLocation(for key: NodeKey, dfsPosition: Int) -> Int? {
+    guard let item = rangeCache[key] else { return nil }
+    guard useFenwickLocations, dfsPosition > 0 else { return item.location }
+
+    let delta = locationFenwickTree.prefixSum(dfsPosition - 1)
+    return max(0, item.location + delta)
+  }
+
   private func beginUpdate(
     _ closure: @MainActor () throws -> Void, mode: UpdateBehaviourModificationMode,
     reason: EditorUpdateReason = .update
   ) throws {
+    #if DEBUG
+    let t_beginUpdate_start = CFAbsoluteTimeGetCurrent()
+    let shouldLogFullTiming = rangeCache.count > 100
+    #endif
     var editorStateWasCloned = false
 
     if pendingEditorState == nil {
       pendingEditorState = EditorState(editorState)
       editorStateWasCloned = true
     }
+    #if DEBUG
+    let t_clone_done = CFAbsoluteTimeGetCurrent()
+    #endif
 
     if infiniteUpdateLoopCount > Editor.maxUpdateCount {
       throw LexicalError.invariantViolation("Maximum update loop met")
@@ -1033,6 +1135,12 @@ public class Editor: NSObject {
     defer {
       infiniteUpdateLoopCount = 0
       isRecoveringFromError = false
+      #if DEBUG
+      if shouldLogFullTiming {
+        let totalMs = (CFAbsoluteTimeGetCurrent() - t_beginUpdate_start) * 1000
+        print("[beginUpdate] TOTAL=\(String(format: "%.2f", totalMs))ms")
+      }
+      #endif
     }
 
     guard let pendingEditorState else {
@@ -1049,7 +1157,9 @@ public class Editor: NSObject {
     ) {
       let previouslyUpdating = self.isUpdating
       self.isUpdating = true
-
+      #if DEBUG
+      let t_selection_start = CFAbsoluteTimeGetCurrent()
+      #endif
       if editorStateWasCloned {
         #if canImport(UIKit)
         pendingEditorState.selection = try createSelection(editor: self)
@@ -1058,9 +1168,23 @@ public class Editor: NSObject {
         pendingEditorState.selection = self.editorState.selection?.clone()
         #endif
       }
+      #if DEBUG
+      if shouldLogFullTiming {
+        let cloneMs = (t_clone_done - t_beginUpdate_start) * 1000
+        let selectionMs = (CFAbsoluteTimeGetCurrent() - t_selection_start) * 1000
+        print("[beginUpdate] clone=\(String(format: "%.2f", cloneMs))ms selection=\(String(format: "%.2f", selectionMs))ms")
+      }
+      #endif
 
       do {
+        #if DEBUG
+        let shouldLogTiming = rangeCache.count > 100
+        let t_closure_start = CFAbsoluteTimeGetCurrent()
+        #endif
         try closure()
+        #if DEBUG
+        let t_closure_end = CFAbsoluteTimeGetCurrent()
+        #endif
 
         // Need to do this here, in case pendingEditorState was replaced or manipulated inside the closure.
         guard let pendingEditorState = self.pendingEditorState else {
@@ -1073,6 +1197,9 @@ public class Editor: NSObject {
           return
         }
 
+        #if DEBUG
+        let t_normalize_start = CFAbsoluteTimeGetCurrent()
+        #endif
         if dirtyType != .noDirtyNodes {
           try normalizeAllDirtyTextNodes(editorState: pendingEditorState)
 
@@ -1080,6 +1207,9 @@ public class Editor: NSObject {
             try applyAllTransforms()
           }
         }
+        #if DEBUG
+        let t_normalize_end = CFAbsoluteTimeGetCurrent()
+        #endif
 
         #if canImport(UIKit)
         if mode.allowUpdateWithoutTextStorage && textStorage == nil {
@@ -1094,6 +1224,9 @@ public class Editor: NSObject {
         }
         #endif
 
+        #if DEBUG
+        let t_reconciler_start = CFAbsoluteTimeGetCurrent()
+        #endif
         #if canImport(UIKit)
         if !headless {
           try OptimizedReconciler.updateEditorState(
@@ -1120,9 +1253,25 @@ public class Editor: NSObject {
           )
         }
         #endif
+        #if DEBUG
+        let t_reconciler_end = CFAbsoluteTimeGetCurrent()
+        #endif
         self.isUpdating = previouslyUpdating
+        #if DEBUG
+        let t_gc_start = CFAbsoluteTimeGetCurrent()
+        #endif
         garbageCollectDetachedNodes(
           prevEditorState: editorState, editorState: pendingEditorState, dirtyLeaves: dirtyNodes)
+        #if DEBUG
+        let t_gc_end = CFAbsoluteTimeGetCurrent()
+        if shouldLogTiming {
+          let closureMs = (t_closure_end - t_closure_start) * 1000
+          let normalizeMs = (t_normalize_end - t_normalize_start) * 1000
+          let reconcilerMs = (t_reconciler_end - t_reconciler_start) * 1000
+          let gcMs = (t_gc_end - t_gc_start) * 1000
+          print("[beginUpdate] closure=\(String(format: "%.2f", closureMs))ms normalize=\(String(format: "%.2f", normalizeMs))ms reconciler=\(String(format: "%.2f", reconcilerMs))ms gc=\(String(format: "%.2f", gcMs))ms")
+        }
+        #endif
       } catch {
         triggerErrorListeners(
           activeEditor: self,
@@ -1213,8 +1362,17 @@ public class Editor: NSObject {
       dirtyType = .noDirtyNodes
       cloneNotNeeded.removeAll()
 
+      #if DEBUG
+      let t_dec_start = CFAbsoluteTimeGetCurrent()
+      #endif
       #if canImport(UIKit) || os(macOS)
       mountDecoratorSubviewsIfNecessary()
+      #endif
+      #if DEBUG
+      if rangeCache.count > 100 {
+        let decMs = (CFAbsoluteTimeGetCurrent() - t_dec_start) * 1000
+        print("[beginUpdate] decorators=\(String(format: "%.2f", decMs))ms")
+      }
       #endif
     }
 
@@ -1222,6 +1380,9 @@ public class Editor: NSObject {
       return
     }
 
+    #if DEBUG
+    let t_listeners_start = CFAbsoluteTimeGetCurrent()
+    #endif
     // These have to be outside of the above runWithStateLexicalScopeProperties{} closure, because: if any update block is triggered from inside that
     // closure, it counts as a nested update. But listeners, which happen after we've run the reconciler, should not count as nested for this purpose;
     // if an update is triggered from within an update listener, it needs to run the reconciler a second time.
@@ -1236,10 +1397,19 @@ public class Editor: NSObject {
         activeEditor: self, activeEditorState: pendingEditorState,
         previousEditorState: previousEditorStateForListeners)
     }
+    #if DEBUG
+    if rangeCache.count > 100 {
+      let listenersMs = (CFAbsoluteTimeGetCurrent() - t_listeners_start) * 1000
+      print("[beginUpdate] listeners=\(String(format: "%.2f", listenersMs))ms")
+    }
+    #endif
 
     #if canImport(UIKit)
     frontend?.isUpdatingNativeSelection = false
 
+    #if DEBUG
+    let t_sanity_start = CFAbsoluteTimeGetCurrent()
+    #endif
     if featureFlags.reconcilerSanityCheck && !mode.suppressSanityCheck && compositionKey == nil,
       let frontend
     {
@@ -1262,6 +1432,12 @@ public class Editor: NSObject {
         }
       }
     }
+    #if DEBUG
+    if rangeCache.count > 100 {
+      let sanityMs = (CFAbsoluteTimeGetCurrent() - t_sanity_start) * 1000
+      print("[beginUpdate] sanity=\(String(format: "%.2f", sanityMs))ms")
+    }
+    #endif
     #endif
   }
 

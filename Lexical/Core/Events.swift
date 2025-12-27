@@ -229,7 +229,19 @@ internal func onSelectionChange(editor: Editor) {
       mode: UpdateBehaviourModificationMode(
         suppressReconcilingSelection: true, suppressSanityCheck: true), reason: .update
     ) {
+      let debugSelection =
+        ProcessInfo.processInfo.environment["LEXICAL_FORCE_DEBUG_SELECTION"] == "1"
       let nativeSelection = editor.getNativeSelection()
+      if debugSelection {
+        let storageLen = editor.frontend?.textStorage.length ?? -1
+        let rootRange = editor.rangeCache[kRootNodeKey]?.range ?? NSRange(location: -1, length: 0)
+        print(
+          "🔥 SELECTION_CHANGE storageLen=\(storageLen) rootRange=\(rootRange) rangeCacheCount=\(editor.rangeCache.count)"
+        )
+        print(
+          "🔥 SELECTION_CHANGE nativeRange=\(String(describing: nativeSelection.range)) affinity=\(nativeSelection.affinity)"
+        )
+      }
       guard let editorState = getActiveEditorState() else {
         return
       }
@@ -245,6 +257,18 @@ internal func onSelectionChange(editor: Editor) {
       }
 
       try lexicalSelection.applyNativeSelection(nativeSelection)
+      if debugSelection, let aLoc = try? stringLocationForPoint(lexicalSelection.anchor, editor: editor),
+        let fLoc = try? stringLocationForPoint(lexicalSelection.focus, editor: editor)
+      {
+        if let item = editor.rangeCache[lexicalSelection.anchor.key] {
+          print(
+            "🔥 SELECTION_CHANGE anchorRangeCache key=\(lexicalSelection.anchor.key) loc=\(item.location) pre=\(item.preambleLength) children=\(item.childrenLength) text=\(item.textLength) post=\(item.postambleLength)"
+          )
+        }
+        print(
+          "🔥 SELECTION_CHANGE lexicalRange=(\(min(aLoc, fLoc))+\(abs(aLoc - fLoc))) anchor=\(lexicalSelection.anchor.key):\(lexicalSelection.anchor.offset) focus=\(lexicalSelection.focus.key):\(lexicalSelection.focus.offset)"
+        )
+      }
 
       switch lexicalSelection.anchor.type {
       case .text:

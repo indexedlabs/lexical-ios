@@ -17,9 +17,11 @@ import LexicalCore
 public struct RangeCacheItem {
   // Legacy absolute location (TextKit 1)
   public var location: Int = 0
-  // Optional index for Fenwick-backed absolute locations (optimized reconciler)
-  // 0 indicates unused in this branch.
+  // Stable node index (incrementing counter, never changes once assigned)
   public var nodeIndex: Int = 0
+  // DFS position in document order (1-based), updated when DFS order is computed
+  // Used for O(log N) Fenwick tree lookups without recomputing global order
+  public var dfsPosition: Int = 0
   // the length of the full preamble, including any special characters
   public var preambleLength: Int = 0
   // the length of any special characters in the preamble
@@ -35,12 +37,33 @@ public struct RangeCacheItem {
       location: location, length: preambleLength + childrenLength + textLength + postambleLength)
   }
 
-  // Optimized (Fenwick) helpers — compatibility layer
+  /// The entire range length (preamble + children + text + postamble)
+  public var entireLength: Int {
+    preambleLength + childrenLength + textLength + postambleLength
+  }
+
+  // MARK: - Fenwick Tree Location Computation
+
+  /// Computes the actual location using the Fenwick tree delta.
+  /// - Parameter fenwickTree: The Fenwick tree containing accumulated deltas.
+  /// - Returns: The computed location (baseLocation + accumulated delta).
+  ///
+  /// The `location` field stores the BASE location (from when the node was created or
+  /// last fully recomputed). The Fenwick tree stores DELTAS that accumulate as edits
+  /// happen. The actual location is: baseLocation + prefixSum(nodeIndex - 1).
   @MainActor
-  public func locationFromFenwick(using fenwickTree: FenwickTree? = nil) -> Int { location }
+  public func locationFromFenwick(using fenwickTree: FenwickTree? = nil) -> Int {
+    guard let tree = fenwickTree, nodeIndex > 0 else { return location }
+    // prefixSum(nodeIndex - 1) gives us the accumulated delta for all nodes before this one
+    let delta = tree.prefixSum(min(nodeIndex - 1, tree.size))
+    return max(0, location + delta)
+  }
+
+  /// Computes the actual range using the Fenwick tree delta.
   @MainActor
   public func rangeFromFenwick(using fenwickTree: FenwickTree? = nil) -> NSRange {
-    NSRange(location: location, length: preambleLength + childrenLength + textLength + postambleLength)
+    let computedLocation = locationFromFenwick(using: fenwickTree)
+    return NSRange(location: computedLocation, length: entireLength)
   }
 }
 
@@ -66,17 +89,66 @@ public func pointAtStringLocation(
     let searchResult = try evaluateNode(
       kRootNodeKey, stringLocation: location, searchDirection: searchDirection,
       rangeCache: rangeCache)
-    guard let searchResult, let offset = searchResult.offset else {
+    guard let searchResult else {
       return nil
     }
 
+    @inline(__always)
+    func deepestLastDescendant(of element: ElementNode) -> Node? {
+      var current: Node = element
+      while let el = current as? ElementNode {
+        guard let lastKey = el.getChildrenKeys().last, let next = getNodeByKey(key: lastKey) else {
+          break
+        }
+        current = next
+      }
+      return current
+    }
+
+    @inline(__always)
+    func rootEndTextPointIfPossible(rootOffset: Int) -> Point? {
+      guard searchResult.nodeKey == kRootNodeKey else { return nil }
+      guard let root = getNodeByKey(key: kRootNodeKey) as? ElementNode else { return nil }
+      guard rootOffset == root.getChildrenSize() else { return nil }
+      guard let last = deepestLastDescendant(of: root) as? TextNode else { return nil }
+      guard let item = rangeCache[last.getKey()] else { return nil }
+      let lastEndLocation = item.location + item.preambleLength + item.childrenLength + item.textLength
+      guard lastEndLocation == location else { return nil }
+      return Point(key: last.getKey(), offset: last.getTextContentSize(), type: .text)
+    }
+
     switch searchResult.type {
-    case .endBoundary, .startBoundary, .illegal:
-      throw LexicalError.internal("Failed to find node for location: \(location)")
     case .text:
+      guard let offset = searchResult.offset else { return nil }
       return Point(key: searchResult.nodeKey, offset: offset, type: .text)
     case .element:
+      guard let offset = searchResult.offset else { return nil }
+      if let point = rootEndTextPointIfPossible(rootOffset: offset) {
+        return point
+      }
       return Point(key: searchResult.nodeKey, offset: offset, type: .element)
+    case .startBoundary:
+      if let _ = getNodeByKey(key: searchResult.nodeKey) as? ElementNode {
+        return Point(key: searchResult.nodeKey, offset: 0, type: .element)
+      }
+      if let _ = getNodeByKey(key: searchResult.nodeKey) as? TextNode {
+        return Point(key: searchResult.nodeKey, offset: 0, type: .text)
+      }
+      return nil
+    case .endBoundary:
+      if let element = getNodeByKey(key: searchResult.nodeKey) as? ElementNode {
+        let offset = element.getChildrenSize()
+        if let point = rootEndTextPointIfPossible(rootOffset: offset) {
+          return point
+        }
+        return Point(key: searchResult.nodeKey, offset: offset, type: .element)
+      }
+      if let text = getNodeByKey(key: searchResult.nodeKey) as? TextNode {
+        return Point(key: searchResult.nodeKey, offset: text.getTextContentSize(), type: .text)
+      }
+      return nil
+    case .illegal:
+      return nil
     }
   } catch LexicalError.rangeCacheSearch {
     return nil

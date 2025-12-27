@@ -134,7 +134,8 @@ let package = Package(
         "EditorHistoryPlugin",
         "LexicalInlineImagePlugin",
       ],
-      path: "./LexicalTests"),
+      path: "./LexicalTests",
+      resources: [.process("Resources")]),
 
     .target(
       name: "LexicalListPlugin",

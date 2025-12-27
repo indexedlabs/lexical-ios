@@ -1,5 +1,12 @@
 # Implementation Log (Lexical iOS)
 
+## 2025-12-26
+- lexical-ios-qmk (done): Added regression test that pastes `sample.md` (~1200 lines) into a real window-backed editor and verifies caret moves stay fast; optimized selection-only updates by skipping the reconciler diff pipeline when there are no dirty nodes (selection-only navigation), preventing massive CPU spikes on cursor movement.
+- lexical-ios-a78 (done): Added memory/timing instrumentation for large inserts + fixed native-range → Lexical selection mapping at end-of-document (range cache point mapping) to prevent flaky select+delete at the end of text after edits.
+- lexical-ios-cqy (done): Reduced huge transient memory spikes when selecting very large ranges (e.g. Select All after large pastes) by clamping `TextView.selectionRects(for:)` to the visible viewport for large selections, avoiding full-document TextKit layout; added large-paste regression tests (double-paste + select-all, and multi-paste memory guard).
+- lexical-ios-ihl (open): Drafted `docs/PerformanceNextSteps.md` outlining the next performance initiatives (large paste memory spikes + large-doc cursor/edit lag) and created the bd epic + subtasks for execution planning.
+- Tests: `xcodebuild -workspace Playground/LexicalPlayground.xcodeproj/project.xcworkspace -scheme Lexical-Package -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.0' test` (passed); `xcodebuild -project Playground/LexicalPlayground.xcodeproj -scheme LexicalPlayground -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.0' build` (passed).
+
 ## 2025-12-19
 - lexical-ios-0qp (done): Added off-main text-only planning snapshot + materialization path, wired into central aggregation with state-id validation and planning timing.
 - lexical-ios-8qy (done): Reverted off-main planning snapshot path (sync overhead) to keep text-only planning on main.

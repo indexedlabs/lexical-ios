@@ -2066,18 +2066,28 @@ public class RangeSelection: BaseSelection {
       throw LexicalError.invariantViolation("Calling applySelectionRange when no active editor")
     }
 
+    @inline(__always)
+    func pointAt(
+      _ location: Int,
+      prefer primary: LexicalTextStorageDirection,
+      fallback secondary: LexicalTextStorageDirection
+    ) -> Point? {
+      if let p = try? pointAtStringLocation(location, searchDirection: primary, rangeCache: editor.rangeCache) {
+        return p
+      }
+      return try? pointAtStringLocation(location, searchDirection: secondary, rangeCache: editor.rangeCache)
+    }
+
     // For non-collapsed ranges, map the NSRange boundaries in a stable way:
-    // - start boundary prefers the previous node (backward)
-    // - end boundary prefers the next node (forward)
+    // - start boundary prefers the next node (forward)
+    // - end boundary prefers the previous node (backward)
     //
     // This avoids tie-breaking issues at block boundaries (e.g. paragraph separators) where
     // using a single direction for both endpoints can incorrectly map a 1-char range onto
     // the first character of the next TextNode.
     if range.length > 0 {
-      if let startPoint = try? pointAtStringLocation(
-        range.location, searchDirection: .backward, rangeCache: editor.rangeCache),
-        let endPoint = try? pointAtStringLocation(
-          range.location + range.length, searchDirection: .forward, rangeCache: editor.rangeCache)
+      if let startPoint = pointAt(range.location, prefer: .forward, fallback: .backward),
+        let endPoint = pointAt(range.location + range.length, prefer: .backward, fallback: .forward)
       {
         if affinity == .forward {
           self.anchor = startPoint
@@ -2093,10 +2103,9 @@ public class RangeSelection: BaseSelection {
     let anchorOffset = affinity == .forward ? range.location : range.location + range.length
     let focusOffset = affinity == .forward ? range.location + range.length : range.location
 
-    if let anchor = try pointAtStringLocation(
-      anchorOffset, searchDirection: affinity, rangeCache: editor.rangeCache),
-      let focus = try pointAtStringLocation(
-        focusOffset, searchDirection: affinity, rangeCache: editor.rangeCache)
+    let otherDir: LexicalTextStorageDirection = (affinity == .forward) ? .backward : .forward
+    if let anchor = pointAt(anchorOffset, prefer: affinity, fallback: otherDir),
+      let focus = pointAt(focusOffset, prefer: affinity, fallback: otherDir)
     {
       // Guard against mismapped wide ranges (observed at line breaks) when the original
       // native range length is 1. If the mapped points land on the same TextNode and span
