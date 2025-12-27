@@ -781,6 +781,9 @@ public class Editor: NSObject {
       return
     }
     try? self.read {
+      // Collect ranges that need layout invalidation, then batch at the end
+      var rangesToInvalidate: [NSRange] = []
+
       for (nodeKey, decoratorCacheItem) in decoratorCache {
         switch decoratorCacheItem {
         case .needsCreation:
@@ -795,16 +798,7 @@ public class Editor: NSObject {
           decoratorCache[nodeKey] = DecoratorCacheItem.cachedView(view)
           if let rangeCacheItem = rangeCache[nodeKey] {
             let range = actualRange(for: nodeKey) ?? rangeCacheItem.range
-            // Always invalidate layout so TextKit positions and unhides the decorator immediately,
-            // regardless of dynamic sizing. Legacy reconciler relies on this for first-frame render.
-            frontend?.layoutManager.invalidateLayout(
-              forCharacterRange: range, actualCharacterRange: nil)
-            // Proactively ensure layout for the affected glyphs so that a draw pass
-            // isn’t required before LayoutManager can position the decorator. This
-            // helps the immediate-mount case when inserting a decorator after a newline.
-            let glyphRange = frontend?.layoutManager.glyphRange(
-              forCharacterRange: range, actualCharacterRange: nil) ?? .init(location: range.location, length: range.length)
-            frontend?.layoutManager.ensureLayout(forGlyphRange: glyphRange)
+            rangesToInvalidate.append(range)
           }
 
           self.log(
@@ -827,11 +821,7 @@ public class Editor: NSObject {
           decoratorCache[nodeKey] = DecoratorCacheItem.cachedView(view)
           if let rangeCacheItem = rangeCache[nodeKey] {
             let range = actualRange(for: nodeKey) ?? rangeCacheItem.range
-            frontend?.layoutManager.invalidateLayout(
-              forCharacterRange: range, actualCharacterRange: nil)
-            let glyphRange = frontend?.layoutManager.glyphRange(
-              forCharacterRange: range, actualCharacterRange: nil) ?? .init(location: range.location, length: range.length)
-            frontend?.layoutManager.ensureLayout(forGlyphRange: glyphRange)
+            rangesToInvalidate.append(range)
           }
           self.log(
             .editor, .verbose,
@@ -845,14 +835,21 @@ public class Editor: NSObject {
           }
           if let rangeCacheItem = rangeCache[nodeKey] {
             let range = actualRange(for: nodeKey) ?? rangeCacheItem.range
-            // required so that TextKit does the new size calculation, and correctly hides or unhides the view
-            frontend?.layoutManager.invalidateLayout(
-              forCharacterRange: range, actualCharacterRange: nil)
-            let glyphRange = frontend?.layoutManager.glyphRange(
-              forCharacterRange: range, actualCharacterRange: nil) ?? .init(location: range.location, length: range.length)
-            frontend?.layoutManager.ensureLayout(forGlyphRange: glyphRange)
+            rangesToInvalidate.append(range)
           }
         }
+      }
+
+      // Batch layout invalidation: compute union range and do single invalidate + ensureLayout
+      // This avoids N separate layout cycles for N decorators
+      if !rangesToInvalidate.isEmpty, let layoutManager = frontend?.layoutManager {
+        let unionRange = rangesToInvalidate.reduce(rangesToInvalidate[0]) { union, range in
+          NSUnionRange(union, range)
+        }
+        layoutManager.invalidateLayout(forCharacterRange: unionRange, actualCharacterRange: nil)
+        let glyphRange = layoutManager.glyphRange(
+          forCharacterRange: unionRange, actualCharacterRange: nil)
+        layoutManager.ensureLayout(forGlyphRange: glyphRange)
       }
     }
   }
@@ -910,6 +907,9 @@ public class Editor: NSObject {
       return
     }
     try? self.read {
+      // Collect ranges that need layout invalidation, then batch at the end
+      var rangesToInvalidate: [NSRange] = []
+
       for (nodeKey, decoratorCacheItem) in decoratorCache {
         switch decoratorCacheItem {
         case .needsCreation:
@@ -924,16 +924,7 @@ public class Editor: NSObject {
           decoratorCache[nodeKey] = DecoratorCacheItem.cachedView(view)
           if let rangeCacheItem = rangeCache[nodeKey] {
             let range = actualRange(for: nodeKey) ?? rangeCacheItem.range
-            // Always invalidate layout so TextKit positions and unhides the decorator immediately,
-            // regardless of dynamic sizing. Legacy reconciler relies on this for first-frame render.
-            frontendAppKit?.layoutManager.invalidateLayout(
-              forCharacterRange: range, actualCharacterRange: nil)
-            // Proactively ensure layout for the affected glyphs so that a draw pass
-            // isn't required before LayoutManager can position the decorator. This
-            // helps the immediate-mount case when inserting a decorator after a newline.
-            let glyphRange = frontendAppKit?.layoutManager.glyphRange(
-              forCharacterRange: range, actualCharacterRange: nil) ?? .init(location: range.location, length: range.length)
-            frontendAppKit?.layoutManager.ensureLayout(forGlyphRange: glyphRange)
+            rangesToInvalidate.append(range)
           }
 
           self.log(
@@ -956,11 +947,7 @@ public class Editor: NSObject {
           decoratorCache[nodeKey] = DecoratorCacheItem.cachedView(view)
           if let rangeCacheItem = rangeCache[nodeKey] {
             let range = actualRange(for: nodeKey) ?? rangeCacheItem.range
-            frontendAppKit?.layoutManager.invalidateLayout(
-              forCharacterRange: range, actualCharacterRange: nil)
-            let glyphRange = frontendAppKit?.layoutManager.glyphRange(
-              forCharacterRange: range, actualCharacterRange: nil) ?? .init(location: range.location, length: range.length)
-            frontendAppKit?.layoutManager.ensureLayout(forGlyphRange: glyphRange)
+            rangesToInvalidate.append(range)
           }
           self.log(
             .editor, .verbose,
@@ -973,15 +960,22 @@ public class Editor: NSObject {
             node.decorate(view: view)
           }
           if let rangeCacheItem = rangeCache[nodeKey] {
-            // required so that TextKit does the new size calculation, and correctly hides or unhides the view
             let range = actualRange(for: nodeKey) ?? rangeCacheItem.range
-            frontendAppKit?.layoutManager.invalidateLayout(
-              forCharacterRange: range, actualCharacterRange: nil)
-            let glyphRange = frontendAppKit?.layoutManager.glyphRange(
-              forCharacterRange: range, actualCharacterRange: nil) ?? .init(location: range.location, length: range.length)
-            frontendAppKit?.layoutManager.ensureLayout(forGlyphRange: glyphRange)
+            rangesToInvalidate.append(range)
           }
         }
+      }
+
+      // Batch layout invalidation: compute union range and do single invalidate + ensureLayout
+      // This avoids N separate layout cycles for N decorators
+      if !rangesToInvalidate.isEmpty, let layoutManager = frontendAppKit?.layoutManager {
+        let unionRange = rangesToInvalidate.reduce(rangesToInvalidate[0]) { union, range in
+          NSUnionRange(union, range)
+        }
+        layoutManager.invalidateLayout(forCharacterRange: unionRange, actualCharacterRange: nil)
+        let glyphRange = layoutManager.glyphRange(
+          forCharacterRange: unionRange, actualCharacterRange: nil)
+        layoutManager.ensureLayout(forGlyphRange: glyphRange)
       }
     }
   }
