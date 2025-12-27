@@ -213,10 +213,16 @@ public func stringLocationForPoint(_ point: Point, editor: Editor) throws -> Int
   let rangeCache = editor.rangeCache
 
   guard let rangeCacheItem = rangeCache[point.key] else { return nil }
+  let fenwickTree: FenwickTree? = {
+    guard editor.useFenwickLocations, editor.fenwickHasDeltas else { return nil }
+    _ = editor.cachedDFSOrderAndIndex()
+    return editor.locationFenwickTree
+  }()
+  let keyLoc = rangeCacheItem.locationFromFenwick(using: fenwickTree)
 
   switch point.type {
   case .text:
-    return rangeCacheItem.location + rangeCacheItem.preambleLength + point.offset
+    return keyLoc + rangeCacheItem.preambleLength + point.offset
   case .element:
     guard let node = getNodeByKey(key: point.key) as? ElementNode else { return nil }
 
@@ -226,12 +232,12 @@ public func stringLocationForPoint(_ point: Point, editor: Editor) throws -> Int
     }
 
     if point.offset == childrenKeys.count {
-      return rangeCacheItem.location + rangeCacheItem.preambleLength + rangeCacheItem.childrenLength
+      return keyLoc + rangeCacheItem.preambleLength + rangeCacheItem.childrenLength
     }
 
     guard let childRangeCacheItem = rangeCache[childrenKeys[point.offset]] else { return nil }
 
-    return childRangeCacheItem.location
+    return childRangeCacheItem.locationFromFenwick(using: fenwickTree)
   case .range:
     throw LexicalError.invariantViolation("Need range selection")
   case .node:
@@ -296,12 +302,22 @@ func createSelection(editor: Editor) throws -> BaseSelection? {
     }
 
     let range = nativeSelection.range ?? NSRange(location: 0, length: 0)
+    let fenwickTree: FenwickTree? = {
+      guard editor.useFenwickLocations, editor.fenwickHasDeltas else { return nil }
+      _ = editor.cachedDFSOrderAndIndex()
+      return editor.locationFenwickTree
+    }()
 
     if let anchor = try pointAtStringLocation(
-      range.location, searchDirection: nativeSelection.affinity, rangeCache: editor.rangeCache),
+      range.location,
+      searchDirection: nativeSelection.affinity,
+      rangeCache: editor.rangeCache,
+      fenwickTree: fenwickTree),
       let focus = try pointAtStringLocation(
-        range.location + range.length, searchDirection: nativeSelection.affinity,
-        rangeCache: editor.rangeCache)
+        range.location + range.length,
+        searchDirection: nativeSelection.affinity,
+        rangeCache: editor.rangeCache,
+        fenwickTree: fenwickTree)
     {
       return RangeSelection(anchor: anchor, focus: focus, format: TextFormat())
     }
@@ -339,11 +355,22 @@ func createSelectionAppKit(editor: Editor) throws -> BaseSelection? {
       return nil
     }
 
+    let fenwickTree: FenwickTree? = {
+      guard editor.useFenwickLocations, editor.fenwickHasDeltas else { return nil }
+      _ = editor.cachedDFSOrderAndIndex()
+      return editor.locationFenwickTree
+    }()
+
     if let anchor = try pointAtStringLocation(
-      range.location, searchDirection: affinity, rangeCache: editor.rangeCache),
+      range.location,
+      searchDirection: affinity,
+      rangeCache: editor.rangeCache,
+      fenwickTree: fenwickTree),
       let focus = try pointAtStringLocation(
-        range.location + range.length, searchDirection: affinity,
-        rangeCache: editor.rangeCache)
+        range.location + range.length,
+        searchDirection: affinity,
+        rangeCache: editor.rangeCache,
+        fenwickTree: fenwickTree)
     {
       return RangeSelection(anchor: anchor, focus: focus, format: TextFormat())
     }

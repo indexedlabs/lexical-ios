@@ -114,6 +114,14 @@ public enum RopeReconciler {
       }
     }
 
+    // Marked text reconciliation uses legacy absolute locations + O(N) cache shifts.
+    // If we have pending Fenwick deltas, materialize them first so cache + TextStorage stay aligned.
+    if editor.useFenwickLocations, editor.fenwickHasDeltas,
+       let mto = markedTextOperation, mto.createMarkedText
+    {
+      materializeFenwickLocations(editor: editor)
+    }
+
     // Composition (marked text) fast path first
     if let mto = markedTextOperation, mto.createMarkedText {
       pathLabel = "rope-composition"
@@ -248,6 +256,22 @@ public enum RopeReconciler {
       pathLabel = "rope-text-only"
     } else {
       pathLabel = "rope-mixed"
+    }
+
+    let useLazyLocations =
+      editor.useFenwickLocations
+      && inserts.isEmpty
+      && removes.isEmpty
+      && updates.allSatisfy({ $0.prev is TextNode && $0.next is TextNode })
+
+    if editor.useFenwickLocations {
+      if editor.fenwickHasDeltas && !useLazyLocations {
+        materializeFenwickLocations(editor: editor)
+      }
+      if useLazyLocations {
+        _ = editor.cachedDFSOrderAndIndex()
+        editor.ensureFenwickCapacity(editor.rangeCache.count)
+      }
     }
 
     let applyStart = CFAbsoluteTimeGetCurrent()
@@ -385,14 +409,22 @@ public enum RopeReconciler {
     }
 
     for (_, prev, next) in updates {
-      try updateNode(from: prev, to: next, in: textStorage, state: nextState, editor: editor, theme: theme)
+      try updateNode(
+        from: prev,
+        to: next,
+        in: textStorage,
+        state: nextState,
+        editor: editor,
+        theme: theme,
+        useLazyLocations: useLazyLocations
+      )
     }
 #if DEBUG
     t_afterUpdates = CFAbsoluteTimeGetCurrent()
 #endif
 
     #if canImport(UIKit)
-    if hasEdits {
+    if hasEdits, !useLazyLocations {
       // `getWritable()` on ElementNodes (notably RootNode) marks entire subtrees dirty.
       // Avoid treating all those descendants as block-attribute candidates; apply only for
       // nodes that were actually inserted/updated in this reconciliation pass.
@@ -569,6 +601,7 @@ public enum RopeReconciler {
     // Recompute range cache from root
     _ = recomputeRangeCacheSubtree(nodeKey: kRootNodeKey, state: pendingState, startLocation: 0, editor: editor)
     editor.invalidateDFSOrderCache()
+    editor.resetFenwickTree(capacity: editor.rangeCache.count)
 
     #if canImport(UIKit)
     applyBlockLevelAttributesIfNeeded(
@@ -646,6 +679,7 @@ public enum RopeReconciler {
     _ = recomputeRangeCacheSubtree(nodeKey: kRootNodeKey, state: nextState, startLocation: 0, editor: editor)
     pruneRangeCacheGlobally(nextState: nextState, editor: editor)
     editor.invalidateDFSOrderCache()
+    editor.resetFenwickTree(capacity: editor.rangeCache.count)
 
     #if canImport(UIKit)
     applyBlockLevelAttributesIfNeeded(
@@ -1035,11 +1069,20 @@ public enum RopeReconciler {
     in textStorage: NSTextStorage,
     state: EditorState,
     editor: Editor,
-    theme: Theme
+    theme: Theme,
+    useLazyLocations: Bool
   ) throws {
     // Handle text node changes
     if let prevText = prev as? TextNode, let nextText = next as? TextNode {
-      try updateTextNode(from: prevText, to: nextText, in: textStorage, state: state, editor: editor, theme: theme)
+      try updateTextNode(
+        from: prevText,
+        to: nextText,
+        in: textStorage,
+        state: state,
+        editor: editor,
+        theme: theme,
+        useLazyLocations: useLazyLocations
+      )
       return
     }
 
@@ -1061,7 +1104,8 @@ public enum RopeReconciler {
     in textStorage: NSTextStorage,
     state: EditorState,
     editor: Editor,
-    theme: Theme
+    theme: Theme,
+    useLazyLocations: Bool
   ) throws {
     guard let cacheItem = editor.rangeCache[prev.key] else { return }
 
@@ -1073,7 +1117,15 @@ public enum RopeReconciler {
     let newLength = newText.lengthAsNSString()
     let delta = newLength - oldLength
 
-    let textStart = cacheItem.location + cacheItem.preambleLength + cacheItem.childrenLength
+    let baseLoc = cacheItem.location
+    let nodeLoc: Int = {
+      guard useLazyLocations else { return baseLoc }
+      guard let item = editor.rangeCache[prev.key] else { return baseLoc }
+      let dfsPos = item.dfsPosition
+      return editor.actualLocation(for: prev.key, dfsPosition: dfsPos) ?? baseLoc
+    }()
+
+    let textStart = nodeLoc + cacheItem.preambleLength + cacheItem.childrenLength
     let textRange = NSRange(location: textStart, length: oldLength)
 
     guard textRange.location + textRange.length <= textStorage.length else { return }
@@ -1144,9 +1196,13 @@ public enum RopeReconciler {
 
     // Shift all nodes after this one if length changed
     if delta != 0 {
-      let afterLocation = textStart + oldLength
-      let excludingKeys = ancestorKeys(fromParentKey: next.parent)
-      shiftRangeCacheAfter(location: afterLocation, delta: delta, excludingKeys: excludingKeys, editor: editor)
+      if useLazyLocations {
+        applyFenwickSuffixShift(afterKey: next.key, delta: delta, editor: editor)
+      } else {
+        let afterLocation = textStart + oldLength
+        let excludingKeys = ancestorKeys(fromParentKey: next.parent)
+        shiftRangeCacheAfter(location: afterLocation, delta: delta, excludingKeys: excludingKeys, editor: editor)
+      }
 
       // Update parent's childrenLength
       propagateChildrenLengthDelta(fromParentKey: next.parent, delta: delta, editor: editor)
@@ -1489,6 +1545,45 @@ public enum RopeReconciler {
     }
   }
 
+  private static func applyFenwickSuffixShift(afterKey: NodeKey, delta: Int, editor: Editor) {
+    guard editor.useFenwickLocations, delta != 0 else { return }
+
+    let (order, _) = editor.cachedDFSOrderAndIndex()
+    let totalNodes = order.count
+    guard totalNodes > 0 else { return }
+
+    editor.ensureFenwickCapacity(totalNodes)
+
+    guard let dfsPosition = editor.rangeCache[afterKey]?.dfsPosition, dfsPosition > 0 else { return }
+    guard dfsPosition < totalNodes else { return }
+
+    // Shift nodes strictly after `afterKey` (exclusive start).
+    editor.addFenwickDelta(atIndex: dfsPosition + 1, delta: delta)
+  }
+
+  private static func materializeFenwickLocations(editor: Editor) {
+    guard editor.useFenwickLocations, editor.fenwickHasDeltas else { return }
+
+    let (order, _) = editor.cachedDFSOrderAndIndex()
+    let totalNodes = order.count
+    guard totalNodes > 0 else {
+      editor.resetFenwickTree(capacity: editor.rangeCache.count)
+      return
+    }
+
+    editor.ensureFenwickCapacity(totalNodes)
+    let tree = editor.locationFenwickTree
+
+    for key in order {
+      guard var item = editor.rangeCache[key] else { continue }
+      item.location = item.locationFromFenwick(using: tree)
+      editor.rangeCache[key] = item
+    }
+
+    // All locations are now absolute again; clear deltas.
+    editor.resetFenwickTree(capacity: editor.rangeCache.count)
+  }
+
   // MARK: - Composition (Marked Text) Handling
 
   /// Handle composition (marked text / IME) operations.
@@ -1504,7 +1599,12 @@ public enum RopeReconciler {
     let point = try? pointAtStringLocation(
       startLocation,
       searchDirection: .forward,
-      rangeCache: editor.rangeCache
+      rangeCache: editor.rangeCache,
+      fenwickTree: {
+        guard editor.useFenwickLocations, editor.fenwickHasDeltas else { return nil }
+        _ = editor.cachedDFSOrderAndIndex()
+        return editor.locationFenwickTree
+      }()
     )
 
     // Prepare attributed marked text with styles from owning node if available
@@ -1675,6 +1775,7 @@ public enum RopeReconciler {
 
     var attachmentLocations: [NodeKey: Int]? = nil
     func attachmentLocation(for key: NodeKey) -> Int? {
+      if editor.useFenwickLocations, editor.fenwickHasDeltas, let loc = editor.actualLocation(for: key) { return loc }
       if let loc = editor.rangeCache[key]?.location { return loc }
       if attachmentLocations == nil {
         attachmentLocations = attachmentLocationsByKey(textStorage: textStorage)
@@ -1747,7 +1848,12 @@ public enum RopeReconciler {
     var attachmentLocations: [NodeKey: Int]? = nil
 
     for (key, oldLoc) in ts.decoratorPositionCache {
-      let candidateLoc = editor.rangeCache[key]?.location ?? oldLoc
+      let candidateLoc: Int = {
+        if editor.useFenwickLocations, editor.fenwickHasDeltas, let loc = editor.actualLocation(for: key) {
+          return loc
+        }
+        return editor.rangeCache[key]?.location ?? oldLoc
+      }()
       let storageLen = ts.length
       var resolvedLoc: Int = candidateLoc
 

@@ -50,12 +50,12 @@ public struct RangeCacheItem {
   ///
   /// The `location` field stores the BASE location (from when the node was created or
   /// last fully recomputed). The Fenwick tree stores DELTAS that accumulate as edits
-  /// happen. The actual location is: baseLocation + prefixSum(nodeIndex - 1).
+  /// happen. The actual location is: baseLocation + prefixSum(dfsPosition - 1).
   @MainActor
   public func locationFromFenwick(using fenwickTree: FenwickTree? = nil) -> Int {
-    guard let tree = fenwickTree, nodeIndex > 0 else { return location }
-    // prefixSum(nodeIndex - 1) gives us the accumulated delta for all nodes before this one
-    let delta = tree.prefixSum(min(nodeIndex - 1, tree.size))
+    guard let tree = fenwickTree, dfsPosition > 0 else { return location }
+    // prefixSum(dfsPosition - 1) gives us the accumulated delta for all nodes before this one.
+    let delta = tree.prefixSum(min(dfsPosition - 1, tree.size))
     return max(0, location + delta)
   }
 
@@ -85,10 +85,26 @@ public struct RangeCacheItem {
 public func pointAtStringLocation(
   _ location: Int, searchDirection: LexicalTextStorageDirection, rangeCache: [NodeKey: RangeCacheItem]
 ) throws -> Point? {
+  try pointAtStringLocation(
+    location,
+    searchDirection: searchDirection,
+    rangeCache: rangeCache,
+    fenwickTree: nil
+  )
+}
+
+@MainActor
+public func pointAtStringLocation(
+  _ location: Int,
+  searchDirection: LexicalTextStorageDirection,
+  rangeCache: [NodeKey: RangeCacheItem],
+  fenwickTree: FenwickTree?
+) throws -> Point? {
   do {
     let searchResult = try evaluateNode(
       kRootNodeKey, stringLocation: location, searchDirection: searchDirection,
-      rangeCache: rangeCache)
+      rangeCache: rangeCache,
+      fenwickTree: fenwickTree)
     guard let searchResult else {
       return nil
     }
@@ -112,7 +128,8 @@ public func pointAtStringLocation(
       guard rootOffset == root.getChildrenSize() else { return nil }
       guard let last = deepestLastDescendant(of: root) as? TextNode else { return nil }
       guard let item = rangeCache[last.getKey()] else { return nil }
-      let lastEndLocation = item.location + item.preambleLength + item.childrenLength + item.textLength
+      let lastLoc = item.locationFromFenwick(using: fenwickTree)
+      let lastEndLocation = lastLoc + item.preambleLength + item.childrenLength + item.textLength
       guard lastEndLocation == location else { return nil }
       return Point(key: last.getKey(), offset: last.getTextContentSize(), type: .text)
     }
@@ -158,15 +175,19 @@ public func pointAtStringLocation(
 @MainActor
 private func evaluateNode(
   _ nodeKey: NodeKey, stringLocation: Int, searchDirection: LexicalTextStorageDirection,
-  rangeCache: [NodeKey: RangeCacheItem]
+  rangeCache: [NodeKey: RangeCacheItem],
+  fenwickTree: FenwickTree?
 ) throws -> RangeCacheSearchResult? {
   guard let rangeCacheItem = rangeCache[nodeKey], let node = getNodeByKey(key: nodeKey) else {
     throw LexicalError.rangeCacheSearch("Couldn't find node or range cache item for key \(nodeKey)")
   }
 
+  let nodeLoc = rangeCacheItem.locationFromFenwick(using: fenwickTree)
+
   if let parentKey = node.parent, let parentRangeCacheItem = rangeCache[parentKey] {
-    if stringLocation == parentRangeCacheItem.location
-      && rangeCacheItem.location == parentRangeCacheItem.location
+    let parentLoc = parentRangeCacheItem.locationFromFenwick(using: fenwickTree)
+    if stringLocation == parentLoc
+      && nodeLoc == parentLoc
       && parentRangeCacheItem.preambleSpecialCharacterLength - parentRangeCacheItem.preambleLength
         == 0
     {
@@ -176,12 +197,17 @@ private func evaluateNode(
     }
   }
 
-  if !rangeCacheItem.entireRange().byAddingOne().contains(stringLocation) {
+  let entireRange = NSRange(location: nodeLoc, length: rangeCacheItem.entireLength)
+  if !entireRange.byAddingOne().contains(stringLocation) {
     return nil
   }
 
   if node is TextNode {
-    let expandedTextRange = rangeCacheItem.textRange().byAddingOne()
+    let textRange = NSRange(
+      location: nodeLoc + rangeCacheItem.preambleLength + rangeCacheItem.childrenLength,
+      length: rangeCacheItem.textLength
+    )
+    let expandedTextRange = textRange.byAddingOne()
     if expandedTextRange.contains(stringLocation) {
       return RangeCacheSearchResult(
         nodeKey: nodeKey, type: .text, offset: stringLocation - expandedTextRange.location)
@@ -200,7 +226,8 @@ private func evaluateNode(
           low = childrenKeys.count
           break
         }
-        let end = item.location + item.entireLength
+        let midLoc = item.locationFromFenwick(using: fenwickTree)
+        let end = midLoc + item.entireLength
         if end < stringLocation {
           low = mid + 1
         } else {
@@ -213,12 +240,13 @@ private func evaluateNode(
         var firstIndex = leftIndex
         var secondIndex: Int?
         if let leftItem = rangeCache[childrenKeys[leftIndex]] {
-          let leftEnd = leftItem.location + leftItem.entireLength
+          let leftLoc = leftItem.locationFromFenwick(using: fenwickTree)
+          let leftEnd = leftLoc + leftItem.entireLength
           let rightCandidate = leftIndex + 1
           if leftEnd == stringLocation,
              rightCandidate < childrenKeys.count,
              let rightItem = rangeCache[childrenKeys[rightCandidate]],
-             rightItem.location == stringLocation
+             rightItem.locationFromFenwick(using: fenwickTree) == stringLocation
           {
             if searchDirection == .forward {
               secondIndex = rightCandidate
@@ -235,7 +263,8 @@ private func evaluateNode(
           let childKey = childrenKeys[firstIndex]
           if let result = try? evaluateNode(
             childKey, stringLocation: stringLocation, searchDirection: searchDirection,
-            rangeCache: rangeCache)
+            rangeCache: rangeCache,
+            fenwickTree: fenwickTree)
           {
             if result.type == .text || result.type == .element {
               return result
@@ -255,7 +284,8 @@ private func evaluateNode(
           let childKey = childrenKeys[secondIndex]
           if let result = try? evaluateNode(
             childKey, stringLocation: stringLocation, searchDirection: searchDirection,
-            rangeCache: rangeCache)
+            rangeCache: rangeCache,
+            fenwickTree: fenwickTree)
           {
             if result.type == .text || result.type == .element {
               return result
@@ -279,9 +309,9 @@ private func evaluateNode(
     }
   }
 
-  if rangeCacheItem.entireRange().length == 0 {
+  if rangeCacheItem.entireLength == 0 {
     // caret is at the last row - element with no children
-    if stringLocation == rangeCacheItem.location {
+    if entireRange.length == 0, stringLocation == nodeLoc {
       return RangeCacheSearchResult(nodeKey: nodeKey, type: .element, offset: 0)
     }
 
@@ -291,7 +321,7 @@ private func evaluateNode(
     return RangeCacheSearchResult(nodeKey: nodeKey, type: boundary, offset: nil)
   }
 
-  if stringLocation == rangeCacheItem.location {
+  if stringLocation == nodeLoc {
     if rangeCacheItem.preambleLength == 0 && node is ElementNode {
       return RangeCacheSearchResult(nodeKey: nodeKey, type: .element, offset: 0)
     }
@@ -299,7 +329,7 @@ private func evaluateNode(
     return RangeCacheSearchResult(nodeKey: nodeKey, type: .startBoundary, offset: nil)
   }
 
-  if stringLocation == rangeCacheItem.entireRange().upperBound {
+  if stringLocation == entireRange.upperBound {
     if rangeCacheItem.selectableRange().length == 0 {
       return RangeCacheSearchResult(nodeKey: nodeKey, type: .element, offset: 0)
     }
@@ -307,7 +337,7 @@ private func evaluateNode(
     return RangeCacheSearchResult(nodeKey: nodeKey, type: .endBoundary, offset: nil)
   }
 
-  let preambleEnd = rangeCacheItem.location + rangeCacheItem.preambleLength
+  let preambleEnd = nodeLoc + rangeCacheItem.preambleLength
   if stringLocation == preambleEnd {
     if rangeCacheItem.selectableRange().length == 0 {
       return RangeCacheSearchResult(nodeKey: nodeKey, type: .element, offset: 0)

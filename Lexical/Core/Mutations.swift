@@ -35,7 +35,14 @@ internal func handleTextMutation(textStorage: TextStorage, rangeOfChange: NSRang
 
   guard
     let point = try pointAtStringLocation(
-      rangeOfChange.location, searchDirection: .forward, rangeCache: editor.rangeCache)
+      rangeOfChange.location,
+      searchDirection: .forward,
+      rangeCache: editor.rangeCache,
+      fenwickTree: {
+        guard editor.useFenwickLocations, editor.fenwickHasDeltas else { return nil }
+        _ = editor.cachedDFSOrderAndIndex()
+        return editor.locationFenwickTree
+      }())
   else {
     editor.log(.other, .verbose, "Failed to find node")
     throw LexicalError.invariantViolation("Failed to find node")

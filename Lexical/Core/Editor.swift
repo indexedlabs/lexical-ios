@@ -193,6 +193,7 @@ public class Editor: NSObject {
   // Fenwick tree for lazy location computation. Stores deltas indexed by node DFS position.
   // Location = baseLocation + fenwickTree.prefixSum(nodeIndex - 1)
   internal var locationFenwickTree: FenwickTree = FenwickTree(0)
+  internal var fenwickHasDeltas: Bool = false
 
   // Flag to enable Fenwick-based lazy locations - O(log N) instead of O(N) for location shifts
   internal var useFenwickLocations: Bool = true
@@ -793,15 +794,16 @@ public class Editor: NSObject {
           node.decoratorWillAppear(view: view)
           decoratorCache[nodeKey] = DecoratorCacheItem.cachedView(view)
           if let rangeCacheItem = rangeCache[nodeKey] {
+            let range = actualRange(for: nodeKey) ?? rangeCacheItem.range
             // Always invalidate layout so TextKit positions and unhides the decorator immediately,
             // regardless of dynamic sizing. Legacy reconciler relies on this for first-frame render.
             frontend?.layoutManager.invalidateLayout(
-              forCharacterRange: rangeCacheItem.range, actualCharacterRange: nil)
+              forCharacterRange: range, actualCharacterRange: nil)
             // Proactively ensure layout for the affected glyphs so that a draw pass
             // isn’t required before LayoutManager can position the decorator. This
             // helps the immediate-mount case when inserting a decorator after a newline.
             let glyphRange = frontend?.layoutManager.glyphRange(
-              forCharacterRange: rangeCacheItem.range, actualCharacterRange: nil) ?? .init(location: rangeCacheItem.range.location, length: rangeCacheItem.range.length)
+              forCharacterRange: range, actualCharacterRange: nil) ?? .init(location: range.location, length: range.length)
             frontend?.layoutManager.ensureLayout(forGlyphRange: glyphRange)
           }
 
@@ -824,10 +826,11 @@ public class Editor: NSObject {
           }
           decoratorCache[nodeKey] = DecoratorCacheItem.cachedView(view)
           if let rangeCacheItem = rangeCache[nodeKey] {
+            let range = actualRange(for: nodeKey) ?? rangeCacheItem.range
             frontend?.layoutManager.invalidateLayout(
-              forCharacterRange: rangeCacheItem.range, actualCharacterRange: nil)
+              forCharacterRange: range, actualCharacterRange: nil)
             let glyphRange = frontend?.layoutManager.glyphRange(
-              forCharacterRange: rangeCacheItem.range, actualCharacterRange: nil) ?? .init(location: rangeCacheItem.range.location, length: rangeCacheItem.range.length)
+              forCharacterRange: range, actualCharacterRange: nil) ?? .init(location: range.location, length: range.length)
             frontend?.layoutManager.ensureLayout(forGlyphRange: glyphRange)
           }
           self.log(
@@ -841,11 +844,12 @@ public class Editor: NSObject {
             node.decorate(view: view)
           }
           if let rangeCacheItem = rangeCache[nodeKey] {
+            let range = actualRange(for: nodeKey) ?? rangeCacheItem.range
             // required so that TextKit does the new size calculation, and correctly hides or unhides the view
             frontend?.layoutManager.invalidateLayout(
-              forCharacterRange: rangeCacheItem.range, actualCharacterRange: nil)
+              forCharacterRange: range, actualCharacterRange: nil)
             let glyphRange = frontend?.layoutManager.glyphRange(
-              forCharacterRange: rangeCacheItem.range, actualCharacterRange: nil) ?? .init(location: rangeCacheItem.range.location, length: rangeCacheItem.range.length)
+              forCharacterRange: range, actualCharacterRange: nil) ?? .init(location: range.location, length: range.length)
             frontend?.layoutManager.ensureLayout(forGlyphRange: glyphRange)
           }
         }
@@ -919,15 +923,16 @@ public class Editor: NSObject {
           node.decoratorWillAppear(view: view)
           decoratorCache[nodeKey] = DecoratorCacheItem.cachedView(view)
           if let rangeCacheItem = rangeCache[nodeKey] {
+            let range = actualRange(for: nodeKey) ?? rangeCacheItem.range
             // Always invalidate layout so TextKit positions and unhides the decorator immediately,
             // regardless of dynamic sizing. Legacy reconciler relies on this for first-frame render.
             frontendAppKit?.layoutManager.invalidateLayout(
-              forCharacterRange: rangeCacheItem.range, actualCharacterRange: nil)
+              forCharacterRange: range, actualCharacterRange: nil)
             // Proactively ensure layout for the affected glyphs so that a draw pass
             // isn't required before LayoutManager can position the decorator. This
             // helps the immediate-mount case when inserting a decorator after a newline.
             let glyphRange = frontendAppKit?.layoutManager.glyphRange(
-              forCharacterRange: rangeCacheItem.range, actualCharacterRange: nil) ?? .init(location: rangeCacheItem.range.location, length: rangeCacheItem.range.length)
+              forCharacterRange: range, actualCharacterRange: nil) ?? .init(location: range.location, length: range.length)
             frontendAppKit?.layoutManager.ensureLayout(forGlyphRange: glyphRange)
           }
 
@@ -950,10 +955,11 @@ public class Editor: NSObject {
           }
           decoratorCache[nodeKey] = DecoratorCacheItem.cachedView(view)
           if let rangeCacheItem = rangeCache[nodeKey] {
+            let range = actualRange(for: nodeKey) ?? rangeCacheItem.range
             frontendAppKit?.layoutManager.invalidateLayout(
-              forCharacterRange: rangeCacheItem.range, actualCharacterRange: nil)
+              forCharacterRange: range, actualCharacterRange: nil)
             let glyphRange = frontendAppKit?.layoutManager.glyphRange(
-              forCharacterRange: rangeCacheItem.range, actualCharacterRange: nil) ?? .init(location: rangeCacheItem.range.location, length: rangeCacheItem.range.length)
+              forCharacterRange: range, actualCharacterRange: nil) ?? .init(location: range.location, length: range.length)
             frontendAppKit?.layoutManager.ensureLayout(forGlyphRange: glyphRange)
           }
           self.log(
@@ -968,10 +974,11 @@ public class Editor: NSObject {
           }
           if let rangeCacheItem = rangeCache[nodeKey] {
             // required so that TextKit does the new size calculation, and correctly hides or unhides the view
+            let range = actualRange(for: nodeKey) ?? rangeCacheItem.range
             frontendAppKit?.layoutManager.invalidateLayout(
-              forCharacterRange: rangeCacheItem.range, actualCharacterRange: nil)
+              forCharacterRange: range, actualCharacterRange: nil)
             let glyphRange = frontendAppKit?.layoutManager.glyphRange(
-              forCharacterRange: rangeCacheItem.range, actualCharacterRange: nil) ?? .init(location: rangeCacheItem.range.location, length: rangeCacheItem.range.length)
+              forCharacterRange: range, actualCharacterRange: nil) ?? .init(location: range.location, length: range.length)
             frontendAppKit?.layoutManager.ensureLayout(forGlyphRange: glyphRange)
           }
         }
@@ -1083,6 +1090,7 @@ public class Editor: NSObject {
   internal func addFenwickDelta(atIndex index: Int, delta: Int) {
     guard useFenwickLocations, delta != 0, index >= 1, index <= locationFenwickTree.size else { return }
     locationFenwickTree.add(index, delta)
+    fenwickHasDeltas = true
   }
 
   /// Gets the accumulated location delta for a node at the given index.
@@ -1095,6 +1103,7 @@ public class Editor: NSObject {
   /// Resets the Fenwick tree (called when locations are fully recomputed).
   internal func resetFenwickTree(capacity: Int) {
     locationFenwickTree = FenwickTree(max(capacity, 1))
+    fenwickHasDeltas = false
   }
 
   /// Gets the actual location for a node, accounting for Fenwick tree deltas.
@@ -1110,7 +1119,7 @@ public class Editor: NSObject {
     guard let dfsPosition = positions[key], dfsPosition > 0 else { return item.location }
 
     // Compute actual location: baseLocation + accumulated delta from Fenwick tree
-    let delta = locationFenwickTree.prefixSum(dfsPosition - 1)
+    let delta = locationFenwickTree.prefixSum(min(dfsPosition - 1, locationFenwickTree.size))
     return max(0, item.location + delta)
   }
 
@@ -1120,8 +1129,20 @@ public class Editor: NSObject {
     guard let item = rangeCache[key] else { return nil }
     guard useFenwickLocations, dfsPosition > 0 else { return item.location }
 
-    let delta = locationFenwickTree.prefixSum(dfsPosition - 1)
+    let delta = locationFenwickTree.prefixSum(min(dfsPosition - 1, locationFenwickTree.size))
     return max(0, item.location + delta)
+  }
+
+  /// Gets the actual full range for a node, accounting for Fenwick deltas.
+  internal func actualRange(for key: NodeKey) -> NSRange? {
+    guard let item = rangeCache[key], let loc = actualLocation(for: key) else { return nil }
+    return NSRange(location: loc, length: item.entireLength)
+  }
+
+  /// Gets the actual full range for a node using a provided DFS position.
+  internal func actualRange(for key: NodeKey, dfsPosition: Int) -> NSRange? {
+    guard let item = rangeCache[key], let loc = actualLocation(for: key, dfsPosition: dfsPosition) else { return nil }
+    return NSRange(location: loc, length: item.entireLength)
   }
 
   private func beginUpdate(

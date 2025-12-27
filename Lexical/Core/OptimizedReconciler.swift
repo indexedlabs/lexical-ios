@@ -1431,7 +1431,7 @@ internal enum OptimizedReconciler {
       if editor.useFenwickLocations {
         // O(log N) Fenwick tree update: add delta for all nodes after this one
         editor.ensureFenwickCapacity(totalNodes)
-        editor.locationFenwickTree.add(nodePosition + 1, delta)
+        editor.addFenwickDelta(atIndex: nodePosition + 1, delta: delta)
         #if DEBUG
         if totalNodes > 100 {
           print("[fastPath_TextOnly] Fenwick update: pos=\(nodePosition + 1) delta=\(delta) treeSize=\(editor.locationFenwickTree.size) cachedPos=\(!needsGlobalOrder)")
@@ -3121,7 +3121,16 @@ internal enum OptimizedReconciler {
 
     // Locate Point at replacement start if possible
     let startLocation = op.selectionRangeToReplace.location
-    let point = try? pointAtStringLocation(startLocation, searchDirection: .forward, rangeCache: editor.rangeCache)
+    let point = try? pointAtStringLocation(
+      startLocation,
+      searchDirection: .forward,
+      rangeCache: editor.rangeCache,
+      fenwickTree: {
+        guard editor.useFenwickLocations, editor.fenwickHasDeltas else { return nil }
+        _ = editor.cachedDFSOrderAndIndex()
+        return editor.locationFenwickTree
+      }()
+    )
 
     // Prepare attributed marked text with styles from owning node if available
     var attrs: [NSAttributedString.Key: Any] = [:]

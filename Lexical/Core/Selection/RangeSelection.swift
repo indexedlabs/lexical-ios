@@ -2105,16 +2105,31 @@ public class RangeSelection: BaseSelection {
       throw LexicalError.invariantViolation("Calling applySelectionRange when no active editor")
     }
 
+    let fenwickTree: FenwickTree? = {
+      guard editor.useFenwickLocations, editor.fenwickHasDeltas else { return nil }
+      _ = editor.cachedDFSOrderAndIndex()
+      return editor.locationFenwickTree
+    }()
+
     @inline(__always)
     func pointAt(
       _ location: Int,
       prefer primary: LexicalTextStorageDirection,
       fallback secondary: LexicalTextStorageDirection
     ) -> Point? {
-      if let p = try? pointAtStringLocation(location, searchDirection: primary, rangeCache: editor.rangeCache) {
+      if let p = try? pointAtStringLocation(
+        location,
+        searchDirection: primary,
+        rangeCache: editor.rangeCache,
+        fenwickTree: fenwickTree)
+      {
         return p
       }
-      return try? pointAtStringLocation(location, searchDirection: secondary, rangeCache: editor.rangeCache)
+      return try? pointAtStringLocation(
+        location,
+        searchDirection: secondary,
+        rangeCache: editor.rangeCache,
+        fenwickTree: fenwickTree)
     }
 
     // For non-collapsed ranges, map the NSRange boundaries in a stable way:
@@ -2154,8 +2169,17 @@ public class RangeSelection: BaseSelection {
          let tn = (try? anchor.getNode()) as? TextNode,
          abs(anchor.offset - focus.offset) > 1,
          abs(anchor.offset - focus.offset) >= tn.getTextContentSize() {
-        if let aPt = try? pointAtStringLocation(anchorOffset, searchDirection: .backward, rangeCache: editor.rangeCache),
-           let fPt = try? pointAtStringLocation(focusOffset, searchDirection: .forward, rangeCache: editor.rangeCache) {
+        if let aPt = try? pointAtStringLocation(
+             anchorOffset,
+             searchDirection: .backward,
+             rangeCache: editor.rangeCache,
+             fenwickTree: fenwickTree),
+           let fPt = try? pointAtStringLocation(
+             focusOffset,
+             searchDirection: .forward,
+             rangeCache: editor.rangeCache,
+             fenwickTree: fenwickTree)
+        {
           self.anchor = aPt; self.focus = fPt
         } else {
           self.anchor = anchor; self.focus = focus
@@ -2218,11 +2242,23 @@ public class RangeSelection: BaseSelection {
     let anchorOffset = affinity == .forward ? range.location : range.location + range.length
     let focusOffset = affinity == .forward ? range.location + range.length : range.location
 
+    let fenwickTree: FenwickTree? = {
+      guard editor.useFenwickLocations, editor.fenwickHasDeltas else { return nil }
+      _ = editor.cachedDFSOrderAndIndex()
+      return editor.locationFenwickTree
+    }()
+
     guard
       let anchor = try? pointAtStringLocation(
-        anchorOffset, searchDirection: affinity, rangeCache: editor.rangeCache),
+        anchorOffset,
+        searchDirection: affinity,
+        rangeCache: editor.rangeCache,
+        fenwickTree: fenwickTree),
       let focus = try? pointAtStringLocation(
-        focusOffset, searchDirection: affinity, rangeCache: editor.rangeCache)
+        focusOffset,
+        searchDirection: affinity,
+        rangeCache: editor.rangeCache,
+        fenwickTree: fenwickTree)
     else {
       return nil
     }

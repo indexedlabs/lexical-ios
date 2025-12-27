@@ -276,7 +276,12 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
           let point = try pointAtStringLocation(
             selectedRange.location,
             searchDirection: .forward,
-            rangeCache: editor.rangeCache)
+            rangeCache: editor.rangeCache,
+            fenwickTree: {
+              guard editor.useFenwickLocations, editor.fenwickHasDeltas else { return nil }
+              _ = editor.cachedDFSOrderAndIndex()
+              return editor.locationFenwickTree
+            }())
         else {
           return
         }
@@ -489,13 +494,24 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
       // find all nodes in selection. Mark dirty. Reconcile. This should correct all the attributes to be what we expect.
       do {
         try editor.update {
+          let fenwickTree: FenwickTree? = {
+            guard editor.useFenwickLocations, editor.fenwickHasDeltas else { return nil }
+            _ = editor.cachedDFSOrderAndIndex()
+            return editor.locationFenwickTree
+          }()
+
           guard
             let anchor = try pointAtStringLocation(
-              previousMarkedRange.location, searchDirection: .forward, rangeCache: editor.rangeCache
+              previousMarkedRange.location,
+              searchDirection: .forward,
+              rangeCache: editor.rangeCache,
+              fenwickTree: fenwickTree
             ),
             let focus = try pointAtStringLocation(
-              previousMarkedRange.location + previousMarkedRange.length, searchDirection: .forward,
-              rangeCache: editor.rangeCache)
+              previousMarkedRange.location + previousMarkedRange.length,
+              searchDirection: .forward,
+              rangeCache: editor.rangeCache,
+              fenwickTree: fenwickTree)
           else {
             return
           }
