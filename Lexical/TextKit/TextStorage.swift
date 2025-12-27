@@ -131,6 +131,7 @@ public class TextStorage: NSTextStorage, ReconcilerTextStorage {
       }
       return
     }
+
     // Since we're in either controller or non-controlled mode, call super -- this will in turn call
     // both replaceCharacters and replaceAttributes. Clamp to storage bounds to avoid crashes
     // if a caller provides an out-of-range NSRange (e.g., after concurrent length changes).

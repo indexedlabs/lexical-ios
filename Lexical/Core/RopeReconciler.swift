@@ -217,6 +217,14 @@ public enum RopeReconciler {
       return !insertedKeys.contains(parentKey)
     }
 
+    // Filter removes: skip nodes whose parent is also being removed.
+    // Removing the parent deletes the entire subtree's content, so deleting descendants would double-delete ranges.
+    let removedKeys = Set(removes.map { $0.key })
+    removes = removes.filter { (_, node) in
+      guard let parentKey = node.parent else { return true }
+      return !removedKeys.contains(parentKey)
+    }
+
     // Batch all text storage edits in a single editing session
     // This prevents layout manager from generating glyphs mid-edit
     let hasEdits = !removes.isEmpty || !inserts.isEmpty || !updates.isEmpty
@@ -292,6 +300,13 @@ public enum RopeReconciler {
     }
     applyDuration = CFAbsoluteTimeGetCurrent() - applyStart
 
+    if !removedKeys.isEmpty {
+      pruneRangeCacheGlobally(nextState: nextState, editor: editor)
+    }
+    if !removedKeys.isEmpty || !inserts.isEmpty {
+      editor.invalidateDFSOrderCache()
+    }
+
     // Reconcile decorator operations
     if let prevState = prevState {
       reconcileDecoratorOpsForSubtree(
@@ -326,7 +341,7 @@ public enum RopeReconciler {
 
     // Check if pending state has actual content
     guard let root = pendingState.getRootNode() else { return false }
-    let children = root.getChildrenKeys(fromLatest: false)
+    let children = root.getChildrenKeys(fromLatest: true)
     if children.isEmpty { return false }
 
     // Compute total content length
@@ -342,10 +357,10 @@ public enum RopeReconciler {
   /// Compute the total text length of a subtree.
   private static func subtreeTotalLength(nodeKey: NodeKey, state: EditorState) -> Int {
     guard let node = state.nodeMap[nodeKey] else { return 0 }
-    var length = node.getPreamble().utf16.count + node.getTextPart().utf16.count + node.getPostamble().utf16.count
+    var length = node.getPreamble().utf16.count + node.getTextPart(fromLatest: true).utf16.count + node.getPostamble().utf16.count
 
     if let element = node as? ElementNode {
-      for childKey in element.getChildrenKeys(fromLatest: false) {
+      for childKey in element.getChildrenKeys(fromLatest: true) {
         length += subtreeTotalLength(nodeKey: childKey, state: state)
       }
     }
@@ -365,7 +380,7 @@ public enum RopeReconciler {
     // Build full attributed content for root's children
     let built = NSMutableAttributedString()
     if let root = pendingState.getRootNode() {
-      for childKey in root.getChildrenKeys(fromLatest: false) {
+      for childKey in root.getChildrenKeys(fromLatest: true) {
         appendAttributedSubtree(into: built, nodeKey: childKey, state: pendingState, theme: theme)
       }
     }
@@ -428,7 +443,7 @@ public enum RopeReconciler {
     // Build full attributed content
     let built = NSMutableAttributedString()
     if let root = nextState.getRootNode() {
-      for childKey in root.getChildrenKeys(fromLatest: false) {
+      for childKey in root.getChildrenKeys(fromLatest: true) {
         appendAttributedSubtree(into: built, nodeKey: childKey, state: nextState, theme: theme)
       }
     }
@@ -500,12 +515,12 @@ public enum RopeReconciler {
     appendStyledString(node.getPreamble())
 
     if let element = node as? ElementNode {
-      for childKey in element.getChildrenKeys(fromLatest: false) {
+      for childKey in element.getChildrenKeys(fromLatest: true) {
         appendAttributedSubtree(into: output, nodeKey: childKey, state: state, theme: theme)
       }
     }
 
-    appendStyledString(node.getTextPart(fromLatest: false))
+    appendStyledString(node.getTextPart(fromLatest: true))
     appendStyledString(node.getPostamble())
   }
 
@@ -542,7 +557,7 @@ public enum RopeReconciler {
     }
 
     item.childrenLength = childrenLen
-    let textLen = node.getTextPart(fromLatest: false).utf16.count
+    let textLen = node.getTextPart(fromLatest: true).utf16.count
     item.textLength = textLen
     cursor += textLen
 
@@ -636,8 +651,10 @@ public enum RopeReconciler {
       // Shift all nodes after this sibling if length changed
       let delta = newPostambleLength - oldPostambleLength
       if delta != 0 {
-        let afterLocation = postambleStart + newPostambleLength
-        shiftRangeCacheAfter(location: afterLocation, delta: delta, excludingKeys: [sibling.key], editor: editor)
+        propagateChildrenLengthDelta(fromParentKey: sibling.parent, delta: delta, editor: editor)
+        let oldEnd = postambleStart + oldPostambleLength
+        let excludingKeys = ancestorKeys(fromParentKey: sibling.parent)
+        shiftRangeCacheAfter(location: oldEnd, delta: delta, excludingKeys: excludingKeys, editor: editor)
       }
     }
   }
@@ -663,7 +680,10 @@ public enum RopeReconciler {
 
     // Shift all nodes after the deleted range
     if deletedLength > 0 {
-      shiftRangeCacheAfter(location: deletedLocation, delta: -deletedLength, excludingKeys: [node.key], editor: editor)
+      propagateChildrenLengthDelta(fromParentKey: node.parent, delta: -deletedLength, editor: editor)
+      let oldEnd = deletedLocation + deletedLength
+      let excludingKeys = ancestorKeys(fromParentKey: node.parent)
+      shiftRangeCacheAfter(location: oldEnd, delta: -deletedLength, excludingKeys: excludingKeys, editor: editor)
     }
   }
 
@@ -722,13 +742,11 @@ public enum RopeReconciler {
       // Shift all nodes after this one if length changed
       if delta != 0 {
         let afterLocation = cacheItem.location + cacheItem.preambleLength + newLength
-        shiftRangeCacheAfter(location: afterLocation, delta: delta, excludingKeys: [next.key], editor: editor)
+        let excludingKeys = ancestorKeys(fromParentKey: next.parent)
+        shiftRangeCacheAfter(location: afterLocation, delta: delta, excludingKeys: excludingKeys, editor: editor)
 
         // Update parent's childrenLength
-        if let parent = next.getParent(), var parentCache = editor.rangeCache[parent.key] {
-          parentCache.childrenLength += delta
-          editor.rangeCache[parent.key] = parentCache
-        }
+        propagateChildrenLengthDelta(fromParentKey: next.parent, delta: delta, editor: editor)
       }
     }
   }
@@ -744,32 +762,78 @@ public enum RopeReconciler {
   ) throws {
     // For element nodes, we mainly care about preamble/postamble changes
     // Children are handled separately via their own dirty tracking
+    guard var cacheItem = editor.rangeCache[prev.key] else { return }
 
-    // Check if preamble changed
-    let prevPreamble = prev.getPreamble()
+    let attributes = AttributeUtils.attributedStringStyles(from: next, state: state, theme: theme)
+
+    // Update preamble if necessary.
     let nextPreamble = next.getPreamble()
+    let nextPreambleLength = nextPreamble.utf16.count
+    let oldPreambleLength = cacheItem.preambleLength
+    if nextPreambleLength != oldPreambleLength
+      || (oldPreambleLength > 0
+        && NSMaxRange(NSRange(location: cacheItem.location, length: oldPreambleLength)) <= textStorage.length
+        && (textStorage.string as NSString).substring(with: NSRange(location: cacheItem.location, length: oldPreambleLength)) != nextPreamble)
+    {
+      let preambleRange = NSRange(location: cacheItem.location, length: oldPreambleLength)
+      let styledPreamble = NSAttributedString(string: nextPreamble, attributes: attributes)
 
-    if prevPreamble != nextPreamble {
-      // Update preamble in text storage
-      if let cacheItem = editor.rangeCache[prev.key] {
-        let preambleRange = NSRange(location: cacheItem.location, length: cacheItem.preambleLength)
-        if preambleRange.location + preambleRange.length <= textStorage.length {
-          textStorage.replaceCharacters(in: preambleRange, with: nextPreamble)
-        }
+      if preambleRange.location + preambleRange.length <= textStorage.length {
+        textStorage.replaceCharacters(in: preambleRange, with: styledPreamble)
+      } else if preambleRange.location <= textStorage.length {
+        textStorage.insert(styledPreamble, at: preambleRange.location)
+      }
+
+      let delta = nextPreambleLength - oldPreambleLength
+      cacheItem.preambleLength = nextPreambleLength
+      editor.rangeCache[next.key] = cacheItem
+
+      if delta != 0 {
+        propagateChildrenLengthDelta(fromParentKey: next.parent, delta: delta, editor: editor)
+        let oldEnd = preambleRange.location + preambleRange.length
+        let excludingKeys = ancestorKeys(fromParentKey: next.parent)
+        shiftRangeCacheAfter(location: oldEnd, delta: delta, excludingKeys: excludingKeys, editor: editor)
       }
     }
 
-    // Check if postamble changed
-    let prevPostamble = prev.getPostamble()
+    // Update postamble if necessary.
     let nextPostamble = next.getPostamble()
+    let nextPostambleLength = nextPostamble.utf16.count
+    let oldPostambleLength = cacheItem.postambleLength
+    if nextPostambleLength != oldPostambleLength
+      || (oldPostambleLength > 0
+        && NSMaxRange(
+          NSRange(
+            location: cacheItem.location + cacheItem.preambleLength + cacheItem.childrenLength + cacheItem.textLength,
+            length: oldPostambleLength
+          )
+        ) <= textStorage.length
+        && (textStorage.string as NSString).substring(
+          with: NSRange(
+            location: cacheItem.location + cacheItem.preambleLength + cacheItem.childrenLength + cacheItem.textLength,
+            length: oldPostambleLength
+          )
+        ) != nextPostamble)
+    {
+      let postambleStart = cacheItem.location + cacheItem.preambleLength + cacheItem.childrenLength + cacheItem.textLength
+      let postambleRange = NSRange(location: postambleStart, length: oldPostambleLength)
+      let styledPostamble = NSAttributedString(string: nextPostamble, attributes: attributes)
 
-    if prevPostamble != nextPostamble {
-      if let cacheItem = editor.rangeCache[prev.key] {
-        let postambleStart = cacheItem.location + cacheItem.preambleLength + cacheItem.childrenLength + cacheItem.textLength
-        let postambleRange = NSRange(location: postambleStart, length: cacheItem.postambleLength)
-        if postambleRange.location + postambleRange.length <= textStorage.length {
-          textStorage.replaceCharacters(in: postambleRange, with: nextPostamble)
-        }
+      if postambleRange.location + postambleRange.length <= textStorage.length {
+        textStorage.replaceCharacters(in: postambleRange, with: styledPostamble)
+      } else if postambleRange.location <= textStorage.length {
+        textStorage.insert(styledPostamble, at: postambleRange.location)
+      }
+
+      let delta = nextPostambleLength - oldPostambleLength
+      cacheItem.postambleLength = nextPostambleLength
+      editor.rangeCache[next.key] = cacheItem
+
+      if delta != 0 {
+        propagateChildrenLengthDelta(fromParentKey: next.parent, delta: delta, editor: editor)
+        let oldEnd = postambleStart + oldPostambleLength
+        let excludingKeys = ancestorKeys(fromParentKey: next.parent)
+        shiftRangeCacheAfter(location: oldEnd, delta: delta, excludingKeys: excludingKeys, editor: editor)
       }
     }
   }
@@ -975,11 +1039,33 @@ public enum RopeReconciler {
 
     editor.rangeCache[node.key] = cacheItem
 
-    // Update parent's childrenLength
-    if let parent = node.getParent(), var parentCache = editor.rangeCache[parent.key] {
-      parentCache.childrenLength += length
-      editor.rangeCache[parent.key] = parentCache
+    propagateChildrenLengthDelta(fromParentKey: node.parent, delta: length, editor: editor)
+  }
+
+  private static func propagateChildrenLengthDelta(
+    fromParentKey parentKey: NodeKey?,
+    delta: Int,
+    editor: Editor
+  ) {
+    guard delta != 0 else { return }
+    var currentKey = parentKey
+    while let key = currentKey {
+      if var item = editor.rangeCache[key] {
+        item.childrenLength += delta
+        editor.rangeCache[key] = item
+      }
+      currentKey = getNodeByKey(key: key)?.parent
     }
+  }
+
+  private static func ancestorKeys(fromParentKey parentKey: NodeKey?) -> Set<NodeKey> {
+    var keys = Set<NodeKey>()
+    var currentKey = parentKey
+    while let key = currentKey, let node = getNodeByKey(key: key) {
+      keys.insert(key)
+      currentKey = node.parent
+    }
+    return keys
   }
 
   /// Shift all range cache entries after the given location by delta.
@@ -1092,6 +1178,8 @@ public enum RopeReconciler {
 
     cacheItem.textLength += delta
     editor.rangeCache[nodeKey] = cacheItem
+
+    propagateChildrenLengthDelta(fromParentKey: getNodeByKey(key: nodeKey)?.parent, delta: delta, editor: editor)
 
     // Shift all nodes after this one
     for (key, var item) in editor.rangeCache where key != nodeKey {
