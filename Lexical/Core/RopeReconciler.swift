@@ -86,6 +86,44 @@ public enum RopeReconciler {
       }
     }
 
+    // Full-editor-state swaps (e.g. `Editor.setEditorState`) must rebuild the entire TextStorage.
+    if editor.dirtyType == .fullReconcile {
+      try fullReconcile(
+        nextState: nextState,
+        editor: editor,
+        textStorage: textStorage,
+        shouldReconcileSelection: shouldReconcileSelection
+      )
+      return
+    }
+
+    // Fresh-document fast hydration: build full string + cache in one pass
+    if shouldHydrateFreshDocument(pendingState: nextState, editor: editor, textStorage: textStorage) {
+      try hydrateFreshDocumentFully(
+        pendingState: nextState,
+        editor: editor,
+        textStorage: textStorage,
+        shouldReconcileSelection: shouldReconcileSelection
+      )
+      return
+    }
+
+    // Selection-only updates should not pay the cost of diffing/reconciling the entire document.
+    if editor.dirtyType == .noDirtyNodes {
+      if shouldReconcileSelection {
+        let prevSelection = prevState?.selection
+        let nextSelection = nextState.selection
+        var selectionsAreDifferent = false
+        if let nextSelection, let prevSelection {
+          selectionsAreDifferent = !nextSelection.isSelection(prevSelection)
+        }
+        if nextSelection == nil || selectionsAreDifferent {
+          try reconcileSelection(prevSelection: prevSelection, nextSelection: nextSelection, editor: editor)
+        }
+      }
+      return
+    }
+
     let theme = editor.getTheme()
     let dirtyNodes = editor.dirtyNodes
 
@@ -93,6 +131,9 @@ public enum RopeReconciler {
     var inserts: [(key: NodeKey, node: Node)] = []
     var removes: [(key: NodeKey, node: Node)] = []
     var updates: [(key: NodeKey, prev: Node, next: Node)] = []
+
+    // Track which keys are being inserted so we can skip children of inserted parents
+    var insertedKeys = Set<NodeKey>()
 
     for (key, _) in dirtyNodes {
       let prevNode = prevState?.nodeMap[key]
@@ -111,6 +152,7 @@ public enum RopeReconciler {
       switch (prevNode, nextNode) {
       case (nil, let next?):
         inserts.append((key, next))
+        insertedKeys.insert(key)
       case (let prev?, nil):
         removes.append((key, prev))
       case (let prev?, let next?):
@@ -120,17 +162,34 @@ public enum RopeReconciler {
       }
     }
 
+    // Filter inserts: skip nodes whose parent is also being inserted
+    // (parent's buildAttributedContent already includes children)
+    inserts = inserts.filter { (_, node) in
+      guard let parentKey = node.parent else { return true }
+      return !insertedKeys.contains(parentKey)
+    }
+
     // Batch all text storage edits in a single editing session
     // This prevents layout manager from generating glyphs mid-edit
     let hasEdits = !removes.isEmpty || !inserts.isEmpty || !updates.isEmpty
+
+    // Set mode to controllerMode so TextStorage accepts our attributed strings
+    #if canImport(UIKit)
+    var previousMode: TextStorageEditingMode = .none
+    if hasEdits {
+      previousMode = (textStorage as? ReconcilerTextStorage)?.mode ?? .none
+      (textStorage as? ReconcilerTextStorage)?.mode = .controllerMode
+    }
+    #elseif os(macOS) && !targetEnvironment(macCatalyst)
+    var previousMode: TextStorageEditingMode = .none
+    if hasEdits {
+      previousMode = (textStorage as? ReconcilerTextStorageAppKit)?.mode ?? .none
+      (textStorage as? ReconcilerTextStorageAppKit)?.mode = .controllerMode
+    }
+    #endif
+
     if hasEdits {
       textStorage.beginEditing()
-    }
-
-    defer {
-      if hasEdits {
-        textStorage.endEditing()
-      }
     }
 
     // Process removes first (in reverse document order to avoid shifting issues)
@@ -158,13 +217,286 @@ public enum RopeReconciler {
       try updateNode(from: prev, to: next, in: textStorage, state: nextState, editor: editor, theme: theme)
     }
 
-    // Reconcile selection
+    // End editing BEFORE selection reconciliation to avoid glyph generation crash
+    if hasEdits {
+      textStorage.endEditing()
+
+      // Restore previous mode
+      #if canImport(UIKit)
+      (textStorage as? ReconcilerTextStorage)?.mode = previousMode
+      #elseif os(macOS) && !targetEnvironment(macCatalyst)
+      (textStorage as? ReconcilerTextStorageAppKit)?.mode = previousMode
+      #endif
+    }
+
+    // Reconcile decorator operations
+    if let prevState = prevState {
+      reconcileDecoratorOpsForSubtree(
+        ancestorKey: kRootNodeKey,
+        prevState: prevState,
+        nextState: nextState,
+        editor: editor
+      )
+    }
+    syncDecoratorPositionCacheWithRangeCache(editor: editor)
+
+    // Reconcile selection (must happen AFTER endEditing to avoid layout manager crash)
     if shouldReconcileSelection {
       try reconcileSelection(
         prevSelection: prevState?.selection,
         nextSelection: nextState.selection,
         editor: editor
       )
+    }
+  }
+
+  // MARK: - Fresh Document Hydration
+
+  /// Check if we should hydrate a fresh document (empty textStorage, non-empty pending state).
+  private static func shouldHydrateFreshDocument(
+    pendingState: EditorState,
+    editor: Editor,
+    textStorage: NSTextStorage
+  ) -> Bool {
+    // Only hydrate if textStorage is empty
+    guard textStorage.length == 0 else { return false }
+
+    // Check if pending state has actual content
+    guard let root = pendingState.getRootNode() else { return false }
+    let children = root.getChildrenKeys(fromLatest: false)
+    if children.isEmpty { return false }
+
+    // Compute total content length
+    var totalLength = 0
+    for childKey in children {
+      totalLength += subtreeTotalLength(nodeKey: childKey, state: pendingState)
+    }
+
+    // Only hydrate if there's actual content
+    return totalLength > 0
+  }
+
+  /// Compute the total text length of a subtree.
+  private static func subtreeTotalLength(nodeKey: NodeKey, state: EditorState) -> Int {
+    guard let node = state.nodeMap[nodeKey] else { return 0 }
+    var length = node.getPreamble().utf16.count + node.getTextPart().utf16.count + node.getPostamble().utf16.count
+
+    if let element = node as? ElementNode {
+      for childKey in element.getChildrenKeys(fromLatest: false) {
+        length += subtreeTotalLength(nodeKey: childKey, state: state)
+      }
+    }
+
+    return length
+  }
+
+  /// Hydrate a fresh document by building the full attributed string and range cache.
+  private static func hydrateFreshDocumentFully(
+    pendingState: EditorState,
+    editor: Editor,
+    textStorage: NSTextStorage,
+    shouldReconcileSelection: Bool
+  ) throws {
+    let theme = editor.getTheme()
+
+    // Build full attributed content for root's children
+    let built = NSMutableAttributedString()
+    if let root = pendingState.getRootNode() {
+      for childKey in root.getChildrenKeys(fromLatest: false) {
+        appendAttributedSubtree(into: built, nodeKey: childKey, state: pendingState, theme: theme)
+      }
+    }
+
+    // Set mode to controllerMode so TextStorage accepts our attributed string
+    #if canImport(UIKit)
+    let previousMode = (textStorage as? ReconcilerTextStorage)?.mode ?? .none
+    (textStorage as? ReconcilerTextStorage)?.mode = .controllerMode
+    #elseif os(macOS) && !targetEnvironment(macCatalyst)
+    let previousMode: TextStorageEditingMode = (textStorage as? ReconcilerTextStorageAppKit)?.mode ?? .none
+    (textStorage as? ReconcilerTextStorageAppKit)?.mode = .controllerMode
+    #endif
+
+    // Replace textStorage contents
+    textStorage.beginEditing()
+    textStorage.replaceCharacters(in: NSRange(location: 0, length: textStorage.length), with: built)
+    textStorage.fixAttributes(in: NSRange(location: 0, length: built.length))
+    textStorage.endEditing()
+
+    // Restore previous mode
+    #if canImport(UIKit)
+    (textStorage as? ReconcilerTextStorage)?.mode = previousMode
+    #elseif os(macOS) && !targetEnvironment(macCatalyst)
+    (textStorage as? ReconcilerTextStorageAppKit)?.mode = previousMode
+    #endif
+
+    // Recompute range cache from root
+    _ = recomputeRangeCacheSubtree(nodeKey: kRootNodeKey, state: pendingState, startLocation: 0, editor: editor)
+    editor.invalidateDFSOrderCache()
+
+    // Reconcile decorator operations
+    reconcileDecoratorOpsForSubtree(
+      ancestorKey: kRootNodeKey,
+      prevState: editor.getEditorState(),
+      nextState: pendingState,
+      editor: editor
+    )
+    syncDecoratorPositionCacheWithRangeCache(editor: editor)
+
+    // Reconcile selection after textStorage is fully updated
+    if shouldReconcileSelection {
+      try reconcileSelection(
+        prevSelection: nil,
+        nextSelection: pendingState.selection,
+        editor: editor
+      )
+    }
+  }
+
+  /// Full reconcile fallback - rebuild entire textStorage from pending state.
+  private static func fullReconcile(
+    nextState: EditorState,
+    editor: Editor,
+    textStorage: NSTextStorage,
+    shouldReconcileSelection: Bool
+  ) throws {
+    let theme = editor.getTheme()
+    let currentState = editor.getEditorState()
+
+    // Build full attributed content
+    let built = NSMutableAttributedString()
+    if let root = nextState.getRootNode() {
+      for childKey in root.getChildrenKeys(fromLatest: false) {
+        appendAttributedSubtree(into: built, nodeKey: childKey, state: nextState, theme: theme)
+      }
+    }
+
+    // Set mode to controllerMode so TextStorage accepts our attributed string
+    #if canImport(UIKit)
+    let previousMode = (textStorage as? ReconcilerTextStorage)?.mode ?? .none
+    (textStorage as? ReconcilerTextStorage)?.mode = .controllerMode
+    #elseif os(macOS) && !targetEnvironment(macCatalyst)
+    let previousMode: TextStorageEditingMode = (textStorage as? ReconcilerTextStorageAppKit)?.mode ?? .none
+    (textStorage as? ReconcilerTextStorageAppKit)?.mode = .controllerMode
+    #endif
+
+    // Replace textStorage contents
+    textStorage.beginEditing()
+    let fullRange = NSRange(location: 0, length: textStorage.length)
+    textStorage.replaceCharacters(in: fullRange, with: built)
+    textStorage.fixAttributes(in: NSRange(location: 0, length: built.length))
+    textStorage.endEditing()
+
+    // Restore previous mode
+    #if canImport(UIKit)
+    (textStorage as? ReconcilerTextStorage)?.mode = previousMode
+    #elseif os(macOS) && !targetEnvironment(macCatalyst)
+    (textStorage as? ReconcilerTextStorageAppKit)?.mode = previousMode
+    #endif
+
+    // Recompute entire range cache
+    _ = recomputeRangeCacheSubtree(nodeKey: kRootNodeKey, state: nextState, startLocation: 0, editor: editor)
+    pruneRangeCacheGlobally(nextState: nextState, editor: editor)
+    editor.invalidateDFSOrderCache()
+
+    // Reconcile decorator operations
+    reconcileDecoratorOpsForSubtree(
+      ancestorKey: kRootNodeKey,
+      prevState: currentState,
+      nextState: nextState,
+      editor: editor
+    )
+    syncDecoratorPositionCacheWithRangeCache(editor: editor)
+
+    // Reconcile selection
+    if shouldReconcileSelection {
+      try reconcileSelection(
+        prevSelection: nil,
+        nextSelection: nextState.selection,
+        editor: editor
+      )
+    }
+  }
+
+  /// Build attributed content for a subtree and append to output.
+  private static func appendAttributedSubtree(
+    into output: NSMutableAttributedString,
+    nodeKey: NodeKey,
+    state: EditorState,
+    theme: Theme
+  ) {
+    guard let node = state.nodeMap[nodeKey] else { return }
+
+    let attributes = AttributeUtils.attributedStringStyles(from: node, state: state, theme: theme)
+
+    func appendStyledString(_ string: String) {
+      guard !string.isEmpty else { return }
+      let styledString = NSAttributedString(string: string, attributes: attributes)
+      output.append(styledString)
+    }
+
+    appendStyledString(node.getPreamble())
+
+    if let element = node as? ElementNode {
+      for childKey in element.getChildrenKeys(fromLatest: false) {
+        appendAttributedSubtree(into: output, nodeKey: childKey, state: state, theme: theme)
+      }
+    }
+
+    appendStyledString(node.getTextPart(fromLatest: false))
+    appendStyledString(node.getPostamble())
+  }
+
+  /// Recompute range cache for a subtree. Returns total length written.
+  @discardableResult
+  private static func recomputeRangeCacheSubtree(
+    nodeKey: NodeKey,
+    state: EditorState,
+    startLocation: Int,
+    editor: Editor
+  ) -> Int {
+    guard let node = state.nodeMap[nodeKey] else { return 0 }
+
+    var item = editor.rangeCache[nodeKey] ?? RangeCacheItem()
+    if item.nodeIndex == 0 {
+      item.nodeIndex = editor.nextFenwickNodeIndex
+      editor.nextFenwickNodeIndex += 1
+    }
+    item.location = startLocation
+
+    let preLen = node.getPreamble().utf16.count
+    item.preambleLength = preLen
+
+    var cursor = startLocation + preLen
+    var childrenLen = 0
+
+    if let element = node as? ElementNode {
+      for childKey in element.getChildrenKeys(fromLatest: false) {
+        let childLen = recomputeRangeCacheSubtree(
+          nodeKey: childKey, state: state, startLocation: cursor, editor: editor)
+        cursor += childLen
+        childrenLen += childLen
+      }
+    }
+
+    item.childrenLength = childrenLen
+    let textLen = node.getTextPart(fromLatest: false).utf16.count
+    item.textLength = textLen
+    cursor += textLen
+
+    let postLen = node.getPostamble().utf16.count
+    item.postambleLength = postLen
+
+    editor.rangeCache[nodeKey] = item
+    return preLen + childrenLen + textLen + postLen
+  }
+
+  /// Remove stale entries from range cache.
+  private static func pruneRangeCacheGlobally(nextState: EditorState, editor: Editor) {
+    let validKeys = Set(nextState.nodeMap.keys)
+    for key in editor.rangeCache.keys {
+      if !validKeys.contains(key) {
+        editor.rangeCache.removeValue(forKey: key)
+      }
     }
   }
 
@@ -181,6 +513,12 @@ public enum RopeReconciler {
     // Only handle text-producing nodes
     guard let parent = node.getParent() else { return }
 
+    // When inserting an element node, the previous sibling's postamble may change
+    // (e.g., paragraph gains a trailing newline when it gets a next sibling)
+    if let prevSibling = node.getPreviousSibling() {
+      try updateSiblingPostamble(prevSibling, in: textStorage, state: state, editor: editor, theme: theme)
+    }
+
     // Get insert location from range cache or compute it
     let location = computeInsertLocation(for: node, parent: parent, editor: editor)
 
@@ -194,6 +532,51 @@ public enum RopeReconciler {
     // Always update range cache for the node, even if empty.
     // This is needed because children will reference parent's cache.
     updateRangeCache(for: node, at: location, length: content.length, editor: editor)
+  }
+
+  /// Update a sibling's postamble after a new sibling is inserted.
+  private static func updateSiblingPostamble(
+    _ sibling: Node,
+    in textStorage: NSTextStorage,
+    state: EditorState,
+    editor: Editor,
+    theme: Theme
+  ) throws {
+    guard let cacheItem = editor.rangeCache[sibling.key] else { return }
+
+    // Get the current postamble from the node (which now reflects the new sibling)
+    let newPostamble = sibling.getPostamble()
+    let oldPostambleLength = cacheItem.postambleLength
+    let newPostambleLength = newPostamble.utf16.count
+
+    // If postamble length changed, we need to update textStorage
+    if newPostambleLength != oldPostambleLength {
+      let postambleStart = cacheItem.location + cacheItem.preambleLength + cacheItem.childrenLength + cacheItem.textLength
+      let oldPostambleRange = NSRange(location: postambleStart, length: oldPostambleLength)
+
+      // Build attributed postamble with proper styling
+      let attributes = AttributeUtils.attributedStringStyles(from: sibling, state: state, theme: theme)
+      let styledPostamble = NSAttributedString(string: newPostamble, attributes: attributes)
+
+      if oldPostambleRange.location + oldPostambleRange.length <= textStorage.length {
+        textStorage.replaceCharacters(in: oldPostambleRange, with: styledPostamble)
+      } else if oldPostambleRange.location <= textStorage.length {
+        // Append at end
+        textStorage.insert(styledPostamble, at: oldPostambleRange.location)
+      }
+
+      // Update range cache for the sibling
+      var updatedItem = cacheItem
+      updatedItem.postambleLength = newPostambleLength
+      editor.rangeCache[sibling.key] = updatedItem
+
+      // Shift all nodes after this sibling if length changed
+      let delta = newPostambleLength - oldPostambleLength
+      if delta != 0 {
+        let afterLocation = postambleStart + newPostambleLength
+        shiftRangeCacheAfter(location: afterLocation, delta: delta, excludingKeys: [sibling.key], editor: editor)
+      }
+    }
   }
 
   /// Remove a node from the text storage.
@@ -579,6 +962,15 @@ public enum RopeReconciler {
     }
     let markedAttr = NSAttributedString(string: operation.markedTextString, attributes: attrs)
 
+    // Set mode to controllerMode so TextStorage accepts our attributed string
+    #if canImport(UIKit)
+    let previousMode = (textStorage as? ReconcilerTextStorage)?.mode ?? .none
+    (textStorage as? ReconcilerTextStorage)?.mode = .controllerMode
+    #elseif os(macOS) && !targetEnvironment(macCatalyst)
+    let previousMode: TextStorageEditingMode = (textStorage as? ReconcilerTextStorageAppKit)?.mode ?? .none
+    (textStorage as? ReconcilerTextStorageAppKit)?.mode = .controllerMode
+    #endif
+
     // Replace characters in storage at requested range
     textStorage.beginEditing()
     textStorage.replaceCharacters(in: operation.selectionRangeToReplace, with: markedAttr)
@@ -586,6 +978,13 @@ public enum RopeReconciler {
       in: NSRange(location: operation.selectionRangeToReplace.location, length: markedAttr.length)
     )
     textStorage.endEditing()
+
+    // Restore previous mode
+    #if canImport(UIKit)
+    (textStorage as? ReconcilerTextStorage)?.mode = previousMode
+    #elseif os(macOS) && !targetEnvironment(macCatalyst)
+    (textStorage as? ReconcilerTextStorageAppKit)?.mode = previousMode
+    #endif
 
     // Update range cache if we can resolve to a TextNode
     if let p = point, let _ = nextState.nodeMap[p.key] as? TextNode {
@@ -643,5 +1042,185 @@ public enum RopeReconciler {
     #elseif os(macOS) && !targetEnvironment(macCatalyst)
     editor.frontendAppKit?.setMarkedTextFromReconciler(markedText, selectedRange: selectedRange)
     #endif
+  }
+
+  // MARK: - Decorator Reconciliation
+
+  /// Get the ReconcilerTextStorage from the editor (platform-specific).
+  private static func reconcilerTextStorage(_ editor: Editor) -> ReconcilerTextStorage? {
+    #if canImport(UIKit)
+    return editor.textStorage
+    #elseif os(macOS) && !targetEnvironment(macCatalyst)
+    return editor.textStorage as? ReconcilerTextStorage
+    #else
+    return nil
+    #endif
+  }
+
+  /// Get all node keys in DFS order from a subtree.
+  private static func subtreeKeysDFS(rootKey: NodeKey, state: EditorState) -> [NodeKey] {
+    var result: [NodeKey] = []
+    var stack: [NodeKey] = [rootKey]
+    while !stack.isEmpty {
+      let key = stack.removeLast()
+      result.append(key)
+      if let element = state.nodeMap[key] as? ElementNode {
+        // Push children in reverse order so they're popped in correct order
+        for childKey in element.getChildrenKeys(fromLatest: false).reversed() {
+          stack.append(childKey)
+        }
+      }
+    }
+    return result
+  }
+
+  /// Get attachment locations from text storage by scanning for attachment attributes.
+  private static func attachmentLocationsByKey(textStorage: ReconcilerTextStorage) -> [NodeKey: Int] {
+    let storageLen = textStorage.length
+    guard storageLen > 0 else { return [:] }
+    var locations: [NodeKey: Int] = [:]
+    #if canImport(UIKit)
+    textStorage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storageLen)) { value, range, _ in
+      if let att = value as? TextAttachment, let key = att.key {
+        locations[key] = range.location
+      }
+    }
+    #elseif os(macOS) && !targetEnvironment(macCatalyst)
+    textStorage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storageLen)) { value, range, _ in
+      if let att = value as? TextAttachmentAppKit, let key = att.key {
+        locations[key] = range.location
+      }
+    }
+    #endif
+    return locations
+  }
+
+  /// Reconcile decorator operations for a subtree.
+  /// This handles adding/removing decorator views and updating position caches.
+  internal static func reconcileDecoratorOpsForSubtree(
+    ancestorKey: NodeKey,
+    prevState: EditorState,
+    nextState: EditorState,
+    editor: Editor
+  ) {
+    guard let textStorage = reconcilerTextStorage(editor) else { return }
+
+    func isAttached(key: NodeKey, in state: EditorState) -> Bool {
+      var cursor: NodeKey? = key
+      while let k = cursor {
+        if k == kRootNodeKey { return true }
+        guard let node = state.nodeMap[k] else { return false }
+        cursor = node.parent
+      }
+      return false
+    }
+
+    var attachmentLocations: [NodeKey: Int]? = nil
+    func attachmentLocation(for key: NodeKey) -> Int? {
+      if let loc = editor.rangeCache[key]?.location { return loc }
+      if attachmentLocations == nil {
+        attachmentLocations = attachmentLocationsByKey(textStorage: textStorage)
+      }
+      return attachmentLocations?[key]
+    }
+
+    func decoratorKeys(in state: EditorState, under root: NodeKey) -> Set<NodeKey> {
+      let keys = subtreeKeysDFS(rootKey: root, state: state)
+      var out: Set<NodeKey> = []
+      for k in keys {
+        guard isAttached(key: k, in: state) else { continue }
+        if state.nodeMap[k] is DecoratorNode { out.insert(k) }
+      }
+      return out
+    }
+
+    let prevDecos = decoratorKeys(in: prevState, under: ancestorKey)
+    let nextDecos = decoratorKeys(in: nextState, under: ancestorKey)
+
+    // Removals: purge position + cache and destroy views
+    let removed = prevDecos.subtracting(nextDecos)
+    for k in removed {
+      let decoratorNode = nextState.nodeMap[k] as? DecoratorNode
+      let existsInNextState = decoratorNode != nil
+      let isAttachedInNextState = existsInNextState && isAttached(key: k, in: nextState)
+      if existsInNextState && isAttachedInNextState && ancestorKey != kRootNodeKey {
+        continue
+      }
+      decoratorView(forKey: k, createIfNecessary: false)?.removeFromSuperview()
+      destroyCachedDecoratorView(forKey: k)
+      textStorage.decoratorPositionCache[k] = nil
+      textStorage.decoratorPositionCacheDirtyKeys.insert(k)
+    }
+
+    // Additions: ensure cache entry exists and set position
+    let added = nextDecos.subtracting(prevDecos)
+    for k in added {
+      if editor.decoratorCache[k] == nil { editor.decoratorCache[k] = .needsCreation }
+      if let loc = attachmentLocation(for: k) {
+        textStorage.decoratorPositionCache[k] = loc
+        textStorage.decoratorPositionCacheDirtyKeys.insert(k)
+        let safe = NSIntersectionRange(NSRange(location: loc, length: 1), NSRange(location: 0, length: textStorage.length))
+        if safe.length > 0 { textStorage.fixAttributes(in: safe) }
+      }
+    }
+
+    // Persist positions for all present decorators and mark dirty ones for decorating
+    for k in nextDecos {
+      if let loc = attachmentLocation(for: k) {
+        let oldLoc = textStorage.decoratorPositionCache[k]
+        if oldLoc != loc {
+          textStorage.decoratorPositionCache[k] = loc
+          textStorage.decoratorPositionCacheDirtyKeys.insert(k)
+        }
+        let safe = NSIntersectionRange(NSRange(location: loc, length: 1), NSRange(location: 0, length: textStorage.length))
+        if safe.length > 0 { textStorage.fixAttributes(in: safe) }
+      }
+      if editor.dirtyNodes[k] != nil {
+        if let cacheItem = editor.decoratorCache[k], let view = cacheItem.view {
+          editor.decoratorCache[k] = .needsDecorating(view)
+        }
+      }
+    }
+  }
+
+  /// Sync decorator position cache with range cache after updates.
+  private static func syncDecoratorPositionCacheWithRangeCache(editor: Editor) {
+    guard let ts = reconcilerTextStorage(editor), !ts.decoratorPositionCache.isEmpty else { return }
+    var attachmentLocations: [NodeKey: Int]? = nil
+
+    for (key, oldLoc) in ts.decoratorPositionCache {
+      let candidateLoc = editor.rangeCache[key]?.location ?? oldLoc
+      let storageLen = ts.length
+      var resolvedLoc: Int = candidateLoc
+
+      #if canImport(UIKit)
+      if storageLen > 0, candidateLoc >= 0, candidateLoc < storageLen,
+         let att = ts.attribute(.attachment, at: candidateLoc, effectiveRange: nil) as? TextAttachment,
+         att.key == key {
+        resolvedLoc = candidateLoc
+      } else if storageLen > 0 {
+        if attachmentLocations == nil {
+          attachmentLocations = attachmentLocationsByKey(textStorage: ts)
+        }
+        if let foundAt = attachmentLocations?[key] { resolvedLoc = foundAt }
+      }
+      #elseif os(macOS) && !targetEnvironment(macCatalyst)
+      if storageLen > 0, candidateLoc >= 0, candidateLoc < storageLen,
+         let att = ts.attribute(.attachment, at: candidateLoc, effectiveRange: nil) as? TextAttachmentAppKit,
+         att.key == key {
+        resolvedLoc = candidateLoc
+      } else if storageLen > 0 {
+        if attachmentLocations == nil {
+          attachmentLocations = attachmentLocationsByKey(textStorage: ts)
+        }
+        if let foundAt = attachmentLocations?[key] { resolvedLoc = foundAt }
+      }
+      #endif
+
+      if oldLoc != resolvedLoc {
+        ts.decoratorPositionCache[key] = resolvedLoc
+        ts.decoratorPositionCacheDirtyKeys.insert(key)
+      }
+    }
   }
 }

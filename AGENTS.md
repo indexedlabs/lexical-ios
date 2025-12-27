@@ -45,6 +45,34 @@ This repo contains Lexical iOS — a Swift Package with a modular plugin archite
   - Build: `xcodebuild -scheme Lexical -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.0' build`
   - Unit tests (always use Lexical-Package scheme): `xcodebuild -workspace Playground/LexicalPlayground.xcodeproj/project.xcworkspace -scheme Lexical-Package -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.0' test`
   - Filter tests: `xcodebuild -workspace Playground/LexicalPlayground.xcodeproj/project.xcworkspace -scheme Lexical-Package -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.0' -only-testing:LexicalTests/NodeTests test`
+  - **Run tests excluding benchmarks (recommended for regular development)**:
+    ```bash
+    xcodebuild -workspace Playground/LexicalPlayground.xcodeproj/project.xcworkspace \
+      -scheme Lexical-Package \
+      -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.0' \
+      -skip-testing:LexicalTests/RopeChunkIterationTests \
+      -skip-testing:LexicalTests/RopeTextStoragePerformanceTests \
+      -skip-testing:LexicalTests/ReconcilerBenchmarkTests \
+      -skip-testing:LexicalTests/MixedDocumentLiveBenchmarkTests \
+      -skip-testing:LexicalTests/MixedDocumentBenchmarkTests \
+      -skip-testing:LexicalTests/InsertBenchmarkTests \
+      -skip-testing:LexicalTests/DFSOrderIndexingBenchmarkTests \
+      test
+    ```
+  - **Run only benchmark tests** (when profiling performance):
+    ```bash
+    xcodebuild -workspace Playground/LexicalPlayground.xcodeproj/project.xcworkspace \
+      -scheme Lexical-Package \
+      -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.0' \
+      -only-testing:LexicalTests/RopeChunkIterationTests \
+      -only-testing:LexicalTests/RopeTextStoragePerformanceTests \
+      -only-testing:LexicalTests/ReconcilerBenchmarkTests \
+      -only-testing:LexicalTests/MixedDocumentLiveBenchmarkTests \
+      -only-testing:LexicalTests/MixedDocumentBenchmarkTests \
+      -only-testing:LexicalTests/InsertBenchmarkTests \
+      -only-testing:LexicalTests/DFSOrderIndexingBenchmarkTests \
+      test
+    ```
 
 - Playground app (Xcode/iOS simulator):
   ```bash
@@ -150,6 +178,15 @@ This repo contains Lexical iOS — a Swift Package with a modular plugin archite
 - Place tests in the corresponding `*Tests` target; mirror source structure where practical.
 - New public APIs or behavior changes require tests. Aim to cover edge cases found in `LexicalTests/EdgeCases` and performance scenarios separately.
 - Run locally with `swift test` or via Xcode using the `Lexical-Package` scheme on iOS simulator.
+- **Always log test output to a file for analysis**: Test runs can take a long time. Log output to a tmp file so you can analyze results without re-running. Example:
+  ```bash
+  xcodebuild -workspace Playground/LexicalPlayground.xcodeproj/project.xcworkspace \
+    -scheme Lexical-Package \
+    -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.0' \
+    test 2>&1 | tee /tmp/lexical-test-results.log
+  # Then analyze results:
+  grep -E "(Test Case|passed|failed|error:)" /tmp/lexical-test-results.log
+  ```
 - Important: For any significant change — especially items taken from `IMPLEMENTATION.md` — add or update unit tests that:
   - Prove the new/changed behavior (happy path) and key edge cases.
   - Regress the original failure if fixing a bug.
