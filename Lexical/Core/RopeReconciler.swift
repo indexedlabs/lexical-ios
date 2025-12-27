@@ -705,6 +705,12 @@ public enum RopeReconciler {
     // Always update range cache for the node, even if empty.
     // This is needed because children will reference parent's cache.
     updateRangeCache(for: node, at: location, length: content.length, editor: editor)
+
+    // Insertions of element nodes can include the entire subtree's content (preamble + children + postamble).
+    // Ensure the range cache is populated for all descendants so selection mapping works.
+    if node is ElementNode {
+      _ = recomputeRangeCacheSubtree(nodeKey: node.key, state: state, startLocation: location, editor: editor)
+    }
   }
 
   /// Update a sibling's postamble after a new sibling is inserted.
