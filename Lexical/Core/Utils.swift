@@ -135,9 +135,13 @@ internal func internallyMarkNodeAsDirty(node: Node, cause: DirtyStatusCause = .e
   if let parent = latest.parent {
     internallyMarkParentElementsAsDirty(parentKey: parent, nodeMap: nodeMap, editor: editor)
   }
-  if let elementNode = node as? ElementNode {
-    internallyMarkChildrenAsDirty(element: elementNode, nodeMap: nodeMap, editor: editor)
-  }
+  // NOTE: We intentionally do NOT mark children dirty when making an ElementNode writable.
+  // Previously this called internallyMarkChildrenAsDirty(), but that caused O(N) dirty
+  // tracking when modifying any ElementNode (especially the RootNode). Making a parent
+  // writable to add/remove a child doesn't change existing children's content. Children
+  // are only dirty if THEY are modified (via their own getWritable() call).
+  // The reconciler already filters by `prev !== next` to handle stale dirty entries,
+  // but the excessive dirty tracking caused memory spikes during insert operations.
 
   editor.dirtyType = .hasDirtyNodes
   editor.dirtyNodes[latest.key] = cause
