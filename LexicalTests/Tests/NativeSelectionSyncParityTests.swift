@@ -28,6 +28,30 @@ final class NativeSelectionSyncParityTests: XCTestCase {
     #endif
   }
 
+  private func drainMainQueue(timeout: TimeInterval = 2) {
+    let exp = expectation(description: "drain main queue")
+    DispatchQueue.main.async { exp.fulfill() }
+    wait(for: [exp], timeout: timeout)
+  }
+
+  #if canImport(UIKit)
+  private func assertNativeSelectionRoundTrips(
+    _ editor: Editor,
+    _ testView: TestEditorView,
+    file: StaticString = #file,
+    line: UInt = #line
+  ) throws {
+    try editor.read {
+      guard let selection = try getSelection() as? RangeSelection else {
+        XCTFail("Expected RangeSelection", file: file, line: line)
+        return
+      }
+      let native = try createNativeSelection(from: selection, editor: editor)
+      XCTAssertEqual(native.range, testView.selectedRange, "Selection did not round-trip", file: file, line: line)
+    }
+  }
+  #endif
+
   /// Test that changing native selection updates Lexical selection.
   ///
   /// This test reproduces a bug where `pointAtStringLocation` is called
@@ -290,5 +314,115 @@ final class NativeSelectionSyncParityTests: XCTestCase {
 
     XCTAssertEqual(anchorKey, worldKey, "Selection should be in 'World' text node")
     XCTAssertEqual(anchorOffset, 2, "Offset should be 2 within 'World' node")
+  }
+
+  func testTypingInsertsTextAndKeepsSelectionInSync() throws {
+    let testView = createTestEditorView()
+    let editor = testView.editor
+
+    var textNodeKey: NodeKey = ""
+    try editor.update {
+      guard let root = getRoot() else { return }
+      try root.clear()
+      let paragraph = createParagraphNode()
+      let textNode = createTextNode(text: "Hello World")
+      textNodeKey = textNode.getKey()
+      try paragraph.append([textNode])
+      try root.append([paragraph])
+      _ = try textNode.select(anchorOffset: 0, focusOffset: 0)
+    }
+
+    let nativeBefore = testView.attributedTextString as NSString
+    let helloRange = nativeBefore.range(of: "Hello")
+    XCTAssertNotEqual(helloRange.location, NSNotFound)
+
+    testView.setSelectedRange(NSRange(location: helloRange.location + helloRange.length, length: 0))
+    applyNativeSelectionChange(testView)
+
+    testView.insertText("X")
+    drainMainQueue()
+
+    XCTAssertTrue(testView.attributedTextString.contains("HelloX World"))
+
+    var lexicalText = ""
+    var anchorKey: NodeKey = ""
+    var anchorOffset = -1
+    var focusOffset = -1
+    try editor.read {
+      lexicalText = getRoot()?.getTextContent() ?? ""
+      guard let selection = try getSelection() as? RangeSelection else {
+        XCTFail("Expected RangeSelection after typing")
+        return
+      }
+      anchorKey = selection.anchor.key
+      anchorOffset = selection.anchor.offset
+      focusOffset = selection.focus.offset
+    }
+    XCTAssertEqual(lexicalText, testView.text)
+
+    let nativeAfter = testView.attributedTextString as NSString
+    let helloXRange = nativeAfter.range(of: "HelloX")
+    XCTAssertNotEqual(helloXRange.location, NSNotFound)
+    XCTAssertEqual(testView.selectedRange.length, 0)
+    XCTAssertEqual(testView.selectedRange.location, helloXRange.location + helloXRange.length)
+
+    XCTAssertEqual(anchorKey, textNodeKey)
+    XCTAssertEqual(anchorOffset, 6)
+    XCTAssertEqual(focusOffset, 6)
+
+    #if canImport(UIKit)
+    try assertNativeSelectionRoundTrips(editor, testView)
+    #endif
+  }
+
+  func testInsertNewlineThenMoveCaretAndTypeKeepsSelectionInSync() throws {
+    let testView = createTestEditorView()
+    let editor = testView.editor
+
+    try editor.update {
+      guard let root = getRoot() else { return }
+      try root.clear()
+      let paragraph = createParagraphNode()
+      let textNode = createTextNode(text: "HelloWorld")
+      try paragraph.append([textNode])
+      try root.append([paragraph])
+      _ = try textNode.select(anchorOffset: 0, focusOffset: 0)
+    }
+
+    let nativeBefore = testView.attributedTextString as NSString
+    let helloRange = nativeBefore.range(of: "Hello")
+    XCTAssertNotEqual(helloRange.location, NSNotFound)
+
+    testView.setSelectedRange(NSRange(location: helloRange.location + helloRange.length, length: 0))
+    applyNativeSelectionChange(testView)
+
+    testView.insertText("\n")
+    drainMainQueue()
+
+    XCTAssertTrue(testView.attributedTextString.contains("Hello\nWorld"))
+
+    var lexicalAfterNewline = ""
+    try editor.read { lexicalAfterNewline = getRoot()?.getTextContent() ?? "" }
+    XCTAssertEqual(lexicalAfterNewline, testView.text)
+
+    // Move caret to the start of "World", sync selection, then type a character.
+    let nativeAfterNewline = testView.attributedTextString as NSString
+    let worldRange = nativeAfterNewline.range(of: "World")
+    XCTAssertNotEqual(worldRange.location, NSNotFound)
+
+    testView.setSelectedRange(NSRange(location: worldRange.location, length: 0))
+    applyNativeSelectionChange(testView)
+
+    testView.insertText("X")
+    drainMainQueue()
+
+    XCTAssertTrue(testView.attributedTextString.contains("Hello\nXWorld"))
+    var lexicalAfterType = ""
+    try editor.read { lexicalAfterType = getRoot()?.getTextContent() ?? "" }
+    XCTAssertEqual(lexicalAfterType, testView.text)
+
+    #if canImport(UIKit)
+    try assertNativeSelectionRoundTrips(editor, testView)
+    #endif
   }
 }
