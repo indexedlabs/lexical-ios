@@ -461,6 +461,43 @@ final class LargePastePositionAndContentTests: XCTestCase {
     print("[Memory] Peak during test: \(formatBytesMB(sampler.maxPhysicalFootprintBytes))")
   }
 
+  /// Test that pauses for heap capture. Run with:
+  /// swift test --filter testSelectAll_PauseForHeapCapture &
+  /// sleep 10 && heap $(pgrep -f xctest) -s > heap.txt
+  func testSelectAll_PauseForHeapCapture() throws {
+    let testView = createTestEditorView()
+    let largeContent = generateLargeContent(lines: lineCount)
+
+    // Paste 3x
+    for i in 1...3 {
+      let currentLength = testView.textStorageLength
+      testView.setSelectedRange(NSRange(location: currentLength, length: 0))
+      try testView.editor.update {
+        guard let selection = try getSelection() as? RangeSelection else { return }
+        try insertPlainText(selection: selection, text: largeContent)
+      }
+    }
+    print("[HeapTest] Paste complete: \(testView.textStorageLength) chars")
+
+    // Select all
+    let totalLength = testView.textStorageLength
+    testView.setSelectedRange(NSRange(location: 0, length: totalLength))
+    print("[HeapTest] Select all triggered")
+
+    // Run runloop to trigger the spike
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.5))
+
+    let mem = currentProcessMemorySnapshot()
+    print("[HeapTest] Memory after spike: \(formatBytesMB(mem?.bestCurrentBytes ?? 0))")
+    print("[HeapTest] PID: \(ProcessInfo.processInfo.processIdentifier)")
+    print("[HeapTest] Pausing 10s for heap capture... run: heap \(ProcessInfo.processInfo.processIdentifier) -s")
+
+    // Pause to allow heap capture
+    Thread.sleep(forTimeInterval: 10.0)
+
+    print("[HeapTest] Done")
+  }
+
   // MARK: - Helper for asserting Int equality with tolerance
 
   private func assertEqualWithTolerance(_ a: Int, _ b: Int, tolerance: Int, _ message: String, file: StaticString = #file, line: UInt = #line) {
