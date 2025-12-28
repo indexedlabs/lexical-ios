@@ -442,6 +442,15 @@ public enum RopeReconciler {
         theme: theme,
         textStorage: textStorage
       )
+    } else if hasEdits, useLazyLocations {
+      // Even in text-only updates, we must ensure extraLineFragmentAttributes is set
+      // correctly so that empty trailing paragraphs render properly.
+      updateExtraLineFragmentAttributesIfNeeded(
+        editor: editor,
+        state: nextState,
+        theme: theme,
+        textStorage: textStorage
+      )
     }
     #endif
 #if DEBUG
@@ -465,7 +474,11 @@ public enum RopeReconciler {
     applyDuration = CFAbsoluteTimeGetCurrent() - applyStart
 
     if !removedKeys.isEmpty {
-      pruneRangeCacheGlobally(nextState: nextState, editor: editor)
+      pruneRangeCacheGlobally(nextState: nextState, editor: editor, textStorageLength: textStorage.length)
+    } else if hasEdits {
+      // Even without explicit removes, bulk operations like removeText() can leave
+      // range cache entries with stale lengths. Validate and repair if needed.
+      validateAndRepairRangeCache(nextState: nextState, editor: editor, textStorageLength: textStorage.length)
     }
     if !removedKeys.isEmpty || !inserts.isEmpty {
       editor.invalidateDFSOrderCache()
@@ -729,13 +742,10 @@ public enum RopeReconciler {
       output.append(styledString)
     }
 
-    // Use combined method for ElementNode to avoid redundant sibling lookups
-    let (preamble, postamble): (String, String)
-    if let element = node as? ElementNode {
-      (preamble, postamble) = element.getPreambleAndPostamble()
-    } else {
-      (preamble, postamble) = (node.getPreamble(), node.getPostamble())
-    }
+    // Use the node's overridable preamble/postamble so plugin nodes can supply control characters
+    // (e.g. ListItemNode uses a ZWSP preamble marker for list drawing).
+    let preamble = node.getPreamble()
+    let postamble = node.getPostamble()
 
     appendStyledString(preamble)
 
@@ -799,6 +809,38 @@ public enum RopeReconciler {
       )
     }
   }
+
+  /// Lightweight update of extraLineFragmentAttributes for text-only updates.
+  /// This ensures empty trailing paragraphs render correctly even when we skip
+  /// the full block-level attribute pass for performance.
+  private static func updateExtraLineFragmentAttributesIfNeeded(
+    editor: Editor,
+    state: EditorState,
+    theme: Theme,
+    textStorage: NSTextStorage
+  ) {
+    guard let ts = textStorage as? ReconcilerTextStorage else { return }
+
+    // Check if text ends with newline (meaning extra line fragment should be present)
+    let textAsNSString: NSString = ts.string as NSString
+    let endsWithNewline: Bool
+    if textAsNSString.length == 0 {
+      endsWithNewline = true  // Empty document shows extra line fragment
+    } else if let scalar = Unicode.Scalar(textAsNSString.character(at: textAsNSString.length - 1)) {
+      endsWithNewline = NSCharacterSet.newlines.contains(scalar)
+    } else {
+      endsWithNewline = false
+    }
+
+    if endsWithNewline {
+      // Get the last child's attributes to use for the extra line fragment
+      let lastDescendentAttributes =
+        getRoot()?.getLastChild()?.getAttributedStringAttributes(theme: theme) ?? [:]
+      ts.extraLineFragmentAttributes = lastDescendentAttributes
+    } else {
+      ts.extraLineFragmentAttributes = nil
+    }
+  }
   #endif
 
   /// Recompute range cache for a subtree. Returns total length written.
@@ -807,9 +849,12 @@ public enum RopeReconciler {
     nodeKey: NodeKey,
     state: EditorState,
     startLocation: Int,
-    editor: Editor
+    editor: Editor,
+    visitedKeys: inout Set<NodeKey>?
   ) -> Int {
     guard let node = state.nodeMap[nodeKey] else { return 0 }
+
+    visitedKeys?.insert(nodeKey)
 
     var item = editor.rangeCache[nodeKey] ?? RangeCacheItem()
     if item.nodeIndex == 0 {
@@ -818,13 +863,9 @@ public enum RopeReconciler {
     }
     item.location = startLocation
 
-    // Use combined method for ElementNode to avoid redundant sibling lookups
-    let (preamble, postamble): (String, String)
-    if let element = node as? ElementNode {
-      (preamble, postamble) = element.getPreambleAndPostamble()
-    } else {
-      (preamble, postamble) = (node.getPreamble(), node.getPostamble())
-    }
+    // Use the node's overridable preamble/postamble so plugin nodes can supply control characters.
+    let preamble = node.getPreamble()
+    let postamble = node.getPostamble()
 
     let preLen = preamble.utf16.count
     item.preambleLength = preLen
@@ -835,7 +876,7 @@ public enum RopeReconciler {
     if let element = node as? ElementNode {
       for childKey in element.getChildrenKeys(fromLatest: false) {
         let childLen = recomputeRangeCacheSubtree(
-          nodeKey: childKey, state: state, startLocation: cursor, editor: editor)
+          nodeKey: childKey, state: state, startLocation: cursor, editor: editor, visitedKeys: &visitedKeys)
         cursor += childLen
         childrenLen += childLen
       }
@@ -853,12 +894,84 @@ public enum RopeReconciler {
     return preLen + childrenLen + textLen + postLen
   }
 
+  /// Convenience overload for backward compatibility.
+  @discardableResult
+  private static func recomputeRangeCacheSubtree(
+    nodeKey: NodeKey,
+    state: EditorState,
+    startLocation: Int,
+    editor: Editor
+  ) -> Int {
+    var visitedKeys: Set<NodeKey>? = nil
+    return recomputeRangeCacheSubtree(
+      nodeKey: nodeKey, state: state, startLocation: startLocation, editor: editor, visitedKeys: &visitedKeys)
+  }
+
+  /// Validate range cache entries are within text storage bounds and repair if needed.
+  private static func validateAndRepairRangeCache(nextState: EditorState, editor: Editor, textStorageLength: Int) {
+    guard textStorageLength >= 0 else { return }
+
+    var needsRecompute = false
+    for (_, item) in editor.rangeCache {
+      let entryEnd = item.location + item.entireLength
+      if entryEnd > textStorageLength {
+        needsRecompute = true
+        break
+      }
+    }
+
+    if needsRecompute {
+      // Track which nodes are actually attached (reachable from root)
+      var visitedKeys: Set<NodeKey>? = Set()
+      _ = recomputeRangeCacheSubtree(
+        nodeKey: kRootNodeKey, state: nextState, startLocation: 0, editor: editor, visitedKeys: &visitedKeys)
+      // Prune entries for detached nodes (not visited during tree traversal)
+      // This handles nodes that are still in nodeMap but have parent=nil (detached)
+      if let attached = visitedKeys {
+        for key in editor.rangeCache.keys {
+          if !attached.contains(key) {
+            editor.rangeCache.removeValue(forKey: key)
+          }
+        }
+      }
+    }
+  }
+
   /// Remove stale entries from range cache.
-  private static func pruneRangeCacheGlobally(nextState: EditorState, editor: Editor) {
+  private static func pruneRangeCacheGlobally(nextState: EditorState, editor: Editor, textStorageLength: Int? = nil) {
+    // First pass: remove entries for nodes not in nodeMap at all
     let validKeys = Set(nextState.nodeMap.keys)
     for key in editor.rangeCache.keys {
       if !validKeys.contains(key) {
         editor.rangeCache.removeValue(forKey: key)
+      }
+    }
+
+    // After bulk deletes, range cache entries may have stale lengths that extend
+    // beyond the actual text storage. Detect this and trigger a full recompute.
+    if let maxLength = textStorageLength, maxLength >= 0 {
+      var needsRecompute = false
+      for (_, item) in editor.rangeCache {
+        let entryEnd = item.location + item.entireLength
+        if entryEnd > maxLength {
+          needsRecompute = true
+          break
+        }
+      }
+      if needsRecompute {
+        // Track which nodes are actually attached (reachable from root)
+        var visitedKeys: Set<NodeKey>? = Set()
+        _ = recomputeRangeCacheSubtree(
+          nodeKey: kRootNodeKey, state: nextState, startLocation: 0, editor: editor, visitedKeys: &visitedKeys)
+        // Prune entries for detached nodes (not visited during tree traversal)
+        // This handles nodes that are still in nodeMap but have parent=nil (detached)
+        if let attached = visitedKeys {
+          for key in editor.rangeCache.keys {
+            if !attached.contains(key) {
+              editor.rangeCache.removeValue(forKey: key)
+            }
+          }
+        }
       }
     }
   }

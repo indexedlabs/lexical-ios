@@ -1446,10 +1446,33 @@ public class RangeSelection: BaseSelection {
       // Structural backspace handling for element selections at start-of-node (e.g. empty list item).
       // Run before `modify(...)` since extending selection would bypass `collapseAtStart`.
       if isBackwards, anchor.type == .element, anchor.offset == 0,
-         let element = try anchor.getNode() as? ElementNode,
-         try element.collapseAtStart(selection: self)
+         let element = try anchor.getNode() as? ElementNode
       {
-        return
+        // First try collapseAtStart (works for Heading, Code, Quote nodes)
+        if try element.collapseAtStart(selection: self) {
+          return
+        }
+
+        // For ParagraphNode and other elements, handle empty element deletion directly
+        // This is needed because `modify` can fail at empty-to-empty paragraph boundaries
+        if element.isEmpty() {
+          if let prevElement = element.getPreviousSibling() as? ElementNode {
+            // Move cursor to end of previous element
+            if let lastText = findLastTextNodeInElement(prevElement) {
+              let endOffset = lastText.getTextContentSize()
+              try lastText.select(anchorOffset: endOffset, focusOffset: endOffset)
+            } else {
+              // Previous element is also empty, select it
+              try prevElement.selectEnd()
+            }
+            // Remove the empty current element
+            try element.remove()
+            return
+          } else {
+            // No previous element, we're at the very start - nothing to do
+            return
+          }
+        }
       }
       if !didPreClampSingleChar {
         try modify(alter: .extend, isBackward: isBackwards, granularity: .character)
@@ -1615,13 +1638,50 @@ public class RangeSelection: BaseSelection {
   @MainActor
   public func deleteWord(isBackwards: Bool) throws {
     if isCollapsed() {
+      guard let editor = getActiveEditor() else {
+        throw LexicalError.invariantViolation("Cannot be called outside update loop")
+      }
+
       // Hint reconciler to avoid structural insert fast path for this update.
-      getActiveEditor()?.suppressInsertFastPathOnce = true
-      try modify(alter: .extend, isBackward: isBackwards, granularity: .word)
+      editor.suppressInsertFastPathOnce = true
+
+      // UIKit's tokenizer can crash when moving by word boundaries across inline attachments (U+FFFC).
+      // When attachments are present, prefer a string-based expansion instead of asking the native
+      // tokenizer to move the selection.
+      var usedManualExpansion = false
+      if !isBackwards,
+         let nsStr = editor.textStorage?.string as NSString?,
+         nsStr.range(of: "\u{FFFC}").location != NSNotFound,
+         let start = try? stringLocationForPoint(anchor, editor: editor),
+         start >= 0,
+         start <= nsStr.length {
+        func isAttachment(_ c: unichar) -> Bool { return c == 0xFFFC }
+        func isWhitespace(_ c: unichar) -> Bool {
+          if let scalar = UnicodeScalar(c) { return CharacterSet.whitespacesAndNewlines.contains(scalar) }
+          return false
+        }
+
+        var idx = start
+        while idx < nsStr.length && isAttachment(nsStr.character(at: idx)) { idx += 1 }
+        var j = idx
+        while j < nsStr.length {
+          let ch = nsStr.character(at: j)
+          if isWhitespace(ch) || isAttachment(ch) { break }
+          j += 1
+        }
+        if j > start {
+          try applySelectionRange(NSRange(location: start, length: j - start), affinity: .forward)
+          usedManualExpansion = true
+        }
+      }
+
+      if !usedManualExpansion {
+        try modify(alter: .extend, isBackward: isBackwards, granularity: .word)
+      }
       // Forward granularity around inline attachments (decorators): UIKit sometimes selects only the
       // attachment character (U+FFFC) or fails to advance. Normalize by extending selection over the
       // next visible word characters so deletion matches legacy behavior.
-      if !isBackwards, let editor = getActiveEditor(), let nsStr = editor.textStorage?.string as NSString? {
+      if !isBackwards, let nsStr = editor.textStorage?.string as NSString? {
         // Prefer explicit word-extent computation from current caret when UIKit only selects 1 char.
         func isAttachment(_ c: unichar) -> Bool { return c == 0xFFFC }
         func isWhitespace(_ c: unichar) -> Bool {
@@ -1752,9 +1812,16 @@ public class RangeSelection: BaseSelection {
           // At start of text node - look for previous content across node boundaries
           let prevSibling = textNode.getPreviousSibling()
 
-          // Check for LineBreakNode first - just delete it
+          // Check for LineBreakNode first - delete it and position cursor
           if prevSibling is LineBreakNode {
-            try prevSibling?.remove()
+            // Before removing, find the previous text node to position cursor there
+            if let prevPrevSibling = prevSibling?.getPreviousSibling() as? TextNode {
+              let cursorOffset = prevPrevSibling.getTextContentSize()
+              try prevSibling?.remove()
+              try prevPrevSibling.select(anchorOffset: cursorOffset, focusOffset: cursorOffset)
+            } else {
+              try prevSibling?.remove()
+            }
             return
           }
 
@@ -1986,37 +2053,6 @@ public class RangeSelection: BaseSelection {
     try removeText()
   }
 
-  /// Find the last text node within an element, searching recursively.
-  private func findLastTextNodeInElement(_ element: ElementNode) -> TextNode? {
-    let children = element.getChildren()
-    for child in children.reversed() {
-      if let textNode = child as? TextNode {
-        return textNode
-      }
-      if let childElement = child as? ElementNode {
-        if let found = findLastTextNodeInElement(childElement) {
-          return found
-        }
-      }
-    }
-    return nil
-  }
-
-  /// Find the first text node within an element, searching recursively.
-  private func findFirstTextNodeInElement(_ element: ElementNode) -> TextNode? {
-    for child in element.getChildren() {
-      if let textNode = child as? TextNode {
-        return textNode
-      }
-      if let childElement = child as? ElementNode {
-        if let found = findFirstTextNodeInElement(childElement) {
-          return found
-        }
-      }
-    }
-    return nil
-  }
-
   /// Delete a word (AppKit implementation).
   @MainActor
   public func deleteWord(isBackwards: Bool) throws {
@@ -2114,6 +2150,37 @@ public class RangeSelection: BaseSelection {
     try removeText()
   }
   #endif
+
+  /// Find the last text node within an element, searching recursively.
+  private func findLastTextNodeInElement(_ element: ElementNode) -> TextNode? {
+    let children = element.getChildren()
+    for child in children.reversed() {
+      if let textNode = child as? TextNode {
+        return textNode
+      }
+      if let childElement = child as? ElementNode {
+        if let found = findLastTextNodeInElement(childElement) {
+          return found
+        }
+      }
+    }
+    return nil
+  }
+
+  /// Find the first text node within an element, searching recursively.
+  private func findFirstTextNodeInElement(_ element: ElementNode) -> TextNode? {
+    for child in element.getChildren() {
+      if let textNode = child as? TextNode {
+        return textNode
+      }
+      if let childElement = child as? ElementNode {
+        if let found = findFirstTextNodeInElement(childElement) {
+          return found
+        }
+      }
+    }
+    return nil
+  }
 
   @MainActor
   internal func removeText() throws {
@@ -2251,6 +2318,20 @@ public class RangeSelection: BaseSelection {
   @MainActor
   public func applyNativeSelection(_ nativeSelection: NativeSelection) throws {
     guard let range = nativeSelection.range else { return }
+    guard range.location != NSNotFound else { return }
+
+    if let editor = getActiveEditor(),
+       let ns = editor.textStorage?.string as NSString? {
+      let maxLen = ns.length
+      let clampedLoc = max(0, min(range.location, maxLen))
+      let remaining = maxLen - clampedLoc
+      let clampedLen = max(0, min(range.length, remaining))
+      let clampedRange = NSRange(location: clampedLoc, length: clampedLen)
+      try applySelectionRange(
+        clampedRange, affinity: clampedRange.length == 0 ? .backward : nativeSelection.affinity)
+      return
+    }
+
     try applySelectionRange(
       range, affinity: range.length == 0 ? .backward : nativeSelection.affinity)
   }

@@ -109,7 +109,24 @@ enum AttributeUtils {
     }
     #elseif canImport(AppKit)
     var font = combinedAttributes[.font] as? NSFont ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
-    var fontDescriptor = font.fontDescriptor
+
+    // NSFontDescriptor.withFamily does not reliably switch families when starting from the system font
+    // descriptor (it can still resolve back to .AppleSystemUIFont). When a theme provides
+    // `.fontFamily` and/or `.fontSize`, build a fresh descriptor from those values instead.
+    let requestedFamily = combinedAttributes[.fontFamily] as? String
+    let requestedSize = coerceCGFloat(combinedAttributes[.fontSize])
+    var fontDescriptor: NSFontDescriptor
+    if requestedFamily != nil || requestedSize != nil {
+      let size = requestedSize ?? font.pointSize
+      var attributes: [NSFontDescriptor.AttributeName: Any] = [.size: size]
+      if let family = requestedFamily ?? font.familyName {
+        attributes[.family] = family
+      }
+      fontDescriptor = NSFontDescriptor(fontAttributes: attributes)
+    } else {
+      fontDescriptor = font.fontDescriptor
+    }
+
     var symbolicTraits = fontDescriptor.symbolicTraits
 
     // update symbolicTraits for AppKit
@@ -127,15 +144,6 @@ enum AttributeUtils {
       } else {
         symbolicTraits.remove(.italic)
       }
-    }
-
-    // update font face, family and size
-    if let family = combinedAttributes[.fontFamily] as? String {
-      fontDescriptor = fontDescriptor.withFamily(family)
-    }
-
-    if let size = coerceCGFloat(combinedAttributes[.fontSize]) {
-      fontDescriptor = fontDescriptor.addingAttributes([.size: size])
     }
 
     fontDescriptor = fontDescriptor.withSymbolicTraits(symbolicTraits)

@@ -127,6 +127,36 @@ final class UIKitSelectionSyncIntegrationTests: XCTestCase {
     XCTAssertFalse(finalText.contains("World"))
   }
 
+  func testBackspaceDeletesSelectedRangeWithoutSelectionSync() throws {
+    let view = makeView()
+    let editor = view.editor
+    let textView = view.textView
+
+    try editor.update {
+      guard let root = getRoot() else { return }
+      try root.clear()
+      let paragraph = createParagraphNode()
+      let textNode = createTextNode(text: "Hello World")
+      try paragraph.append([textNode])
+      try root.append([paragraph])
+      _ = try textNode.select(anchorOffset: 11, focusOffset: 11)
+    }
+
+    let nativeString = (textView.attributedText?.string ?? "") as NSString
+    let worldRange = nativeString.range(of: "World")
+    XCTAssertNotEqual(worldRange.location, NSNotFound)
+
+    // Regression: programmatic selection changes do not always fire `textViewDidChangeSelection`.
+    // Backspace should still delete the selected text by syncing Lexical selection on demand.
+    textView.selectedRange = worldRange
+    textView.deleteBackward()
+
+    var finalText = ""
+    try editor.read { finalText = getRoot()?.getTextContent() ?? "" }
+    XCTAssertTrue(finalText.contains("Hello"))
+    XCTAssertFalse(finalText.contains("World"))
+  }
+
   func testRepeatedSelectAndBackspace() throws {
     let view = makeView()
     let editor = view.editor

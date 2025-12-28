@@ -202,7 +202,17 @@ internal func handleIndentAndOutdent(
     throw LexicalError.invariantViolation("No editor or selection")
   }
   var alreadyHandled: Set<NodeKey> = Set()
-  let nodes = try selection.getNodes()
+  var nodes = try selection.getNodes()
+  if nodes.isEmpty, let rangeSelection = selection as? RangeSelection {
+    // Some element selections (e.g. caret at element boundary) can resolve to an empty nodes list.
+    // For indent/outdent we still want to operate on the nearest block element for the caret.
+    let anchorNode = try rangeSelection.anchor.getNode()
+    let focusNode = try rangeSelection.focus.getNode()
+    nodes = [anchorNode]
+    if anchorNode.getKey() != focusNode.getKey() {
+      nodes.append(focusNode)
+    }
+  }
 
   for node in nodes {
     let key = node.getKey()
@@ -450,6 +460,13 @@ public func registerRichText(editor: Editor) {
     listener: { [weak editor] payload in
       guard let editor else { return false }
       do {
+        #if DEBUG && os(macOS)
+        if ProcessInfo.processInfo.environment["LEXICAL_ALWAYS_DEBUG_TAB_INDENT"] == "1" {
+          let hasActiveEditor = (getActiveEditor() != nil)
+          let selectionDesc = String(describing: try? getSelection())
+          print("🔥 indentContent(before) activeEditor=\(hasActiveEditor) selection=\(selectionDesc)")
+        }
+        #endif
         try handleIndentAndOutdent(
           insertTab: { node in
             editor.dispatchCommand(type: .insertText, payload: "\t")
@@ -460,8 +477,22 @@ public func registerRichText(editor: Editor) {
               _ = try? elementNode.setIndent(indent + 1)
             }
           })
+        #if DEBUG && os(macOS)
+        if ProcessInfo.processInfo.environment["LEXICAL_ALWAYS_DEBUG_TAB_INDENT"] == "1" {
+          var indentAfter = -1
+          if let root = getRoot(), let p = root.getFirstChild() as? ParagraphNode {
+            indentAfter = p.getIndent()
+          }
+          print("🔥 indentContent(after) indent=\(indentAfter)")
+        }
+        #endif
         return true
       } catch {
+        #if DEBUG && os(macOS)
+        if ProcessInfo.processInfo.environment["LEXICAL_ALWAYS_DEBUG_TAB_INDENT"] == "1" {
+          print("🔥 indentContent(error) \(String(describing: error))")
+        }
+        #endif
         editor.log(.TextView, .error, "Exception in indentContent; \(String(describing: error))")
       }
       return true
@@ -472,6 +503,13 @@ public func registerRichText(editor: Editor) {
     listener: { [weak editor] payload in
       guard let editor else { return false }
       do {
+        #if DEBUG && os(macOS)
+        if ProcessInfo.processInfo.environment["LEXICAL_ALWAYS_DEBUG_TAB_INDENT"] == "1" {
+          let hasActiveEditor = (getActiveEditor() != nil)
+          let selectionDesc = String(describing: try? getSelection())
+          print("🔥 outdentContent(before) activeEditor=\(hasActiveEditor) selection=\(selectionDesc)")
+        }
+        #endif
         try handleIndentAndOutdent(
           insertTab: { node in
             if let node = node as? TextNode {
@@ -491,8 +529,22 @@ public func registerRichText(editor: Editor) {
               _ = try? elementNode.setIndent(indent - 1)
             }
           })
+        #if DEBUG && os(macOS)
+        if ProcessInfo.processInfo.environment["LEXICAL_ALWAYS_DEBUG_TAB_INDENT"] == "1" {
+          var indentAfter = -1
+          if let root = getRoot(), let p = root.getFirstChild() as? ParagraphNode {
+            indentAfter = p.getIndent()
+          }
+          print("🔥 outdentContent(after) indent=\(indentAfter)")
+        }
+        #endif
         return true
       } catch {
+        #if DEBUG && os(macOS)
+        if ProcessInfo.processInfo.environment["LEXICAL_ALWAYS_DEBUG_TAB_INDENT"] == "1" {
+          print("🔥 outdentContent(error) \(String(describing: error))")
+        }
+        #endif
         editor.log(.TextView, .error, "Exception in outdentContent; \(String(describing: error))")
       }
       return true

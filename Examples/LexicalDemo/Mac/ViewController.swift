@@ -351,6 +351,8 @@ final class ViewController: NSViewController, NSSplitViewDelegate {
         setupDebugLogging()
         isDebugUIReady = true
         updateDebugPanel()
+
+        runAutoScenarioIfNeeded()
     }
 
     // MARK: - NSSplitViewDelegate
@@ -391,6 +393,59 @@ final class ViewController: NSViewController, NSSplitViewDelegate {
             // This avoids a race condition where the native selection change fires
             // before the range cache is fully built, resulting in a ROOT element selection.
             _ = try? headingText.select(anchorOffset: 0, focusOffset: 0)
+        }
+    }
+
+    private func runAutoScenarioIfNeeded() {
+        let env = ProcessInfo.processInfo.environment
+        guard env["LEXICAL_DEMO_AUTORUN_LARGE_DOC"] == "1" else { return }
+
+        let paragraphCount = Int(env["LEXICAL_DEMO_AUTORUN_LARGE_DOC_PARAGRAPHS"] ?? "") ?? 6000
+        let charactersPerParagraph = Int(env["LEXICAL_DEMO_AUTORUN_LARGE_DOC_CHARS"] ?? "") ?? 40
+
+        logAction(
+            "autorun.start",
+            details: "paragraphs=\(paragraphCount) chars=\(charactersPerParagraph)"
+        )
+
+        try? lexicalView.editor.update {
+            guard let root = getRoot() else { return }
+            for child in root.getChildren() {
+                try? child.remove()
+            }
+
+            let base = String(repeating: "x", count: max(0, charactersPerParagraph))
+            var blocks: [ParagraphNode] = []
+            blocks.reserveCapacity(paragraphCount)
+            for i in 0..<paragraphCount {
+                let p = createParagraphNode()
+                let t = createTextNode(text: "\(i) \(base)")
+                try p.append([t])
+                blocks.append(p)
+            }
+            try root.append(blocks)
+
+            if let last = blocks.last {
+                _ = try? last.selectEnd()
+            }
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+
+            print("🔥 AUTORUN: makeFirstResponder + selectAll + edit")
+            _ = self.view.window?.makeFirstResponder(self.lexicalView.textView)
+
+            // Trigger selection/layout paths that commonly run after large pastes/edits.
+            self.lexicalView.textView.selectAll(nil)
+            self.lexicalView.textView.insertText("a", replacementRange: self.lexicalView.textView.selectedRange())
+            self.lexicalView.textView.deleteBackward(nil)
+
+            print("🔥 AUTORUN: done, terminating")
+            self.logAction("autorun.done", details: "terminating")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                NSApp.terminate(nil)
+            }
         }
     }
 

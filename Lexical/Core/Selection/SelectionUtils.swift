@@ -294,6 +294,18 @@ func createSelection(editor: Editor) throws -> BaseSelection? {
   let lastSelection = currentEditorState.selection
 
   guard let lastSelection else {
+    // Headless editors (or editors without a frontend attached) cannot derive selection from the UI.
+    // Fall back to a deterministic selection at the start of the document so that clipboard/JSON
+    // insertion helpers work in headless mode.
+    if editor.frontend == nil {
+      if let root = currentEditorState.getRootNode(),
+         let firstChild = root.getFirstChild() {
+        let point = Point(key: firstChild.key, offset: 0, type: .element)
+        return RangeSelection(anchor: point, focus: point, format: TextFormat())
+      }
+      return createEmptyRangeSelection()
+    }
+
     let nativeSelection = editor.getNativeSelection()
 
     if nativeSelection.selectionIsNodeOrObject {

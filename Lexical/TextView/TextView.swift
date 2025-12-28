@@ -420,6 +420,11 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
 
   private func setMarkedTextInternal(_ markedText: String, selectedRange: NSRange) {
     editor.log(.TextView, .verbose)
+
+    // Ensure Lexical selection is synced with the current native selection. In unit tests and
+    // some programmatic selection changes, `textViewDidChangeSelection` may not fire reliably.
+    onSelectionChange(editor: editor)
+
     guard let textStorage = textStorage as? TextStorage else {
       // This should never happen, we will always have a custom text storage.
       editor.log(.TextView, .error, "Missing custom text storage")

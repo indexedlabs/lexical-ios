@@ -176,6 +176,8 @@ open class Node: @preconcurrency Codable {
     mutableNode.parent = latestNode.parent
     if let latestNode = latestNode as? ElementNode, let mutableNode = mutableNode as? ElementNode {
       mutableNode.children = latestNode.children
+      mutableNode.direction = latestNode.direction
+      mutableNode.indent = latestNode.indent
     } else if let latestNode = latestNode as? TextNode, let mutableNode = mutableNode as? TextNode {
       mutableNode.format = latestNode.format
       mutableNode.mode = latestNode.mode
@@ -193,16 +195,21 @@ open class Node: @preconcurrency Codable {
   public func getIndexWithinParent() -> Int? {
     guard let parentKey = getLatest().parent else { return nil }
 
-    // Try cached O(1) lookup first
-    if let editor = getActiveEditor(),
-       let index = editor.getChildIndex(of: self.key, inParent: parentKey) {
-      return index
-    }
-
-    // Fallback to linear scan (e.g., when no active editor context)
     guard let parent = getNodeByKey(key: parentKey) as? ElementNode else {
       return nil
     }
+
+    // Try cached O(1) lookup first, but validate against the current children array since it can
+    // become stale across mutations within an update.
+    if let editor = getActiveEditor(),
+       let index = editor.getChildIndex(of: self.key, inParent: parentKey) {
+      if index >= 0, index < parent.children.count, parent.children[index] == self.key {
+        return index
+      }
+      editor.invalidateChildIndexCache(forParent: parentKey)
+    }
+
+    // Fallback to linear scan
     return parent.children.firstIndex(of: self.key)
   }
 

@@ -33,6 +33,9 @@ final class AppKitTabBacktabTests: XCTestCase {
 
     try editor.update {
       guard let root = getRoot() else { return }
+      // Editor initialization always creates a default paragraph. Clear it so this test operates
+      // on a single known paragraph node.
+      _ = try root.clear()
       let p = createParagraphNode()
       let t = createTextNode(text: "Hello")
       try p.append([t])
@@ -51,4 +54,3 @@ final class AppKitTabBacktabTests: XCTestCase {
 }
 
 #endif // os(macOS) && !targetEnvironment(macCatalyst)
-

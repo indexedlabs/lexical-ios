@@ -77,6 +77,10 @@ public class RootNode: ElementNode {
     return ""
   }
 
+  override open func getPreambleAndPostamble() -> (String, String) {
+    return ("", "")
+  }
+
   override public func insertBefore(nodeToInsert: Node) throws -> Node {
     throw LexicalError.invariantViolation("insertBefore: cannot be called on root nodes")
   }

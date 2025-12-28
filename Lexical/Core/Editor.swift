@@ -788,6 +788,16 @@ public class Editor: NSObject {
     try? self.read {
       // Collect ranges that need layout invalidation, then batch at the end
       var rangesToInvalidate: [NSRange] = []
+      let storageLen = frontend?.textStorage.length ?? 0
+      let storageBounds = NSRange(location: 0, length: storageLen)
+
+      @inline(__always)
+      func enqueueRange(_ range: NSRange) {
+        let safe = NSIntersectionRange(range, storageBounds)
+        if safe.length > 0 {
+          rangesToInvalidate.append(safe)
+        }
+      }
 
       for (nodeKey, decoratorCacheItem) in decoratorCache {
         switch decoratorCacheItem {
@@ -803,7 +813,7 @@ public class Editor: NSObject {
           decoratorCache[nodeKey] = DecoratorCacheItem.cachedView(view)
           if let rangeCacheItem = rangeCache[nodeKey] {
             let range = actualRange(for: nodeKey) ?? rangeCacheItem.range
-            rangesToInvalidate.append(range)
+            enqueueRange(range)
           }
 
           self.log(
@@ -826,7 +836,7 @@ public class Editor: NSObject {
           decoratorCache[nodeKey] = DecoratorCacheItem.cachedView(view)
           if let rangeCacheItem = rangeCache[nodeKey] {
             let range = actualRange(for: nodeKey) ?? rangeCacheItem.range
-            rangesToInvalidate.append(range)
+            enqueueRange(range)
           }
           self.log(
             .editor, .verbose,
@@ -840,7 +850,7 @@ public class Editor: NSObject {
           }
           if let rangeCacheItem = rangeCache[nodeKey] {
             let range = actualRange(for: nodeKey) ?? rangeCacheItem.range
-            rangesToInvalidate.append(range)
+            enqueueRange(range)
           }
         }
       }
@@ -851,10 +861,13 @@ public class Editor: NSObject {
         let unionRange = rangesToInvalidate.reduce(rangesToInvalidate[0]) { union, range in
           NSUnionRange(union, range)
         }
-        layoutManager.invalidateLayout(forCharacterRange: unionRange, actualCharacterRange: nil)
-        let glyphRange = layoutManager.glyphRange(
-          forCharacterRange: unionRange, actualCharacterRange: nil)
-        layoutManager.ensureLayout(forGlyphRange: glyphRange)
+        let safeUnion = NSIntersectionRange(unionRange, storageBounds)
+        if safeUnion.length > 0 {
+          layoutManager.invalidateLayout(forCharacterRange: safeUnion, actualCharacterRange: nil)
+          let glyphRange = layoutManager.glyphRange(
+            forCharacterRange: safeUnion, actualCharacterRange: nil)
+          layoutManager.ensureLayout(forGlyphRange: glyphRange)
+        }
       }
     }
   }
@@ -1066,20 +1079,25 @@ public class Editor: NSObject {
     childIndexCache.removeAll(keepingCapacity: true)
   }
 
-  internal func cachedDFSOrderAndIndex() -> ([NodeKey], [NodeKey: Int]) {
-    if let cached = dfsOrderCache, let cachedIndex = dfsOrderIndexCache {
-      return (cached, cachedIndex)
-    }
+	  internal func cachedDFSOrderAndIndex() -> ([NodeKey], [NodeKey: Int]) {
+	    if let cached = dfsOrderCache, let cachedIndex = dfsOrderIndexCache {
+	      return (cached, cachedIndex)
+	    }
 
-    #if DEBUG
-    let startTime = CFAbsoluteTimeGetCurrent()
-    #endif
-    let ordered = sortedNodeKeysByLocation(rangeCache: rangeCache)
-    var index: [NodeKey: Int] = [:]
-    index.reserveCapacity(ordered.count)
-    for (i, key) in ordered.enumerated() {
-      let pos = i + 1
-      index[key] = pos
+	    #if DEBUG
+	    let startTime = CFAbsoluteTimeGetCurrent()
+	    #endif
+	    // Prefer deriving DFS order from the node tree to avoid an O(n log n) sort and large intermediate allocations.
+	    // Fall back to canonical (location asc, range.length desc) sorting if the derived order doesn't match.
+	    let stateForOrder = pendingEditorState ?? editorState
+	    let ordered =
+	      nodeKeysByTreeDFSOrder(state: stateForOrder, rangeCache: rangeCache)
+	      ?? sortedNodeKeysByLocation(rangeCache: rangeCache)
+	    var index: [NodeKey: Int] = [:]
+	    index.reserveCapacity(ordered.count)
+	    for (i, key) in ordered.enumerated() {
+	      let pos = i + 1
+	      index[key] = pos
       // Store DFS position in each RangeCacheItem for O(1) lookup
       if var item = rangeCache[key] {
         item.dfsPosition = pos

@@ -305,10 +305,11 @@ open class TextNode: Node {
     }
 
     let convertedText = text as NSString
+    let safeIndex = max(0, min(index, convertedText.length))
     let prefixText = convertedText.substring(
       with: NSRange(
         location: 0,
-        length: index
+        length: safeIndex
       )
     )
 
@@ -316,8 +317,8 @@ open class TextNode: Node {
     // we clamp with substring to permit a similar resilience to maintain parity with web code.
     let postText = convertedText.substring(
       with: NSRange(
-        location: max(min(index + delCount, convertedText.length), 0),
-        length: max(min(convertedText.length - (index + delCount), convertedText.length), 0)
+        location: max(min(safeIndex + delCount, convertedText.length), 0),
+        length: max(min(convertedText.length - (safeIndex + delCount), convertedText.length), 0)
       )
     )
 

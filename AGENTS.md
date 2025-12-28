@@ -33,12 +33,10 @@ This repo contains Lexical iOS — a Swift Package with a modular plugin archite
 - SwiftPM (build for iOS Simulator explicitly):
   ```bash
   # x86_64 simulator
-  swift build --sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
-    -Xswiftc "-target" -Xswiftc "x86_64-apple-ios16.0-simulator"
+  scripts/spm/build_ios_sim.sh --arch x86_64
 
   # arm64 simulator (Apple Silicon)
-  swift build --sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
-    -Xswiftc "-target" -Xswiftc "arm64-apple-ios16.0-simulator"
+  scripts/spm/build_ios_sim.sh --arch arm64
   ```
 
 - Xcodebuild (SPM target on iOS simulator):
@@ -89,8 +87,8 @@ This repo contains Lexical iOS — a Swift Package with a modular plugin archite
 ## Post-Change Verification
 - Always verify locally after making significant changes:
   - Package build (iOS Simulator only):
-    - x86_64: `swift build --sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" -Xswiftc "-target" -Xswiftc "x86_64-apple-ios16.0-simulator"`
-    - arm64: `swift build --sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" -Xswiftc "-target" -Xswiftc "arm64-apple-ios16.0-simulator"`
+    - x86_64: `scripts/spm/build_ios_sim.sh --arch x86_64`
+    - arm64: `scripts/spm/build_ios_sim.sh --arch arm64`
   - Run all tests on iOS simulator (authoritative; use Lexical-Package scheme):
     `xcodebuild -workspace Playground/LexicalPlayground.xcodeproj/project.xcworkspace -scheme Lexical-Package -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.0' test`
     - Filter example:
@@ -178,7 +176,20 @@ This repo contains Lexical iOS — a Swift Package with a modular plugin archite
 - Place tests in the corresponding `*Tests` target; mirror source structure where practical.
 - New public APIs or behavior changes require tests. Aim to cover edge cases found in `LexicalTests/EdgeCases` and performance scenarios separately.
 - Run locally with `swift test` or via Xcode using the `Lexical-Package` scheme on iOS simulator.
-- **Always log test output to a file for analysis**: Test runs can take a long time. Log output to a tmp file so you can analyze results without re-running. Example:
+- **Always log test output to a file for analysis**: Test runs can take a long time. Log output to a tmp file so you can analyze results without re-running:
+
+  **For `swift test` (macOS/AppKit tests):**
+  ```bash
+  swift test 2>&1 | tee /tmp/swift-test-results.log
+  # Then analyze results:
+  grep -E "(passed|failed|error:)" /tmp/swift-test-results.log
+  # Count failures:
+  grep -c "failed" /tmp/swift-test-results.log
+  # Find specific failures:
+  grep -B 2 "failed" /tmp/swift-test-results.log
+  ```
+
+  **For `xcodebuild` (iOS Simulator tests):**
   ```bash
   xcodebuild -workspace Playground/LexicalPlayground.xcodeproj/project.xcworkspace \
     -scheme Lexical-Package \
