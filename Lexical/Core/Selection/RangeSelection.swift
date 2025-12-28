@@ -1010,12 +1010,19 @@ public class RangeSelection: BaseSelection {
     } else if let newElement = newElement as? ElementNode {
       // If we're at the beginning of the current element, move the new element to be before the current element
       let currentElementFirstChild = currentElement.getFirstChild()
-      let anchorNode = try anchor.getNode()
+      // Compare by key, not reference - after tree mutations nodes may be different instances
       let isBeginning =
         anchorOffset == 0
-        && (currentElement == anchorNode || (currentElementFirstChild == anchorNode))
+        && (currentElement.key == anchor.key || (currentElementFirstChild?.key == anchor.key))
       if isBeginning && nodesToMoveLength > 0 {
         try currentElement.insertBefore(nodeToInsert: newElement)
+        // Select the original text node at offset 0 (cursor stays with content)
+        // nodesToMove.last is the original anchor text node (added at line 939 when anchorOffset == 0)
+        if let originalTextNode = nodesToMove.last as? TextNode {
+          _ = try originalTextNode.select(anchorOffset: 0, focusOffset: 0)
+        } else {
+          _ = try currentElement.selectStart()
+        }
         return
       }
 

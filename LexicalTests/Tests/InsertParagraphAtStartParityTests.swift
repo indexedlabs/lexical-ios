@@ -25,6 +25,180 @@ final class InsertParagraphAtStartParityTests: XCTestCase {
   }
 
   #if os(macOS) && !targetEnvironment(macCatalyst)
+  /// Test that actual NSTextView.selectedRange is correct after insertParagraph at start.
+  ///
+  /// This test uses the full editable LexicalView (not the read-only context) to verify
+  /// that the actual native selection is correctly synced after pressing Enter at the
+  /// start of a paragraph. The bug is that the cursor ends up above the content instead
+  /// of staying at the start of the original text.
+  func testAppKit_InsertParagraphAtStart_ActualNativeSelectionCorrect() throws {
+    let cfg = EditorConfig(theme: Theme(), plugins: [])
+    let lexicalView = LexicalView(editorConfig: cfg, featureFlags: FeatureFlags())
+    lexicalView.frame = CGRect(x: 0, y: 0, width: 400, height: 300)
+    let editor = lexicalView.editor
+    let textView = lexicalView.textView
+
+    // Create content with cursor at start
+    try editor.update {
+      guard let root = getRoot() else { return }
+      // Clear default paragraph
+      for child in root.getChildren() { try? child.remove() }
+      let p = createParagraphNode()
+      let t = createTextNode(text: "Hello World")
+      try p.append([t])
+      try root.append([p])
+      try t.select(anchorOffset: 0, focusOffset: 0)
+    }
+
+    // Verify initial state
+    XCTAssertEqual(textView.string, "Hello World", "Initial text should be 'Hello World'")
+    let initialNativeRange = textView.selectedRange()
+    XCTAssertEqual(initialNativeRange.location, 0, "Initial native selection should be at 0")
+
+    // Insert paragraph at start (press Enter)
+    try editor.update {
+      try (getSelection() as? RangeSelection)?.insertParagraph()
+    }
+
+    // Verify text content after insert
+    XCTAssertEqual(textView.string, "\nHello World", "Text should have newline prefix")
+
+    // Verify the actual NSTextView selection is at position 1 (after the newline)
+    let finalNativeRange = textView.selectedRange()
+    XCTAssertEqual(finalNativeRange.location, 1, "Native selection should be at position 1 (after newline)")
+    XCTAssertEqual(finalNativeRange.length, 0, "Native selection should be collapsed")
+
+    // Verify Lexical selection is correct
+    var lexicalAnchorOffset = -1
+    var computedNativeLocation = -1
+    try editor.read {
+      if let sel = try getSelection() as? RangeSelection {
+        lexicalAnchorOffset = sel.anchor.offset
+        if let loc = try? stringLocationForPoint(sel.anchor, editor: editor) {
+          computedNativeLocation = loc
+        }
+      }
+    }
+    XCTAssertEqual(lexicalAnchorOffset, 0, "Lexical anchor offset should be 0")
+    XCTAssertEqual(computedNativeLocation, 1, "Computed native location should be 1")
+
+    // The key assertion: actual native selection should match computed location
+    XCTAssertEqual(finalNativeRange.location, computedNativeLocation,
+                   "Actual native selection (\(finalNativeRange.location)) should match computed location (\(computedNativeLocation))")
+  }
+
+  /// Test multiple insertParagraph at start results in correct native selection.
+  func testAppKit_MultipleInsertParagraphAtStart_NativeSelectionCorrect() throws {
+    let cfg = EditorConfig(theme: Theme(), plugins: [])
+    let lexicalView = LexicalView(editorConfig: cfg, featureFlags: FeatureFlags())
+    lexicalView.frame = CGRect(x: 0, y: 0, width: 400, height: 300)
+    let editor = lexicalView.editor
+    let textView = lexicalView.textView
+
+    // Create content with cursor at start
+    try editor.update {
+      guard let root = getRoot() else { return }
+      for child in root.getChildren() { try? child.remove() }
+      let p = createParagraphNode()
+      let t = createTextNode(text: "Content")
+      try p.append([t])
+      try root.append([p])
+      try t.select(anchorOffset: 0, focusOffset: 0)
+    }
+
+    // Insert 3 paragraphs at start
+    for i in 1...3 {
+      try editor.update {
+        try (getSelection() as? RangeSelection)?.insertParagraph()
+      }
+
+      // Verify native selection after each insert
+      let nativeRange = textView.selectedRange()
+      var computedLocation = -1
+      try editor.read {
+        if let sel = try getSelection() as? RangeSelection,
+           let loc = try? stringLocationForPoint(sel.anchor, editor: editor) {
+          computedLocation = loc
+        }
+      }
+      XCTAssertEqual(nativeRange.location, i, "After \(i) inserts, native selection should be at \(i)")
+      XCTAssertEqual(nativeRange.location, computedLocation,
+                     "Insert \(i): Actual native (\(nativeRange.location)) should match computed (\(computedLocation))")
+    }
+
+    // Final text should have 3 newlines before "Content"
+    XCTAssertEqual(textView.string, "\n\n\nContent", "Text should have 3 newlines before Content")
+  }
+
+  /// Test insertParagraph at start with multi-paragraph document like demo app.
+  ///
+  /// This replicates the demo app scenario where there are multiple paragraphs
+  /// and the user presses Enter at the very beginning of the first paragraph.
+  func testAppKit_InsertParagraphAtStart_WithMultipleParagraphs_LikeDemoApp() throws {
+    let cfg = EditorConfig(theme: Theme(), plugins: [])
+    let lexicalView = LexicalView(editorConfig: cfg, featureFlags: FeatureFlags())
+    lexicalView.frame = CGRect(x: 0, y: 0, width: 400, height: 300)
+    let editor = lexicalView.editor
+    let textView = lexicalView.textView
+
+    // Set up content similar to demo app (multiple paragraphs)
+    try editor.update {
+      guard let root = getRoot() else { return }
+      for child in root.getChildren() { try? child.remove() }
+
+      // Paragraph 1: Bold heading
+      let heading = createParagraphNode()
+      let headingText = createTextNode(text: "Welcome to Lexical!")
+      try? headingText.setBold(true)
+      try heading.append([headingText])
+
+      // Paragraph 2: Normal text
+      let paragraph = createParagraphNode()
+      let text = createTextNode(text: "This is the demo.")
+      try paragraph.append([text])
+
+      // Paragraph 3: More text
+      let paragraph2 = createParagraphNode()
+      let text2 = createTextNode(text: "Features include bold and italic.")
+      try paragraph2.append([text2])
+
+      try root.append([heading, paragraph, paragraph2])
+
+      // Position cursor at start of first text node
+      try headingText.select(anchorOffset: 0, focusOffset: 0)
+    }
+
+    // Verify initial state
+    let initialText = textView.string
+    XCTAssertTrue(initialText.hasPrefix("Welcome to Lexical!"), "Should start with welcome text")
+    XCTAssertEqual(textView.selectedRange().location, 0, "Initial cursor should be at 0")
+
+    // Press Enter 3 times at the start
+    for i in 1...3 {
+      try editor.update {
+        try (getSelection() as? RangeSelection)?.insertParagraph()
+      }
+
+      // After each Enter, verify native selection
+      let nativeRange = textView.selectedRange()
+      var computedLocation = -1
+      try editor.read {
+        if let sel = try getSelection() as? RangeSelection,
+           let loc = try? stringLocationForPoint(sel.anchor, editor: editor) {
+          computedLocation = loc
+        }
+      }
+
+      XCTAssertEqual(nativeRange.location, computedLocation,
+                     "After Enter \(i): Actual native (\(nativeRange.location)) should match computed (\(computedLocation))")
+    }
+
+    // Final verification: cursor should be at position 3, text should have 3 newlines at start
+    let finalNativeRange = textView.selectedRange()
+    XCTAssertEqual(finalNativeRange.location, 3, "Final cursor should be at position 3")
+    XCTAssertTrue(textView.string.hasPrefix("\n\n\nWelcome"), "Text should have 3 newlines before 'Welcome'")
+  }
+
   /// Test that native selection is correctly set after insertParagraph at start.
   ///
   /// This tests the fix for the bug where the native cursor would jump to the end
