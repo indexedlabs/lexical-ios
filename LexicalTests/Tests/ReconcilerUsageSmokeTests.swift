@@ -109,6 +109,156 @@ final class ReconcilerUsageSmokeTests: XCTestCase {
     try assertTextParity(editor, textView)
   }
 
+  func testStartOfDocPasteThenNewlineThenBackspace_JoinsParagraphsAndKeepsParity() throws {
+    let testView = createTestEditorView()
+    let editor = testView.editor
+    let textView = testView.view.textView
+    setupWindowWithView(testView)
+    textView.becomeFirstResponder()
+
+    guard let (pasteboard, pasteboardName) = makeUniquePasteboard() else {
+      XCTFail("Could not create a unique pasteboard")
+      return
+    }
+    defer { UIPasteboard.remove(withName: pasteboardName) }
+    textView.pasteboard = pasteboard
+
+    textView.insertText("World")
+    drainMainQueue()
+    try assertTextParity(editor, textView)
+
+    // Go to start of document and paste.
+    textView.selectedRange = NSRange(location: 0, length: 0)
+    syncSelection(textView)
+    pasteboard.string = "Hello "
+    textView.paste(nil)
+    drainMainQueue()
+    XCTAssertEqual(textView.text, "Hello World")
+    try assertTextParity(editor, textView)
+
+    // Insert a newline after "Hello".
+    let helloLen = ("Hello" as NSString).length
+    textView.selectedRange = NSRange(location: helloLen, length: 0)
+    syncSelection(textView)
+    textView.insertText("\n")
+    drainMainQueue()
+    XCTAssertEqual(textView.text, "Hello\n World")
+    try assertTextParity(editor, textView)
+
+    // Move to the start of the second paragraph and backspace to join.
+    let newlineLoc = (textView.text as NSString?)?.range(of: "\n").location ?? NSNotFound
+    XCTAssertNotEqual(newlineLoc, NSNotFound)
+    textView.selectedRange = NSRange(location: newlineLoc + 1, length: 0)
+    syncSelection(textView)
+    textView.deleteBackward()
+    drainMainQueue()
+    XCTAssertEqual(textView.text, "Hello World")
+    try assertTextParity(editor, textView)
+  }
+
+  func testReplaceSelectionByTyping_ReplacesRangeAndKeepsParity() throws {
+    let testView = createTestEditorView()
+    let editor = testView.editor
+    let textView = testView.view.textView
+    setupWindowWithView(testView)
+    textView.becomeFirstResponder()
+
+    textView.insertText("HelloWorld")
+    drainMainQueue()
+    try assertTextParity(editor, textView)
+
+    // Select "World" and replace it by typing.
+    let native = (textView.text ?? "") as NSString
+    let worldRange = native.range(of: "World")
+    XCTAssertNotEqual(worldRange.location, NSNotFound)
+    textView.selectedRange = worldRange
+    syncSelection(textView)
+
+    textView.insertText("X")
+    drainMainQueue()
+
+    XCTAssertEqual(textView.text, "HelloX")
+    try assertTextParity(editor, textView)
+  }
+
+  func testReplaceSelectionSpanningNewlineByPaste_ReplacesRangeAndKeepsParity() throws {
+    let testView = createTestEditorView()
+    let editor = testView.editor
+    let textView = testView.view.textView
+    setupWindowWithView(testView)
+    textView.becomeFirstResponder()
+
+    guard let (pasteboard, pasteboardName) = makeUniquePasteboard() else {
+      XCTFail("Could not create a unique pasteboard")
+      return
+    }
+    defer { UIPasteboard.remove(withName: pasteboardName) }
+    textView.pasteboard = pasteboard
+
+    textView.insertText("AA\nBB")
+    drainMainQueue()
+    try assertTextParity(editor, textView)
+
+    // Select across the newline: "A\nB"
+    let native = (textView.text ?? "") as NSString
+    let aLoc = native.range(of: "AA").location
+    let newlineLoc = native.range(of: "\n").location
+    XCTAssertNotEqual(aLoc, NSNotFound)
+    XCTAssertNotEqual(newlineLoc, NSNotFound)
+    let start = aLoc + 1
+    let end = newlineLoc + 2
+    textView.selectedRange = NSRange(location: start, length: max(0, end - start))
+    syncSelection(textView)
+
+    pasteboard.string = "X"
+    textView.paste(nil)
+    drainMainQueue()
+
+    XCTAssertEqual(textView.text, "AXB")
+    try assertTextParity(editor, textView)
+  }
+
+  func testEmojiGraphemeRangeDelete_DoesNotCrashAndKeepsParity() throws {
+    let testView = createTestEditorView()
+    let editor = testView.editor
+    let textView = testView.view.textView
+    setupWindowWithView(testView)
+    textView.becomeFirstResponder()
+
+    let emoji = "👨‍👩‍👧‍👦"
+    textView.insertText("a\(emoji)b")
+    drainMainQueue()
+    try assertTextParity(editor, textView)
+
+    let prefixLen = ("a" as NSString).length
+    let emojiLen = (emoji as NSString).length
+
+    // Delete the emoji by selecting its full UTF-16 range.
+    textView.selectedRange = NSRange(location: prefixLen, length: emojiLen)
+    syncSelection(textView)
+    textView.deleteBackward()
+    drainMainQueue()
+
+    XCTAssertEqual(textView.text, "ab")
+    try assertTextParity(editor, textView)
+
+    // Reinsert and delete with a boundary backspace.
+    textView.selectedRange = NSRange(location: 1, length: 0)
+    syncSelection(textView)
+    textView.insertText(emoji)
+    drainMainQueue()
+    XCTAssertEqual(textView.text, "a\(emoji)b")
+    try assertTextParity(editor, textView)
+
+    textView.selectedRange = NSRange(location: prefixLen + emojiLen, length: 0)
+    syncSelection(textView)
+    textView.deleteBackward()
+    drainMainQueue()
+
+    XCTAssertEqual(textView.text, "ab")
+    try assertTextParity(editor, textView)
+  }
+
   func testCopyPasteRoundTrip_PreservesTextAndFormattingAndDoesNotCrash() throws {
     // Source editor/view
     let source = createTestEditorView()
