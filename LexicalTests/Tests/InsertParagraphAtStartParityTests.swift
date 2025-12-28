@@ -6,6 +6,7 @@
  */
 
 @testable import Lexical
+@testable import EditorHistoryPlugin
 import XCTest
 
 #if os(macOS) && !targetEnvironment(macCatalyst)
@@ -487,4 +488,135 @@ final class InsertParagraphAtStartParityTests: XCTestCase {
 
     XCTAssertEqual(optResult.anchorOffset, legResult.anchorOffset, "Both reconcilers should have same anchor offset")
   }
+
+  #if os(macOS) && !targetEnvironment(macCatalyst)
+  /// Test insertParagraph at start with EditorHistoryPlugin enabled.
+  ///
+  /// This replicates the demo app scenario where EditorHistoryPlugin is active.
+  /// The history plugin could potentially interfere with selection during updates.
+  func testAppKit_InsertParagraphAtStart_WithEditorHistoryPlugin() throws {
+    let historyPlugin = EditorHistoryPlugin()
+    let cfg = EditorConfig(theme: Theme(), plugins: [historyPlugin])
+    let lexicalView = LexicalView(editorConfig: cfg, featureFlags: FeatureFlags())
+    lexicalView.frame = CGRect(x: 0, y: 0, width: 400, height: 300)
+    let editor = lexicalView.editor
+    let textView = lexicalView.textView
+
+    // Set up content similar to demo app
+    try editor.update {
+      guard let root = getRoot() else { return }
+      for child in root.getChildren() { try? child.remove() }
+
+      // Bold heading like demo app
+      let heading = createParagraphNode()
+      let headingText = createTextNode(text: "Welcome to Lexical!")
+      try? headingText.setBold(true)
+      try heading.append([headingText])
+
+      // Normal paragraph
+      let paragraph = createParagraphNode()
+      let text = createTextNode(text: "This is the demo.")
+      try paragraph.append([text])
+
+      try root.append([heading, paragraph])
+      try headingText.select(anchorOffset: 0, focusOffset: 0)
+    }
+
+    // Verify initial state
+    XCTAssertEqual(textView.selectedRange().location, 0, "Initial cursor should be at 0")
+
+    // Press Enter at the start
+    try editor.update {
+      try (getSelection() as? RangeSelection)?.insertParagraph()
+    }
+
+    // Verify native selection is at position 1 (after the new empty paragraph's newline)
+    let nativeRange = textView.selectedRange()
+    XCTAssertEqual(nativeRange.location, 1,
+                   "Native selection should be at position 1 (after newline), got \(nativeRange.location)")
+
+    // Press Enter again
+    try editor.update {
+      try (getSelection() as? RangeSelection)?.insertParagraph()
+    }
+
+    let nativeRange2 = textView.selectedRange()
+    XCTAssertEqual(nativeRange2.location, 2,
+                   "Native selection should be at position 2, got \(nativeRange2.location)")
+
+    // Third Enter
+    try editor.update {
+      try (getSelection() as? RangeSelection)?.insertParagraph()
+    }
+
+    let nativeRange3 = textView.selectedRange()
+    XCTAssertEqual(nativeRange3.location, 3,
+                   "Native selection should be at position 3, got \(nativeRange3.location)")
+
+    // Verify text content
+    XCTAssertTrue(textView.string.hasPrefix("\n\n\nWelcome"),
+                  "Text should have 3 newlines before 'Welcome'")
+  }
+
+  /// Test insertParagraph using dispatchCommand (like the demo app's keyboard handler).
+  ///
+  /// This tests the exact code path the demo app uses when the user presses Enter.
+  func testAppKit_InsertParagraphAtStart_ViaDispatchCommand() throws {
+    let historyPlugin = EditorHistoryPlugin()
+    let cfg = EditorConfig(theme: Theme(), plugins: [historyPlugin])
+    let lexicalView = LexicalView(editorConfig: cfg, featureFlags: FeatureFlags())
+    lexicalView.frame = CGRect(x: 0, y: 0, width: 400, height: 300)
+    let editor = lexicalView.editor
+    let textView = lexicalView.textView
+
+    // Set up content similar to demo app
+    try editor.update {
+      guard let root = getRoot() else { return }
+      for child in root.getChildren() { try? child.remove() }
+
+      // Bold heading like demo app
+      let heading = createParagraphNode()
+      let headingText = createTextNode(text: "Welcome to Lexical!")
+      try? headingText.setBold(true)
+      try heading.append([headingText])
+
+      // Normal paragraph
+      let paragraph = createParagraphNode()
+      let text = createTextNode(text: "This is the demo.")
+      try paragraph.append([text])
+
+      try root.append([heading, paragraph])
+      try headingText.select(anchorOffset: 0, focusOffset: 0)
+    }
+
+    // Verify initial state
+    XCTAssertEqual(textView.selectedRange().location, 0, "Initial cursor should be at 0")
+
+    // Press Enter using dispatchCommand (like the demo app keyboard handler)
+    _ = editor.dispatchCommand(type: .insertParagraph, payload: nil)
+
+    // Verify native selection is at position 1 (after the new empty paragraph's newline)
+    let nativeRange = textView.selectedRange()
+    XCTAssertEqual(nativeRange.location, 1,
+                   "Native selection should be at position 1 (after newline), got \(nativeRange.location)")
+
+    // Press Enter again
+    _ = editor.dispatchCommand(type: .insertParagraph, payload: nil)
+
+    let nativeRange2 = textView.selectedRange()
+    XCTAssertEqual(nativeRange2.location, 2,
+                   "Native selection should be at position 2, got \(nativeRange2.location)")
+
+    // Third Enter
+    _ = editor.dispatchCommand(type: .insertParagraph, payload: nil)
+
+    let nativeRange3 = textView.selectedRange()
+    XCTAssertEqual(nativeRange3.location, 3,
+                   "Native selection should be at position 3, got \(nativeRange3.location)")
+
+    // Verify text content
+    XCTAssertTrue(textView.string.hasPrefix("\n\n\nWelcome"),
+                  "Text should have 3 newlines before 'Welcome'")
+  }
+  #endif
 }
