@@ -713,7 +713,12 @@ final class ViewController: NSViewController, NSSplitViewDelegate {
         )
 
         if captureLayoutEvents {
-            logLayoutSnapshot(action: "layout.didProcessEditing")
+            // Defer layout snapshot to next run loop - accessing layoutManager.numberOfGlyphs
+            // during didProcessEditing causes a crash because glyph generation is not allowed
+            // while textStorage is still editing.
+            DispatchQueue.main.async { [weak self] in
+                self?.logLayoutSnapshot(action: "layout.didProcessEditing")
+            }
         }
 
         if length == 0 {
