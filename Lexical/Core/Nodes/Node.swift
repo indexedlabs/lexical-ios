@@ -583,6 +583,94 @@ open class Node: @preconcurrency Codable {
     }
   }
 
+  /// Batch remove multiple nodes efficiently. This is O(n) instead of O(n²) for removing many nodes.
+  /// Selection is NOT restored for individual nodes - callers should handle selection separately.
+  public static func batchRemoveNodes(_ nodesToRemove: [Node]) throws {
+    try errorOnReadOnly()
+
+    guard !nodesToRemove.isEmpty else { return }
+
+    // Build set of keys to remove for O(1) lookup
+    var keysToRemove = Set(nodesToRemove.map { $0.key })
+
+    // Group nodes by parent for batched removal
+    var nodesByParent: [NodeKey: [Node]] = [:]
+    nodesByParent.reserveCapacity(nodesToRemove.count / 10)  // Estimate ~10 nodes per parent
+
+    for node in nodesToRemove {
+      guard let parent = node.getParent() else { continue }
+      nodesByParent[parent.key, default: []].append(node)
+    }
+
+    // Track parents that need removal after batch operation (because they became empty)
+    var emptyParentsToRemove: [ElementNode] = []
+
+    // Batch remove from each parent using a single filter pass
+    for (parentKey, nodes) in nodesByParent {
+      guard let parent = getNodeByKey(key: parentKey) as? ElementNode else { continue }
+
+      let writeableParent = try parent.getWritable()
+
+      // Mark all nodes as dirty before removal
+      for node in nodes {
+        internallyMarkNodeAsDirty(node: node, cause: .userInitiated)
+        let writableNode = try node.getWritable()
+        writableNode.parent = nil
+      }
+
+      // Single O(n) pass to remove all keys
+      writeableParent.children.removeAll { keysToRemove.contains($0) }
+      getActiveEditor()?.invalidateChildIndexCache(forParent: writeableParent.key)
+
+      // Check if parent needs removal after batch operation
+      if !isRootNode(node: parent) && !parent.canBeEmpty() && writeableParent.children.isEmpty
+        && parent.isAttached()
+      {
+        emptyParentsToRemove.append(parent)
+        keysToRemove.insert(parent.key)  // Add to set so we can batch-remove from grandparent
+      }
+    }
+
+    // Recursively batch-remove empty parents
+    // Group by their parent (grandparent of original nodes) for efficient removal
+    while !emptyParentsToRemove.isEmpty {
+      var grandparentGroups: [NodeKey: [ElementNode]] = [:]
+      var nextLevelEmptyParents: [ElementNode] = []
+
+      for parent in emptyParentsToRemove {
+        guard parent.isAttached(), let grandparent = parent.getParent() else { continue }
+        grandparentGroups[grandparent.key, default: []].append(parent)
+      }
+
+      for (grandparentKey, parents) in grandparentGroups {
+        guard let grandparent = getNodeByKey(key: grandparentKey) as? ElementNode else { continue }
+
+        let writeableGrandparent = try grandparent.getWritable()
+
+        // Mark parents as dirty and detach
+        for parent in parents {
+          internallyMarkNodeAsDirty(node: parent, cause: .userInitiated)
+          let writableParent = try parent.getWritable()
+          writableParent.parent = nil
+        }
+
+        // Single O(n) pass to remove all empty parent keys
+        writeableGrandparent.children.removeAll { keysToRemove.contains($0) }
+        getActiveEditor()?.invalidateChildIndexCache(forParent: writeableGrandparent.key)
+
+        // Check if grandparent also needs removal
+        if !isRootNode(node: grandparent) && !grandparent.canBeEmpty()
+          && writeableGrandparent.children.isEmpty && grandparent.isAttached()
+        {
+          nextLevelEmptyParents.append(grandparent)
+          keysToRemove.insert(grandparent.key)
+        }
+      }
+
+      emptyParentsToRemove = nextLevelEmptyParents
+    }
+  }
+
   /// Inserts a node after this LexicalNode (as the next sibling).
   @discardableResult
   open func insertAfter(nodeToInsert: Node) throws -> Node {

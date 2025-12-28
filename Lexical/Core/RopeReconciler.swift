@@ -300,14 +300,13 @@ public enum RopeReconciler {
 #endif
 
     // Process removes first (in reverse document order to avoid shifting issues)
+    // Use batched approach for O(n) instead of O(n²) cache updates
     removes.sort { a, b in
       let aLoc = editor.rangeCache[a.key]?.location ?? 0
       let bLoc = editor.rangeCache[b.key]?.location ?? 0
       return aLoc > bLoc  // Reverse order
     }
-    for (_, node) in removes {
-      try removeNode(node, from: textStorage, editor: editor)
-    }
+    try batchRemoveNodes(removes, from: textStorage, editor: editor)
 #if DEBUG
     t_afterRemoves = CFAbsoluteTimeGetCurrent()
 #endif
@@ -1039,6 +1038,93 @@ public enum RopeReconciler {
         let oldEnd = postambleStart + oldPostambleLength
         let excludingKeys = ancestorKeys(fromParentKey: sibling.parent)
         shiftRangeCacheAfter(location: oldEnd, delta: delta, excludingKeys: excludingKeys, editor: editor)
+      }
+    }
+  }
+
+  /// Batch remove multiple nodes efficiently. O(n + m) instead of O(n × m).
+  /// Nodes must be pre-sorted in reverse document order (highest location first).
+  private static func batchRemoveNodes(
+    _ removes: [(key: NodeKey, node: Node)],
+    from textStorage: NSTextStorage,
+    editor: Editor
+  ) throws {
+    guard !removes.isEmpty else { return }
+
+    // Collect all removed keys for O(1) lookup when building exclusion sets
+    let removedKeys = Set(removes.map { $0.key })
+
+    // Track deletions: (endLocation, deletedLength, parentKey)
+    // We'll use this to compute cumulative shifts for remaining nodes
+    var deletions: [(endLocation: Int, length: Int, parentKey: NodeKey?)] = []
+    deletions.reserveCapacity(removes.count)
+
+    // Phase 1: Delete from textStorage and collect deletion info
+    // Since removes are in reverse order, deletions don't affect each other's locations
+    for (key, node) in removes {
+      guard let cacheItem = editor.rangeCache[key] else { continue }
+
+      let range = cacheItem.range
+      let deletedLength = range.length
+      let deletedLocation = range.location
+
+      if deletedLength > 0 && deletedLocation + deletedLength <= textStorage.length {
+        textStorage.deleteCharacters(in: range)
+      }
+
+      // Remove from range cache
+      editor.rangeCache.removeValue(forKey: key)
+
+      // Record deletion for batch shifting
+      if deletedLength > 0 {
+        deletions.append((deletedLocation + deletedLength, deletedLength, node.parent))
+      }
+    }
+
+    // Phase 2: Batch update childrenLength for all affected parents
+    // Group deletions by parent for efficient updates
+    var parentDeltas: [NodeKey: Int] = [:]
+    for (_, length, parentKey) in deletions {
+      guard let pKey = parentKey else { continue }
+      parentDeltas[pKey, default: 0] -= length
+    }
+    for (parentKey, delta) in parentDeltas {
+      propagateChildrenLengthDelta(fromParentKey: parentKey, delta: delta, editor: editor)
+    }
+
+    // Phase 3: Batch shift remaining cache entries in a single O(n) pass
+    // Sort deletions by endLocation (ascending) for efficient cumulative delta calculation
+    deletions.sort { $0.endLocation < $1.endLocation }
+
+    // Build exclusion set: all ancestors of all deleted nodes
+    var allExcludedKeys = Set<NodeKey>()
+    for (_, node) in removes {
+      var parentKey = node.parent
+      while let pKey = parentKey {
+        allExcludedKeys.insert(pKey)
+        parentKey = getNodeByKey(key: pKey)?.parent
+      }
+    }
+
+    // Single pass through remaining cache entries
+    let remainingKeys = Array(editor.rangeCache.keys)
+    for key in remainingKeys {
+      if allExcludedKeys.contains(key) { continue }
+      guard var item = editor.rangeCache[key] else { continue }
+
+      // Calculate cumulative delta from all deletions before this location
+      var cumulativeDelta = 0
+      for (endLoc, length, _) in deletions {
+        if endLoc <= item.location {
+          cumulativeDelta -= length
+        } else {
+          break  // Deletions are sorted, no more will affect this item
+        }
+      }
+
+      if cumulativeDelta != 0 {
+        item.location += cumulativeDelta
+        editor.rangeCache[key] = item
       }
     }
   }

@@ -600,12 +600,10 @@ public class RangeSelection: BaseSelection {
         try firstNode.replace(replaceWith: textNode)
       }
 
-      for selectedNode in selectedNodes.dropFirst() {
-        let key = selectedNode.key
-        if !markedNodeKeysForKeep.contains(key) {
-          try selectedNode.remove()
-        }
-      }
+      // Batch remove all selected nodes (except first and those marked to keep)
+      // This is O(n) instead of O(n²) for large selections
+      let nodesToRemove = selectedNodes.dropFirst().filter { !markedNodeKeysForKeep.contains($0.key) }
+      try Node.batchRemoveNodes(Array(nodesToRemove))
     }
   }
 
@@ -790,18 +788,24 @@ public class RangeSelection: BaseSelection {
     }
 
     if selectStart {
+      // For selectStart, position cursor at the beginning of where we started inserting.
+      // This is used for large pastes to avoid expensive scroll-to-caret operations.
       if isTextNode(startingNode) {
-        if let startingNode = startingNode as? ElementNode {
-          try startingNode.select(anchorOffset: nil, focusOffset: nil)
+        if let textNode = startingNode as? TextNode {
+          try textNode.select(anchorOffset: 0, focusOffset: 0)
         }
+      } else if let elementNode = startingNode as? ElementNode {
+        // For element starting nodes, select at the start of that element
+        try elementNode.selectStart()
       } else {
         let prevSibling = target.getPreviousSibling()
 
         if isTextNode(prevSibling) {
-          if let prevSibling = prevSibling as? ElementNode {
-            try prevSibling.select(anchorOffset: nil, focusOffset: nil)
+          if let textNode = prevSibling as? TextNode {
+            try textNode.select(anchorOffset: 0, focusOffset: 0)
           }
         } else {
+          // Fallback: position at target's position within parent
           let index = target.getIndexWithinParent()
           try target.getParentOrThrow().select(anchorOffset: index, focusOffset: index)
         }

@@ -19,23 +19,6 @@ internal func insertPlainText(selection: RangeSelection, text: String) throws {
   if stringArray.count == 1 {
     try selection.insertText(text)
   } else {
-    let shouldSelectStartForLargePaste: Bool = {
-      let largePasteCharacterThreshold = 10_000
-      let largePasteParagraphThreshold = 200
-      let isLargePaste = text.utf16.count >= largePasteCharacterThreshold
-        || stringArray.count >= largePasteParagraphThreshold
-
-      guard isLargePaste, selection.isCollapsed() else { return false }
-      guard let root = getRoot() else { return false }
-      if root.getTextContentSize() == 0 {
-        return true
-      }
-      let content = root.getTextContent()
-      return content.unicodeScalars.allSatisfy { scalar in
-        scalar == "\u{200B}" || CharacterSet.whitespacesAndNewlines.contains(scalar)
-      }
-    }()
-
     var nodes: [Node] = []
     for (index, part) in stringArray.enumerated() {
       let textNode = createTextNode(text: String(part))
@@ -48,7 +31,8 @@ internal func insertPlainText(selection: RangeSelection, text: String) throws {
       }
     }
 
-    _ = try selection.insertNodes(nodes: nodes, selectStart: shouldSelectStartForLargePaste)
+    // Always position cursor at end of pasted content (selectStart: false)
+    _ = try selection.insertNodes(nodes: nodes, selectStart: false)
   }
 }
 
