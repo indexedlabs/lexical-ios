@@ -8,6 +8,47 @@
 import Foundation
 import XCTest
 @testable import Lexical
+#if os(macOS) && !targetEnvironment(macCatalyst)
+@testable import LexicalAppKit
+
+/// Instrumented TextStorage to count method calls
+class InstrumentedTextStorageAppKit: TextStorageAppKit {
+  var stringAccessCount = 0
+  var attributesAccessCount = 0
+
+  override var string: String {
+    stringAccessCount += 1
+    return super.string
+  }
+
+  override func attributes(at location: Int, effectiveRange range: NSRangePointer?) -> [NSAttributedString.Key: Any] {
+    attributesAccessCount += 1
+    return super.attributes(at: location, effectiveRange: range)
+  }
+}
+
+/// TextStorage with cached string to test if caching fixes the issue
+class CachedStringTextStorageAppKit: TextStorageAppKit {
+  private var cachedString: String?
+
+  override var string: String {
+    if cachedString == nil {
+      cachedString = super.string
+    }
+    return cachedString!
+  }
+
+  override func replaceCharacters(in range: NSRange, with str: String) {
+    cachedString = nil
+    super.replaceCharacters(in: range, with: str)
+  }
+
+  override func replaceCharacters(in range: NSRange, with attrString: NSAttributedString) {
+    cachedString = nil
+    super.replaceCharacters(in: range, with: attrString)
+  }
+}
+#endif
 
 /// Tests for verifying correctness of cursor position and content after pasting large ranges.
 /// These tests focus on correctness rather than performance - ensuring the position moves
@@ -497,6 +538,399 @@ final class LargePastePositionAndContentTests: XCTestCase {
 
     print("[HeapTest] Done")
   }
+
+  // MARK: - Control Test: Plain NSTextView
+
+  /// Control test: Does plain NSTextView have the same issue?
+  /// Run with: swift test --filter testPlainNSTextView_SelectAll_Memory
+  #if os(macOS)
+  func testPlainNSTextView_SelectAll_Memory() throws {
+    // Create a plain NSTextView without Lexical
+    let textStorage = NSTextStorage()
+    let layoutManager = NSLayoutManager()
+    let textContainer = NSTextContainer(size: CGSize(width: 800, height: 10000))
+    textStorage.addLayoutManager(layoutManager)
+    layoutManager.addTextContainer(textContainer)
+    let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 800, height: 600), textContainer: textContainer)
+
+    // Generate same content as Lexical tests
+    let largeContent = generateLargeContent(lines: lineCount)
+
+    // Insert content 3 times
+    for i in 1...3 {
+      let attrString = NSAttributedString(string: largeContent, attributes: [
+        .font: NSFont.systemFont(ofSize: 14),
+        .foregroundColor: NSColor.textColor
+      ])
+      textStorage.append(attrString)
+      print("[PlainNSTextView] Paste \(i): \(textStorage.length) chars")
+    }
+
+    let sampler = ProcessMemorySampler(interval: 0.001)
+    sampler.start()
+
+    let preSelect = currentProcessMemorySnapshot()
+    print("[PlainNSTextView] Before selectAll: \(formatBytesMB(preSelect?.bestCurrentBytes ?? 0))")
+
+    // Select all
+    textView.setSelectedRange(NSRange(location: 0, length: textStorage.length))
+
+    let postSelect = currentProcessMemorySnapshot()
+    print("[PlainNSTextView] After selectAll (no runloop): \(formatBytesMB(postSelect?.bestCurrentBytes ?? 0))")
+
+    // Run runloop
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.01))
+    let after10ms = currentProcessMemorySnapshot()
+    print("[PlainNSTextView] After 0.01s runloop: \(formatBytesMB(after10ms?.bestCurrentBytes ?? 0))")
+
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+    let after100ms = currentProcessMemorySnapshot()
+    print("[PlainNSTextView] After 0.11s runloop: \(formatBytesMB(after100ms?.bestCurrentBytes ?? 0))")
+
+    sampler.stop()
+    print("[PlainNSTextView] Peak: \(formatBytesMB(sampler.maxPhysicalFootprintBytes))")
+  }
+  #endif
+
+  // MARK: - Isolation Test: Bypass Lexical Selection Handling
+
+  /// Test that bypasses Lexical's selection handling to isolate the memory spike.
+  /// If memory stays low, the issue is in notifyLexicalOfSelectionChange().
+  /// Run with: swift test --filter testBypassLexicalSelection_Memory
+  #if os(macOS) && !targetEnvironment(macCatalyst)
+  func testBypassLexicalSelection_Memory() throws {
+    let testView = createTestEditorView()
+    let largeContent = generateLargeContent(lines: lineCount)
+
+    // Paste 3x
+    for i in 1...3 {
+      let currentLength = testView.textStorageLength
+      testView.setSelectedRange(NSRange(location: currentLength, length: 0))
+      try testView.editor.update {
+        guard let selection = try getSelection() as? RangeSelection else { return }
+        try insertPlainText(selection: selection, text: largeContent)
+      }
+      print("[BypassTest] Paste \(i) complete: \(testView.textStorageLength) chars")
+    }
+
+    let sampler = ProcessMemorySampler(interval: 0.001)
+    sampler.start()
+
+    let preSelect = currentProcessMemorySnapshot()
+    print("[BypassTest] Before selectAll: \(formatBytesMB(preSelect?.bestCurrentBytes ?? 0))")
+
+    // BYPASS: Set the flag to prevent Lexical from handling selection change
+    testView.view.isUpdatingNativeSelection = true
+
+    // Select all - Lexical's handleSelectionChange should be bypassed
+    let totalLength = testView.textStorageLength
+    testView.setSelectedRange(NSRange(location: 0, length: totalLength))
+
+    let postSelect = currentProcessMemorySnapshot()
+    print("[BypassTest] After selectAll (bypassed): \(formatBytesMB(postSelect?.bestCurrentBytes ?? 0))")
+
+    // Run runloop - should NOT spike if Lexical handling is the cause
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.01))
+    let after10ms = currentProcessMemorySnapshot()
+    print("[BypassTest] After 0.01s runloop: \(formatBytesMB(after10ms?.bestCurrentBytes ?? 0))")
+
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+    let after100ms = currentProcessMemorySnapshot()
+    print("[BypassTest] After 0.11s runloop: \(formatBytesMB(after100ms?.bestCurrentBytes ?? 0))")
+
+    // Reset the flag
+    testView.view.isUpdatingNativeSelection = false
+
+    sampler.stop()
+    print("[BypassTest] Peak: \(formatBytesMB(sampler.maxPhysicalFootprintBytes))")
+
+    // Compare with control test - should be similar to plain NSTextView (~17MB)
+    // If peak is <100MB, Lexical selection handling is the issue
+    let peakMB = Double(sampler.maxPhysicalFootprintBytes) / (1024.0 * 1024.0)
+    print("[BypassTest] Peak MB: \(peakMB)")
+  }
+  #endif
+
+  /// Test just cached string storage
+  /// Run with: swift test --filter testCachedStringStorage_Memory
+  #if os(macOS) && !targetEnvironment(macCatalyst)
+  func testCachedStringStorage_Memory() throws {
+    let largeContent = generateLargeContent(lines: lineCount)
+    let fullContent = largeContent + largeContent + largeContent
+
+    print("\n=== Cached String TextStorage ===")
+    let textStorage = CachedStringTextStorageAppKit()
+    textStorage.mode = .controllerMode
+    let layoutManager = NSLayoutManager()
+    let textContainer = NSTextContainer(size: CGSize(width: 800, height: 10000))
+    textStorage.addLayoutManager(layoutManager)
+    layoutManager.addTextContainer(textContainer)
+    let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 800, height: 600), textContainer: textContainer)
+
+    textStorage.beginEditing()
+    let attrString = NSAttributedString(string: fullContent, attributes: [
+      .font: NSFont.systemFont(ofSize: 14),
+      .foregroundColor: NSColor.textColor
+    ])
+    textStorage.replaceCharacters(in: NSRange(location: 0, length: 0), with: attrString)
+    textStorage.endEditing()
+    textStorage.mode = .none
+    print("[CachedTest] Content: \(textStorage.length) chars")
+
+    let sampler = ProcessMemorySampler(interval: 0.001)
+    let pre = currentProcessMemorySnapshot()
+    sampler.start()
+    textView.setSelectedRange(NSRange(location: 0, length: textStorage.length))
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+    sampler.stop()
+    let post = currentProcessMemorySnapshot()
+    print("[CachedTest] Before: \(formatBytesMB(pre?.bestCurrentBytes ?? 0)), After: \(formatBytesMB(post?.bestCurrentBytes ?? 0)), Peak: \(formatBytesMB(sampler.maxPhysicalFootprintBytes))")
+  }
+  #endif
+
+  /// Test just uncached string storage
+  /// Run with: swift test --filter testUncachedStringStorage_Memory
+  #if os(macOS) && !targetEnvironment(macCatalyst)
+  func testUncachedStringStorage_Memory() throws {
+    let largeContent = generateLargeContent(lines: lineCount)
+    let fullContent = largeContent + largeContent + largeContent
+
+    print("\n=== Uncached String TextStorage ===")
+    let textStorage = TextStorageAppKit()
+    textStorage.mode = .controllerMode
+    let layoutManager = NSLayoutManager()
+    let textContainer = NSTextContainer(size: CGSize(width: 800, height: 10000))
+    textStorage.addLayoutManager(layoutManager)
+    layoutManager.addTextContainer(textContainer)
+    let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 800, height: 600), textContainer: textContainer)
+
+    textStorage.beginEditing()
+    let attrString = NSAttributedString(string: fullContent, attributes: [
+      .font: NSFont.systemFont(ofSize: 14),
+      .foregroundColor: NSColor.textColor
+    ])
+    textStorage.replaceCharacters(in: NSRange(location: 0, length: 0), with: attrString)
+    textStorage.endEditing()
+    textStorage.mode = .none
+    print("[UncachedTest] Content: \(textStorage.length) chars")
+
+    let sampler = ProcessMemorySampler(interval: 0.001)
+    let pre = currentProcessMemorySnapshot()
+    sampler.start()
+    textView.setSelectedRange(NSRange(location: 0, length: textStorage.length))
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+    sampler.stop()
+    let post = currentProcessMemorySnapshot()
+    print("[UncachedTest] Before: \(formatBytesMB(pre?.bestCurrentBytes ?? 0)), After: \(formatBytesMB(post?.bestCurrentBytes ?? 0)), Peak: \(formatBytesMB(sampler.maxPhysicalFootprintBytes))")
+  }
+  #endif
+
+  /// Test with isolated components to find the culprit.
+  /// Run with: swift test --filter testIsolateComponent_Memory
+  #if os(macOS) && !targetEnvironment(macCatalyst)
+  func testIsolateComponent_Memory() throws {
+    let largeContent = generateLargeContent(lines: lineCount)
+    let fullContent = largeContent + largeContent + largeContent
+
+    // Test 1: Plain NSTextView with plain components
+    print("\n=== Test 1: Plain NSTextView ===")
+    autoreleasepool {
+      let textStorage = NSTextStorage()
+      let layoutManager = NSLayoutManager()
+      let textContainer = NSTextContainer(size: CGSize(width: 800, height: 10000))
+      textStorage.addLayoutManager(layoutManager)
+      layoutManager.addTextContainer(textContainer)
+      let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 800, height: 600), textContainer: textContainer)
+
+      let attrString = NSAttributedString(string: fullContent, attributes: [
+        .font: NSFont.systemFont(ofSize: 14),
+        .foregroundColor: NSColor.textColor
+      ])
+      textStorage.append(attrString)
+      print("[PlainTest] Content: \(textStorage.length) chars")
+
+      let sampler = ProcessMemorySampler(interval: 0.001)
+      let pre = currentProcessMemorySnapshot()
+      sampler.start()
+      textView.setSelectedRange(NSRange(location: 0, length: textStorage.length))
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+      sampler.stop()
+      let post = currentProcessMemorySnapshot()
+      print("[PlainTest] Before: \(formatBytesMB(pre?.bestCurrentBytes ?? 0)), After: \(formatBytesMB(post?.bestCurrentBytes ?? 0)), Peak: \(formatBytesMB(sampler.maxPhysicalFootprintBytes))")
+    }
+
+    // Test 2: Plain NSTextView + Lexical TextStorageAppKit only
+    print("\n=== Test 2: Plain NSTextView + LexicalTextStorage ===")
+    autoreleasepool {
+      let textStorage = InstrumentedTextStorageAppKit()
+      textStorage.mode = .controllerMode
+      let layoutManager = NSLayoutManager()
+      let textContainer = NSTextContainer(size: CGSize(width: 800, height: 10000))
+      textStorage.addLayoutManager(layoutManager)
+      layoutManager.addTextContainer(textContainer)
+      let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 800, height: 600), textContainer: textContainer)
+
+      textStorage.beginEditing()
+      let attrString = NSAttributedString(string: fullContent, attributes: [
+        .font: NSFont.systemFont(ofSize: 14),
+        .foregroundColor: NSColor.textColor
+      ])
+      textStorage.replaceCharacters(in: NSRange(location: 0, length: 0), with: attrString)
+      textStorage.endEditing()
+      textStorage.mode = .none
+      print("[LexicalStorageTest] Content: \(textStorage.length) chars")
+
+      // Reset counters
+      textStorage.stringAccessCount = 0
+      textStorage.attributesAccessCount = 0
+
+      let sampler = ProcessMemorySampler(interval: 0.001)
+      let pre = currentProcessMemorySnapshot()
+      sampler.start()
+      textView.setSelectedRange(NSRange(location: 0, length: textStorage.length))
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+      sampler.stop()
+      let post = currentProcessMemorySnapshot()
+      print("[LexicalStorageTest] string accesses: \(textStorage.stringAccessCount), attributes accesses: \(textStorage.attributesAccessCount)")
+      print("[LexicalStorageTest] Before: \(formatBytesMB(pre?.bestCurrentBytes ?? 0)), After: \(formatBytesMB(post?.bestCurrentBytes ?? 0)), Peak: \(formatBytesMB(sampler.maxPhysicalFootprintBytes))")
+    }
+
+    // Test 2b: LexicalTextStorage WITH cached string (proposed fix)
+    print("\n=== Test 2b: LexicalTextStorage + CachedString ===")
+    autoreleasepool {
+      let textStorage = CachedStringTextStorageAppKit()
+      textStorage.mode = .controllerMode
+      let layoutManager = NSLayoutManager()
+      let textContainer = NSTextContainer(size: CGSize(width: 800, height: 10000))
+      textStorage.addLayoutManager(layoutManager)
+      layoutManager.addTextContainer(textContainer)
+      let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 800, height: 600), textContainer: textContainer)
+
+      textStorage.beginEditing()
+      let attrString = NSAttributedString(string: fullContent, attributes: [
+        .font: NSFont.systemFont(ofSize: 14),
+        .foregroundColor: NSColor.textColor
+      ])
+      textStorage.replaceCharacters(in: NSRange(location: 0, length: 0), with: attrString)
+      textStorage.endEditing()
+      textStorage.mode = .none
+      print("[CachedStorageTest] Content: \(textStorage.length) chars")
+
+      let sampler = ProcessMemorySampler(interval: 0.001)
+      let pre = currentProcessMemorySnapshot()
+      sampler.start()
+      textView.setSelectedRange(NSRange(location: 0, length: textStorage.length))
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+      sampler.stop()
+      let post = currentProcessMemorySnapshot()
+      print("[CachedStorageTest] Before: \(formatBytesMB(pre?.bestCurrentBytes ?? 0)), After: \(formatBytesMB(post?.bestCurrentBytes ?? 0)), Peak: \(formatBytesMB(sampler.maxPhysicalFootprintBytes))")
+    }
+
+    // Test 3: Plain NSTextView + Lexical LayoutManagerAppKit only
+    print("\n=== Test 3: Plain NSTextView + LexicalLayoutManager ===")
+    autoreleasepool {
+      let textStorage = NSTextStorage()
+      let layoutManager = LexicalAppKit.LayoutManagerAppKit()
+      let textContainer = NSTextContainer(size: CGSize(width: 800, height: 10000))
+      textStorage.addLayoutManager(layoutManager)
+      layoutManager.addTextContainer(textContainer)
+      let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 800, height: 600), textContainer: textContainer)
+
+      let attrString = NSAttributedString(string: fullContent, attributes: [
+        .font: NSFont.systemFont(ofSize: 14),
+        .foregroundColor: NSColor.textColor
+      ])
+      textStorage.append(attrString)
+      print("[LexicalLayoutTest] Content: \(textStorage.length) chars")
+
+      let sampler = ProcessMemorySampler(interval: 0.001)
+      let pre = currentProcessMemorySnapshot()
+      sampler.start()
+      textView.setSelectedRange(NSRange(location: 0, length: textStorage.length))
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+      sampler.stop()
+      let post = currentProcessMemorySnapshot()
+      print("[LexicalLayoutTest] Before: \(formatBytesMB(pre?.bestCurrentBytes ?? 0)), After: \(formatBytesMB(post?.bestCurrentBytes ?? 0)), Peak: \(formatBytesMB(sampler.maxPhysicalFootprintBytes))")
+    }
+
+    // Test 4: Full Lexical with bypass
+    print("\n=== Test 4: Full Lexical with Bypass ===")
+    let testView = createTestEditorView()
+
+    for _ in 1...3 {
+      let currentLength = testView.textStorageLength
+      testView.setSelectedRange(NSRange(location: currentLength, length: 0))
+      try testView.editor.update {
+        guard let selection = try getSelection() as? RangeSelection else { return }
+        try insertPlainText(selection: selection, text: largeContent)
+      }
+    }
+    print("[FullLexicalTest] Content: \(testView.textStorageLength) chars")
+
+    let sampler4 = ProcessMemorySampler(interval: 0.001)
+    let pre4 = currentProcessMemorySnapshot()
+    sampler4.start()
+
+    testView.view.isUpdatingNativeSelection = true
+    testView.setSelectedRange(NSRange(location: 0, length: testView.textStorageLength))
+    testView.view.isUpdatingNativeSelection = false
+
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+    sampler4.stop()
+    let post4 = currentProcessMemorySnapshot()
+    print("[FullLexicalTest] Before: \(formatBytesMB(pre4?.bestCurrentBytes ?? 0)), After: \(formatBytesMB(post4?.bestCurrentBytes ?? 0)), Peak: \(formatBytesMB(sampler4.maxPhysicalFootprintBytes))")
+
+    print("\n=== Summary ===")
+    print("Compare peaks to identify culprit component")
+  }
+  #endif
+
+  /// Test with Lexical selection handling ENABLED to compare.
+  /// Run with: swift test --filter testWithLexicalSelection_Memory
+  #if os(macOS) && !targetEnvironment(macCatalyst)
+  func testWithLexicalSelection_Memory() throws {
+    let testView = createTestEditorView()
+    let largeContent = generateLargeContent(lines: lineCount)
+
+    // Paste 3x
+    for i in 1...3 {
+      let currentLength = testView.textStorageLength
+      testView.setSelectedRange(NSRange(location: currentLength, length: 0))
+      try testView.editor.update {
+        guard let selection = try getSelection() as? RangeSelection else { return }
+        try insertPlainText(selection: selection, text: largeContent)
+      }
+      print("[EnabledTest] Paste \(i) complete: \(testView.textStorageLength) chars")
+    }
+
+    let sampler = ProcessMemorySampler(interval: 0.001)
+    sampler.start()
+
+    let preSelect = currentProcessMemorySnapshot()
+    print("[EnabledTest] Before selectAll: \(formatBytesMB(preSelect?.bestCurrentBytes ?? 0))")
+
+    // NO BYPASS: Let Lexical handle selection change normally
+    let totalLength = testView.textStorageLength
+    testView.setSelectedRange(NSRange(location: 0, length: totalLength))
+
+    let postSelect = currentProcessMemorySnapshot()
+    print("[EnabledTest] After selectAll: \(formatBytesMB(postSelect?.bestCurrentBytes ?? 0))")
+
+    // Run runloop
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.01))
+    let after10ms = currentProcessMemorySnapshot()
+    print("[EnabledTest] After 0.01s runloop: \(formatBytesMB(after10ms?.bestCurrentBytes ?? 0))")
+
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+    let after100ms = currentProcessMemorySnapshot()
+    print("[EnabledTest] After 0.11s runloop: \(formatBytesMB(after100ms?.bestCurrentBytes ?? 0))")
+
+    sampler.stop()
+    print("[EnabledTest] Peak: \(formatBytesMB(sampler.maxPhysicalFootprintBytes))")
+    let peakMB = Double(sampler.maxPhysicalFootprintBytes) / (1024.0 * 1024.0)
+    print("[EnabledTest] Peak MB: \(peakMB)")
+  }
+  #endif
 
   // MARK: - Helper for asserting Int equality with tolerance
 

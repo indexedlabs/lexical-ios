@@ -330,6 +330,12 @@ public class TextStorageAppKit: NSTextStorage, ReconcilerTextStorageAppKit {
   /// The backing store for the attributed string.
   private var backingAttributedString: NSMutableAttributedString
 
+  /// Cached string to avoid repeated allocations when TextKit queries the string property.
+  /// This is critical for performance: TextKit calls `string` thousands of times during
+  /// selection/layout operations, and each call to backingAttributedString.string creates
+  /// a new autoreleased copy. Caching reduces memory from ~700MB to ~17MB for large documents.
+  private var cachedString: String?
+
   /// Current editing mode.
   public var mode: TextStorageEditingMode
 
@@ -364,7 +370,12 @@ public class TextStorageAppKit: NSTextStorage, ReconcilerTextStorageAppKit {
   // MARK: - NSTextStorage Required Overrides
 
   public override var string: String {
-    backingAttributedString.string
+    if let cached = cachedString {
+      return cached
+    }
+    let str = backingAttributedString.string
+    cachedString = str
+    return str
   }
 
   public override func attributes(at location: Int, effectiveRange range: NSRangePointer?) -> [NSAttributedString.Key: Any] {
@@ -427,6 +438,7 @@ public class TextStorageAppKit: NSTextStorage, ReconcilerTextStorageAppKit {
     let end = max(start, min(range.location + range.length, length))
     let safe = NSRange(location: start, length: end - start)
 
+    cachedString = nil  // Invalidate cached string
     beginEditing()
     backingAttributedString.replaceCharacters(in: safe, with: str)
     edited(.editedCharacters, range: safe, changeInLength: (str as NSString).length - safe.length)
@@ -447,6 +459,7 @@ public class TextStorageAppKit: NSTextStorage, ReconcilerTextStorageAppKit {
     let end = max(start, min(range.location + range.length, length))
     let safe = NSRange(location: start, length: end - start)
 
+    cachedString = nil  // Invalidate cached string
     beginEditing()
     backingAttributedString.replaceCharacters(in: safe, with: str)
     edited(.editedCharacters, range: safe, changeInLength: (str as NSString).length - safe.length)
