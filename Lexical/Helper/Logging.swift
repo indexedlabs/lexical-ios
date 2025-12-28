@@ -19,6 +19,7 @@ public enum LogFeature {
   case editor
   case reconciler
   case TextView
+  case selection
   case other
 }
 

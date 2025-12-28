@@ -386,6 +386,11 @@ final class ViewController: NSViewController, NSSplitViewDelegate {
             try? paragraph2.append([text2])
 
             try? root.append([heading, paragraph, paragraph2])
+
+            // Set an explicit selection at the start of the first text node.
+            // This avoids a race condition where the native selection change fires
+            // before the range cache is fully built, resulting in a ROOT element selection.
+            _ = try? headingText.select(anchorOffset: 0, focusOffset: 0)
         }
     }
 

@@ -420,6 +420,7 @@ func updateElementSelectionOnCreateDeleteNode(
   let focus = selection.focus
   let anchorNode = try anchor.getNode()
   let focusNode = try focus.getNode()
+
   if parentNode != anchorNode && parentNode != focusNode {
     return
   }

@@ -273,6 +273,269 @@ final class InsertParagraphAtStartParityTests: XCTestCase {
     // Text content should include the empty paragraph's contribution
     XCTAssertTrue(textContent.hasSuffix("Hello World"), "Content should end with original text")
   }
+
+  /// Test insertParagraph when selection is created via pointAtStringLocation (like clicking).
+  ///
+  /// This simulates what happens in the demo app when a user clicks at position 0:
+  /// 1. Native selection is set at location 0
+  /// 2. `pointAtStringLocation` converts native position to Lexical Point
+  /// 3. This Point may be element-type instead of text-type depending on document structure
+  /// 4. insertParagraph is called with whatever selection type was created
+  ///
+  /// The bug might be that clicking at position 0 creates an element-type selection
+  /// which takes a different code path in insertParagraph than the text-type selection
+  /// created by explicit `textNode.select()`.
+  func testAppKit_InsertParagraphAtStart_WithClickDerivedSelection() throws {
+    let cfg = EditorConfig(theme: Theme(), plugins: [])
+    let lexicalView = LexicalView(editorConfig: cfg, featureFlags: FeatureFlags())
+    lexicalView.frame = CGRect(x: 0, y: 0, width: 400, height: 300)
+    let editor = lexicalView.editor
+    let textView = lexicalView.textView
+
+    // Create content WITHOUT setting selection
+    try editor.update {
+      guard let root = getRoot() else { return }
+      for child in root.getChildren() { try? child.remove() }
+      let p = createParagraphNode()
+      let t = createTextNode(text: "Hello World")
+      try p.append([t])
+      try root.append([p])
+      // Don't call select() - let the selection come from pointAtStringLocation
+    }
+
+    // Simulate what happens when user clicks at position 0:
+    // Use pointAtStringLocation to create selection (like notifyLexicalOfSelectionChange does)
+    try editor.update {
+      let rangeCache = editor.rangeCache
+      let anchorPoint = try pointAtStringLocation(0, searchDirection: .forward, rangeCache: rangeCache)
+      let focusPoint = try pointAtStringLocation(0, searchDirection: .forward, rangeCache: rangeCache)
+
+      guard let anchor = anchorPoint, let focus = focusPoint else {
+        XCTFail("Failed to create points from string location 0")
+        return
+      }
+
+      // Log what type of selection we're creating
+      print("[Test] Selection from pointAtStringLocation: anchor=(\(anchor.key),\(anchor.offset)) type=\(anchor.type)")
+
+      // Create selection the same way notifyLexicalOfSelectionChange does
+      let newSelection = RangeSelection(anchor: anchor, focus: focus, format: TextFormat())
+      try setSelection(newSelection)
+    }
+
+    // Verify the selection was created
+    var selectionType: SelectionType = .text
+    try editor.read {
+      if let sel = try getSelection() as? RangeSelection {
+        selectionType = sel.anchor.type
+        print("[Test] Selection type before insertParagraph: \(selectionType)")
+      }
+    }
+
+    // Insert paragraph at start (press Enter)
+    try editor.update {
+      try (getSelection() as? RangeSelection)?.insertParagraph()
+    }
+
+    // Verify result
+    let finalNativeRange = textView.selectedRange()
+    var computedLocation = -1
+    try editor.read {
+      if let sel = try getSelection() as? RangeSelection,
+         let loc = try? stringLocationForPoint(sel.anchor, editor: editor) {
+        computedLocation = loc
+        print("[Test] After insertParagraph: native=\(finalNativeRange.location), computed=\(computedLocation)")
+      }
+    }
+
+    XCTAssertEqual(finalNativeRange.location, 1,
+                   "Native selection should be at 1 (after new paragraph's newline)")
+    XCTAssertEqual(finalNativeRange.location, computedLocation,
+                   "Native selection (\(finalNativeRange.location)) should match computed (\(computedLocation))")
+    XCTAssertEqual(textView.string, "\nHello World",
+                   "Text should have newline prefix from empty paragraph")
+  }
+
+  /// Test insertParagraph with multiple paragraphs (like demo app structure).
+  ///
+  /// This more closely matches the demo app which has 3 paragraphs:
+  /// 1. Bold heading "Welcome to Lexical on macOS!"
+  /// 2. Description paragraph
+  /// 3. Features paragraph
+  func testAppKit_InsertParagraphAtStart_WithMultipleParagraphs_ClickDerived() throws {
+    let cfg = EditorConfig(theme: Theme(), plugins: [])
+    let lexicalView = LexicalView(editorConfig: cfg, featureFlags: FeatureFlags())
+    lexicalView.frame = CGRect(x: 0, y: 0, width: 400, height: 300)
+    let editor = lexicalView.editor
+    let textView = lexicalView.textView
+
+    // Create content similar to demo app (multiple paragraphs) WITHOUT setting selection
+    try editor.update {
+      guard let root = getRoot() else { return }
+      for child in root.getChildren() { try? child.remove() }
+
+      // Paragraph 1: Bold heading (like demo app)
+      let heading = createParagraphNode()
+      let headingText = createTextNode(text: "Welcome to Lexical on macOS!")
+      try? headingText.setBold(true)
+      try heading.append([headingText])
+
+      // Paragraph 2: Description
+      let paragraph = createParagraphNode()
+      let text = createTextNode(text: "This is a demo of the Lexical rich text editor.")
+      try paragraph.append([text])
+
+      // Paragraph 3: Features
+      let paragraph2 = createParagraphNode()
+      let text2 = createTextNode(text: "Features include bold, italic, and lists.")
+      try paragraph2.append([text2])
+
+      try root.append([heading, paragraph, paragraph2])
+      // Don't set selection - let it come from pointAtStringLocation
+    }
+
+    // Simulate clicking at position 0
+    try editor.update {
+      let rangeCache = editor.rangeCache
+      let anchorPoint = try pointAtStringLocation(0, searchDirection: .forward, rangeCache: rangeCache)
+      let focusPoint = try pointAtStringLocation(0, searchDirection: .forward, rangeCache: rangeCache)
+
+      guard let anchor = anchorPoint, let focus = focusPoint else {
+        XCTFail("Failed to create points from string location 0")
+        return
+      }
+
+      print("[Test Multi] Selection from pointAtStringLocation: anchor=(\(anchor.key),\(anchor.offset)) type=\(anchor.type)")
+
+      let newSelection = RangeSelection(anchor: anchor, focus: focus, format: TextFormat())
+      try setSelection(newSelection)
+    }
+
+    // Verify initial state
+    var initialNativeRange = textView.selectedRange()
+    print("[Test Multi] Initial native selection: location=\(initialNativeRange.location)")
+
+    // Press Enter 3 times
+    for i in 1...3 {
+      try editor.update {
+        try (getSelection() as? RangeSelection)?.insertParagraph()
+      }
+
+      let nativeRange = textView.selectedRange()
+      var computedLocation = -1
+      var anchorType: SelectionType = .text
+      try editor.read {
+        if let sel = try getSelection() as? RangeSelection {
+          anchorType = sel.anchor.type
+          if let loc = try? stringLocationForPoint(sel.anchor, editor: editor) {
+            computedLocation = loc
+          }
+        }
+      }
+
+      print("[Test Multi] After Enter \(i): native=\(nativeRange.location), computed=\(computedLocation), type=\(anchorType)")
+
+      XCTAssertEqual(nativeRange.location, computedLocation,
+                     "After Enter \(i): native (\(nativeRange.location)) should match computed (\(computedLocation))")
+      XCTAssertEqual(nativeRange.location, i,
+                     "After Enter \(i): native selection should be at position \(i)")
+    }
+
+    // Final check: cursor at position 3, text has 3 newlines at start
+    let finalNativeRange = textView.selectedRange()
+    XCTAssertEqual(finalNativeRange.location, 3, "Final cursor should be at position 3")
+    XCTAssertTrue(textView.string.hasPrefix("\n\n\nWelcome"), "Text should have 3 newlines before 'Welcome'")
+  }
+
+  /// Test insertParagraph when selection is element-type on ROOT at offset 0.
+  ///
+  /// This is the exact scenario happening in the demo app:
+  /// - User clicks at position 0
+  /// - Selection is created as element-type on ROOT at offset 0
+  /// - User presses Enter
+  /// - Expected: New empty paragraph at top, cursor stays on original content
+  /// - Bug: Cursor was ending up on the new empty paragraph
+  func testAppKit_InsertParagraphAtStart_WithRootElementSelection() throws {
+    let cfg = EditorConfig(theme: Theme(), plugins: [])
+    let lexicalView = LexicalView(editorConfig: cfg, featureFlags: FeatureFlags())
+    lexicalView.frame = CGRect(x: 0, y: 0, width: 400, height: 300)
+    let editor = lexicalView.editor
+    let textView = lexicalView.textView
+
+    // Create content WITHOUT setting selection
+    try editor.update {
+      guard let root = getRoot() else { return }
+      for child in root.getChildren() { try? child.remove() }
+
+      let p = createParagraphNode()
+      let t = createTextNode(text: "Hello World")
+      try p.append([t])
+      try root.append([p])
+      // Don't set selection yet
+    }
+
+    // Create element-type selection on ROOT at offset 0 (like demo app does)
+    try editor.update {
+      guard let root = getRoot() else { return }
+      // Create selection directly on root element at offset 0
+      let anchor = Point(key: root.key, offset: 0, type: .element)
+      let focus = Point(key: root.key, offset: 0, type: .element)
+      let newSelection = RangeSelection(anchor: anchor, focus: focus, format: TextFormat())
+      try setSelection(newSelection)
+
+      print("[Test ROOT] Created ROOT element selection: anchor=(\(anchor.key),\(anchor.offset)) type=\(anchor.type)")
+    }
+
+    // Verify initial state
+    let initialText = textView.string
+    XCTAssertEqual(initialText, "Hello World", "Initial text should be 'Hello World'")
+
+    // Verify selection is element-type on root
+    var initialAnchorType: SelectionType = .text
+    var initialAnchorKey: NodeKey = ""
+    try editor.read {
+      if let sel = try getSelection() as? RangeSelection {
+        initialAnchorType = sel.anchor.type
+        initialAnchorKey = sel.anchor.key
+      }
+    }
+    XCTAssertEqual(initialAnchorType, .element, "Initial selection should be element-type")
+    XCTAssertEqual(initialAnchorKey, kRootNodeKey, "Initial selection should be on root")
+
+    // Insert paragraph (press Enter)
+    try editor.update {
+      try (getSelection() as? RangeSelection)?.insertParagraph()
+    }
+
+    // Verify result
+    let finalNativeRange = textView.selectedRange()
+    var finalAnchorKey: NodeKey = ""
+    var computedLocation = -1
+    try editor.read {
+      if let sel = try getSelection() as? RangeSelection {
+        finalAnchorKey = sel.anchor.key
+        print("[Test ROOT] After insertParagraph: anchor=(\(sel.anchor.key),\(sel.anchor.offset)) type=\(sel.anchor.type)")
+        if let loc = try? stringLocationForPoint(sel.anchor, editor: editor) {
+          computedLocation = loc
+        }
+      }
+    }
+
+    // The key assertion: cursor should be at position 1 (after the new empty paragraph's newline)
+    XCTAssertEqual(finalNativeRange.location, 1,
+                   "Native selection should be at 1 (after new paragraph's newline)")
+    XCTAssertEqual(finalNativeRange.location, computedLocation,
+                   "Native selection (\(finalNativeRange.location)) should match computed (\(computedLocation))")
+
+    // Selection should NOT be on the new empty paragraph (which would be at position 0)
+    // It should be on the original content paragraph
+    XCTAssertNotEqual(finalNativeRange.location, 0,
+                      "Cursor should NOT be at position 0 (the new empty paragraph)")
+
+    // Text should have newline prefix
+    XCTAssertEqual(textView.string, "\nHello World",
+                   "Text should have newline prefix from empty paragraph")
+  }
   #endif
 
   /// Test that insertParagraph at start of paragraph keeps cursor at start of original content.

@@ -952,6 +952,7 @@ public class RangeSelection: BaseSelection {
         }
       }
     } else {
+      // anchor.type == .element
       let newCurrentElement = try anchor.getNode() as? ElementNode
       guard let newCurrentElement else {
         getActiveEditor()?.log(.editor, .error, "Expected an element node")
@@ -961,14 +962,22 @@ public class RangeSelection: BaseSelection {
 
       if let elementNode = currentElement as? RootNode {
         let paragraph = createParagraphNode()
-        try paragraph.select(anchorOffset: nil, focusOffset: nil)
 
         if let child = elementNode.getChildAtIndex(index: anchorOffset) {
           try child.insertBefore(nodeToInsert: paragraph)
+
+          // When inserting at the beginning (offset 0), keep cursor on the ORIGINAL content
+          // `child` is the original first element - select it to keep cursor with content
+          if anchorOffset == 0, let childElement = child as? ElementNode {
+            _ = try childElement.selectStart()
+          } else {
+            // Inserting in the middle - select the new empty paragraph
+            try paragraph.select(anchorOffset: nil, focusOffset: nil)
+          }
         } else {
           try elementNode.append([paragraph])
+          try paragraph.select(anchorOffset: nil, focusOffset: nil)
         }
-
         return
       }
 
@@ -994,6 +1003,7 @@ public class RangeSelection: BaseSelection {
 
     let currentParent = try currentElement.getParentOrThrow()
     let result = try currentElement.insertNewAfter(selection: self)
+
     if result.abort { return }
     let newElement = result.element
     if newElement == nil {
@@ -1014,8 +1024,10 @@ public class RangeSelection: BaseSelection {
       let isBeginning =
         anchorOffset == 0
         && (currentElement.key == anchor.key || (currentElementFirstChild?.key == anchor.key))
+
       if isBeginning && nodesToMoveLength > 0 {
         try currentElement.insertBefore(nodeToInsert: newElement)
+
         // Select the original text node at offset 0 (cursor stays with content)
         // nodesToMove.last is the original anchor text node (added at line 939 when anchorOffset == 0)
         if let originalTextNode = nodesToMove.last as? TextNode {
