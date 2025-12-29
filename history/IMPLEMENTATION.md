@@ -1,5 +1,9 @@
 # Implementation Log (Lexical iOS)
 
+## 2025-12-29
+- lexical-ios-7nw.6 (in progress): Investigated backspace-at-boundary regressions; added native-selection boundary test; adjusted range-cache mapping for postamble locations and tightened backspace selection clamping + paragraph-boundary fallback selection in `RangeSelection.deleteCharacter` / `applySelectionRange`.
+- Tests: `xcodebuild -workspace Playground/LexicalPlayground.xcodeproj/project.xcworkspace -scheme Lexical-Package -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.0' -only-testing:LexicalTests/ReconcilerUsageDeleteBoundaryTests test` (failed; 29 failures). Log: `/tmp/lexical-test-results.log`.
+
 ## 2025-12-27
 - lexical-ios-k5i.6 (done): Added reconciler metrics recording to `RopeReconciler` (path label + planning/apply timing + dirty/range counts) so `EditorMetricsContainer` receives `.reconcilerRun` events again after the migration.
 - lexical-ios-k5i.1 (done): Updated the old OptimizedReconciler fast-path tests to assert RopeReconciler behavior (metrics recorded; no full-reconcile/hydrate) instead of OptimizedReconciler path labels.

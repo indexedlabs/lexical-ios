@@ -883,6 +883,57 @@ final class ReconcilerUsageDeleteBoundaryTests: XCTestCase {
     try assertSelectionRoundTrips(editor, textView)
   }
 
+  func testBackspaceAtTextNodeBoundary_FromNativeSelection_DoesNotDeleteForwardText() throws {
+    let testView = createTestEditorView()
+    let editor = testView.editor
+    let textView = testView.view.textView
+    setupWindowWithView(testView)
+    textView.becomeFirstResponder()
+
+    try editor.update {
+      guard let root = getRoot() else { return }
+      _ = try root.clear()
+
+      let p = createParagraphNode()
+      let t1 = createTextNode(text: "AAA")
+      let t2 = createTextNode(text: "BBB")
+      try p.append([t1, t2])
+      try root.append([p])
+    }
+    drainMainQueue()
+    guard try assertTextParity(editor, textView) else { return }
+
+    // Simulate a user tap: set native selection directly at the boundary.
+    textView.selectedRange = NSRange(location: 3, length: 0)
+    syncSelection(textView)
+    drainMainQueue()
+
+    XCTAssertEqual(textView.selectedRange, NSRange(location: 3, length: 0))
+    try assertSelectionRoundTrips(editor, textView)
+
+    let caret = textView.selectedRange.location
+    XCTAssertGreaterThan(caret, 0)
+    let expected = NSMutableString(string: textView.text ?? "")
+    expected.deleteCharacters(in: NSRange(location: caret - 1, length: 1))
+
+    textView.deleteBackward()
+    drainMainQueue()
+
+    XCTAssertEqual(
+      textView.text,
+      expected as String,
+      "Backspace at text node boundary should not delete forward text"
+    )
+    XCTAssertTrue((textView.text ?? "").contains("BBB"))
+
+    let after = (textView.text ?? "") as NSString
+    let bbbRange = after.range(of: "BBB")
+    XCTAssertNotEqual(bbbRange.location, NSNotFound)
+    XCTAssertEqual(textView.selectedRange, NSRange(location: bbbRange.location, length: 0))
+    guard try assertTextParity(editor, textView) else { return }
+    try assertSelectionRoundTrips(editor, textView)
+  }
+
   func testInsertCharacterThenEnterThenBackspace_DoesNotDeleteForwardText() throws {
     let testView = createTestEditorView()
     let editor = testView.editor

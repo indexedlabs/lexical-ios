@@ -356,6 +356,12 @@ private func evaluateNode(
     return RangeCacheSearchResult(nodeKey: nodeKey, type: .startBoundary, offset: nil)
   }
 
+  let postambleStart = nodeLoc + rangeCacheItem.preambleLength + rangeCacheItem.childrenLength + rangeCacheItem.textLength
+  if stringLocation >= postambleStart && stringLocation < entireRange.upperBound {
+    // Map locations inside an element postamble (e.g. paragraph newline) to the element end boundary.
+    return RangeCacheSearchResult(nodeKey: nodeKey, type: .endBoundary, offset: nil)
+  }
+
   return RangeCacheSearchResult(nodeKey: nodeKey, type: .illegal, offset: nil)
 }
 
