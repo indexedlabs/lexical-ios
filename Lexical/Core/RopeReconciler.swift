@@ -24,9 +24,10 @@ public enum RopeReconciler {
 
   // MARK: - Public API
 #if DEBUG
-  private static var debugLoggingEnabled: Bool {
-    ProcessInfo.processInfo.environment["LEXICAL_ROPE_RECONCILER_DEBUG"] == "1"
-  }
+	  private static var debugLoggingEnabled: Bool {
+	    ProcessInfo.processInfo.environment["LEXICAL_ROPE_RECONCILER_DEBUG"] == "1" ||
+	    UserDefaults.standard.bool(forKey: "LEXICAL_ROPE_RECONCILER_DEBUG")
+	  }
 #endif
 
   /// Reconcile changes from prevState to nextState.
@@ -221,6 +222,44 @@ public enum RopeReconciler {
       }
     }
 
+    // Some structural transforms can detach an ElementNode while reparenting its descendants
+    // (e.g. paragraph merges). In these cases, removing the entire subtree range would delete
+    // text that still exists elsewhere in `nextState`. Treat these nodes as "wrapper-only" removes:
+    // delete only their pre/postamble bytes and rely on descendant updates for content.
+    var wrapperOnlyRemoveKeys = Set<NodeKey>()
+    if let prevState {
+      @inline(__always)
+      func isAttached(key: NodeKey, in state: EditorState) -> Bool {
+        var cursor: NodeKey? = key
+        while let k = cursor {
+          if k == kRootNodeKey { return true }
+          guard let node = state.nodeMap[k] else { return false }
+          cursor = node.parent
+        }
+        return false
+      }
+
+      @inline(__always)
+      func hasAttachedDescendant(under key: NodeKey) -> Bool {
+        guard let root = prevState.nodeMap[key] as? ElementNode else { return false }
+        var stack = root.getChildrenKeys(fromLatest: false)
+        while let k = stack.popLast() {
+          if isAttached(key: k, in: nextState) { return true }
+          if let element = prevState.nodeMap[k] as? ElementNode {
+            stack.append(contentsOf: element.getChildrenKeys(fromLatest: false))
+          }
+        }
+        return false
+      }
+
+      for (key, node) in removes {
+        guard node is ElementNode else { continue }
+        if hasAttachedDescendant(under: key) {
+          wrapperOnlyRemoveKeys.insert(key)
+        }
+      }
+    }
+
     // Filter inserts: skip nodes whose parent is also being inserted
     // (parent's buildAttributedContent already includes children)
     inserts = inserts.filter { (_, node) in
@@ -233,7 +272,10 @@ public enum RopeReconciler {
     let removedKeys = Set(removes.map { $0.key })
     removes = removes.filter { (_, node) in
       guard let parentKey = node.parent else { return true }
-      return !removedKeys.contains(parentKey)
+      // If the parent is being removed as wrapper-only, descendants may still represent real
+      // content deletions; don't skip them.
+      guard removedKeys.contains(parentKey) else { return true }
+      return wrapperOnlyRemoveKeys.contains(parentKey)
     }
 
     // Batch all text storage edits in a single editing session
@@ -306,7 +348,72 @@ public enum RopeReconciler {
       let bLoc = editor.rangeCache[b.key]?.location ?? 0
       return aLoc > bLoc  // Reverse order
     }
-    try batchRemoveNodes(removes, from: textStorage, editor: editor)
+    if let prevState {
+      try batchRemoveNodes(
+        removes,
+        from: textStorage,
+        editor: editor,
+        prevState: prevState,
+        nextState: nextState,
+        wrapperOnlyRemoveKeys: wrapperOnlyRemoveKeys
+      )
+    } else {
+      try batchRemoveNodes(
+        removes,
+        from: textStorage,
+        editor: editor,
+        prevState: nextState,
+        nextState: nextState,
+        wrapperOnlyRemoveKeys: []
+      )
+    }
+
+    // Removals can change boundary-derived preambles/postambles of adjacent element nodes
+    // (e.g. the last paragraph losing its trailing newline). These nodes are often not cloned
+    // in `nextState`, so they won't appear in `updates` and would otherwise be skipped.
+    if let prevState, !removes.isEmpty {
+      var boundaryCandidateKeys = Set<NodeKey>()
+      boundaryCandidateKeys.reserveCapacity(removes.count * 2)
+
+      @inline(__always)
+      func siblingKeysInState(for node: Node, state: EditorState) -> (prev: NodeKey?, next: NodeKey?) {
+        guard let parentKey = node.parent,
+              let parent = state.nodeMap[parentKey] as? ElementNode
+        else { return (nil, nil) }
+        let children = parent.getChildrenKeys(fromLatest: false)
+        guard let idx = children.firstIndex(of: node.key) else { return (nil, nil) }
+        let prevKey = idx > 0 ? children[idx - 1] : nil
+        let nextKey = idx + 1 < children.count ? children[idx + 1] : nil
+        return (prevKey, nextKey)
+      }
+
+      for (_, node) in removes {
+        let sibs = siblingKeysInState(for: node, state: prevState)
+        if let prevKey = sibs.prev { boundaryCandidateKeys.insert(prevKey) }
+        if let nextKey = sibs.next { boundaryCandidateKeys.insert(nextKey) }
+      }
+
+      // Update candidates in document order to apply shifts consistently.
+      let candidateKeys: [NodeKey] = boundaryCandidateKeys
+        .filter { key in
+          (prevState.nodeMap[key] as? ElementNode) != nil
+            && (nextState.nodeMap[key] as? ElementNode) != nil
+            && editor.rangeCache[key] != nil
+        }
+        .sorted { a, b in
+          let aLoc = editor.rangeCache[a]?.location ?? 0
+          let bLoc = editor.rangeCache[b]?.location ?? 0
+          if aLoc != bLoc { return aLoc < bLoc }
+          return a < b
+        }
+
+      for key in candidateKeys {
+        guard let prevElement = prevState.nodeMap[key] as? ElementNode,
+              let nextElement = nextState.nodeMap[key] as? ElementNode
+        else { continue }
+        try updateElementNode(from: prevElement, to: nextElement, in: textStorage, state: nextState, editor: editor, theme: theme)
+      }
+    }
 #if DEBUG
     t_afterRemoves = CFAbsoluteTimeGetCurrent()
 #endif
@@ -545,7 +652,7 @@ public enum RopeReconciler {
 
     // Check if pending state has actual content
     guard let root = pendingState.getRootNode() else { return false }
-    let children = root.getChildrenKeys(fromLatest: true)
+    let children = root.getChildrenKeys(fromLatest: false)
     if children.isEmpty { return false }
 
     // Compute total content length
@@ -561,10 +668,21 @@ public enum RopeReconciler {
   /// Compute the total text length of a subtree.
   private static func subtreeTotalLength(nodeKey: NodeKey, state: EditorState) -> Int {
     guard let node = state.nodeMap[nodeKey] else { return 0 }
-    var length = node.getPreamble().utf16.count + node.getTextPart(fromLatest: true).utf16.count + node.getPostamble().utf16.count
+
+    let preamble: String
+    let postamble: String
+    if let element = node as? ElementNode {
+      preamble = computeElementPreamble(for: element, state: state)
+      postamble = computeElementPostamble(for: element, state: state)
+    } else {
+      preamble = node.getPreamble()
+      postamble = node.getPostamble()
+    }
+
+    var length = preamble.utf16.count + node.getTextPart(fromLatest: false).utf16.count + postamble.utf16.count
 
     if let element = node as? ElementNode {
-      for childKey in element.getChildrenKeys(fromLatest: true) {
+      for childKey in element.getChildrenKeys(fromLatest: false) {
         length += subtreeTotalLength(nodeKey: childKey, state: state)
       }
     }
@@ -584,7 +702,7 @@ public enum RopeReconciler {
     // Build full attributed content for root's children
     let built = NSMutableAttributedString()
     if let root = pendingState.getRootNode() {
-      for childKey in root.getChildrenKeys(fromLatest: true) {
+      for childKey in root.getChildrenKeys(fromLatest: false) {
         appendAttributedSubtree(into: built, nodeKey: childKey, state: pendingState, theme: theme)
       }
     }
@@ -660,7 +778,7 @@ public enum RopeReconciler {
     // Build full attributed content
     let built = NSMutableAttributedString()
     if let root = nextState.getRootNode() {
-      for childKey in root.getChildrenKeys(fromLatest: true) {
+      for childKey in root.getChildrenKeys(fromLatest: false) {
         appendAttributedSubtree(into: built, nodeKey: childKey, state: nextState, theme: theme)
       }
     }
@@ -744,18 +862,25 @@ public enum RopeReconciler {
 
     // Use the node's overridable preamble/postamble so plugin nodes can supply control characters
     // (e.g. ListItemNode uses a ZWSP preamble marker for list drawing).
-    let preamble = node.getPreamble()
-    let postamble = node.getPostamble()
+    let preamble: String
+    let postamble: String
+    if let element = node as? ElementNode {
+      preamble = computeElementPreamble(for: element, state: state)
+      postamble = computeElementPostamble(for: element, state: state)
+    } else {
+      preamble = node.getPreamble()
+      postamble = node.getPostamble()
+    }
 
     appendStyledString(preamble)
 
     if let element = node as? ElementNode {
-      for childKey in element.getChildrenKeys(fromLatest: true) {
+      for childKey in element.getChildrenKeys(fromLatest: false) {
         appendAttributedSubtree(into: output, nodeKey: childKey, state: state, theme: theme)
       }
     }
 
-    appendStyledString(node.getTextPart(fromLatest: true))
+    appendStyledString(node.getTextPart(fromLatest: false))
     appendStyledString(postamble)
   }
 
@@ -864,8 +989,15 @@ public enum RopeReconciler {
     item.location = startLocation
 
     // Use the node's overridable preamble/postamble so plugin nodes can supply control characters.
-    let preamble = node.getPreamble()
-    let postamble = node.getPostamble()
+    let preamble: String
+    let postamble: String
+    if let element = node as? ElementNode {
+      preamble = computeElementPreamble(for: element, state: state)
+      postamble = computeElementPostamble(for: element, state: state)
+    } else {
+      preamble = node.getPreamble()
+      postamble = node.getPostamble()
+    }
 
     let preLen = preamble.utf16.count
     item.preambleLength = preLen
@@ -883,7 +1015,7 @@ public enum RopeReconciler {
     }
 
     item.childrenLength = childrenLen
-    let textLen = node.getTextPart(fromLatest: true).utf16.count
+    let textLen = node.getTextPart(fromLatest: false).utf16.count
     item.textLength = textLen
     cursor += textLen
 
@@ -987,12 +1119,18 @@ public enum RopeReconciler {
     theme: Theme
   ) throws {
     // Only handle text-producing nodes
-    guard let parent = node.getParent() else { return }
+    guard let parentKey = node.parent,
+          let parent = state.nodeMap[parentKey] as? ElementNode
+    else { return }
 
     // When inserting an element node, the previous sibling's postamble may change
     // (e.g., paragraph gains a trailing newline when it gets a next sibling)
-    if let prevSibling = node.getPreviousSibling() {
-      try updateSiblingPostamble(prevSibling, in: textStorage, state: state, editor: editor, theme: theme)
+    let parentChildren = parent.getChildrenKeys(fromLatest: false)
+    if let idx = parentChildren.firstIndex(of: node.key), idx > 0 {
+      let prevKey = parentChildren[idx - 1]
+      if let prevSibling = state.nodeMap[prevKey] {
+        try updateSiblingPostamble(prevSibling, in: textStorage, state: state, editor: editor, theme: theme)
+      }
     }
 
     // Get insert location from range cache or compute it
@@ -1007,7 +1145,7 @@ public enum RopeReconciler {
 
     // Always update range cache for the node, even if empty.
     // This is needed because children will reference parent's cache.
-    updateRangeCache(for: node, at: location, length: content.length, editor: editor)
+    updateRangeCache(for: node, at: location, length: content.length, state: state, editor: editor)
 
     // Insertions of element nodes can include the entire subtree's content (preamble + children + postamble).
     // Ensure the range cache is populated for all descendants so selection mapping works.
@@ -1103,7 +1241,7 @@ public enum RopeReconciler {
       let len = recomputeRangeCacheSubtree(nodeKey: nodeKey, state: state, startLocation: cursor, editor: editor)
       cursor += len
     }
-    propagateChildrenLengthDelta(fromParentKey: parentKey, delta: combined.length, editor: editor)
+    propagateChildrenLengthDelta(fromParentKey: parentKey, delta: combined.length, state: state, editor: editor)
 
     return runCount
   }
@@ -1118,8 +1256,14 @@ public enum RopeReconciler {
   ) throws {
     guard let cacheItem = editor.rangeCache[sibling.key] else { return }
 
-    // Get the current postamble from the node (which now reflects the new sibling)
-    let newPostamble = sibling.getPostamble()
+    // Get the current postamble (which now reflects the new sibling). Avoid relying on
+    // global editor state; compute from the provided `state` when possible.
+    let newPostamble: String = {
+      if let element = state.nodeMap[sibling.key] as? ElementNode {
+        return computeElementPostamble(for: element, state: state)
+      }
+      return sibling.getPostamble()
+    }()
     let oldPostambleLength = cacheItem.postambleLength
     let newPostambleLength = newPostamble.utf16.count
 
@@ -1147,7 +1291,7 @@ public enum RopeReconciler {
       // Shift all nodes after this sibling if length changed
       let delta = newPostambleLength - oldPostambleLength
       if delta != 0 {
-        propagateChildrenLengthDelta(fromParentKey: sibling.parent, delta: delta, editor: editor)
+        propagateChildrenLengthDelta(fromParentKey: sibling.parent, delta: delta, state: state, editor: editor)
         let oldEnd = postambleStart + oldPostambleLength
         let excludingKeys = ancestorKeys(fromParentKey: sibling.parent)
         shiftRangeCacheAfter(location: oldEnd, delta: delta, excludingKeys: excludingKeys, editor: editor)
@@ -1155,54 +1299,182 @@ public enum RopeReconciler {
     }
   }
 
-  /// Batch remove multiple nodes efficiently. O(n + m) instead of O(n × m).
-  /// Nodes must be pre-sorted in reverse document order (highest location first).
-  private static func batchRemoveNodes(
-    _ removes: [(key: NodeKey, node: Node)],
-    from textStorage: NSTextStorage,
-    editor: Editor
-  ) throws {
-    guard !removes.isEmpty else { return }
+	  /// Batch remove multiple nodes efficiently. O(n + m) instead of O(n × m).
+	  /// Nodes must be pre-sorted in reverse document order (highest location first).
+		  private static func batchRemoveNodes(
+		    _ removes: [(key: NodeKey, node: Node)],
+		    from textStorage: NSTextStorage,
+		    editor: Editor,
+		    prevState: EditorState,
+		    nextState: EditorState,
+		    wrapperOnlyRemoveKeys: Set<NodeKey>
+		  ) throws {
+		    guard !removes.isEmpty else { return }
 
-    // Collect all removed keys for O(1) lookup when building exclusion sets
-    let removedKeys = Set(removes.map { $0.key })
+	    // Defensive: structural edits must operate on absolute locations.
+	    // If Fenwick deltas are pending, materialize them into `RangeCacheItem.location` first.
+	    if editor.useFenwickLocations, editor.fenwickHasDeltas {
+	      materializeFenwickLocations(editor: editor)
+	    }
 
-    // Track deletions: (endLocation, deletedLength, parentKey)
-    // We'll use this to compute cumulative shifts for remaining nodes
-    var deletions: [(endLocation: Int, length: Int, parentKey: NodeKey?)] = []
-    deletions.reserveCapacity(removes.count)
+		    // Track deletions: (endLocation, deletedLength, parentKey)
+		    // We'll use this to compute cumulative shifts for remaining nodes
+		    var deletions: [(endLocation: Int, length: Int, parentKey: NodeKey?)] = []
+		    deletions.reserveCapacity(removes.count)
 
-    // Phase 1: Delete from textStorage and collect deletion info
-    // Since removes are in reverse order, deletions don't affect each other's locations
-    for (key, node) in removes {
-      guard let cacheItem = editor.rangeCache[key] else { continue }
+		    // If this reconcile is driven by a selection-based delete (e.g. backspace),
+		    // constrain TextStorage deletions to the intended native deletion range.
+		    // This prevents structural diff logic from deleting the wrong separator/newline when
+		    // RangeCache locations are temporarily inconsistent during churn.
+		    let deletionClamp = editor.pendingDeletionClampRange
+		    var plannedDeletes: [(range: NSRange, parentKey: NodeKey?)] = []
+		    plannedDeletes.reserveCapacity(removes.count)
 
-      let range = cacheItem.range
-      let deletedLength = range.length
-      let deletedLocation = range.location
-
-      if deletedLength > 0 && deletedLocation + deletedLength <= textStorage.length {
-        textStorage.deleteCharacters(in: range)
+    @inline(__always)
+    func isAttached(key: NodeKey, in state: EditorState) -> Bool {
+      var cursor: NodeKey? = key
+      while let k = cursor {
+        if k == kRootNodeKey { return true }
+        guard let node = state.nodeMap[k] else { return false }
+        cursor = node.parent
       }
-
-      // Remove from range cache
-      editor.rangeCache.removeValue(forKey: key)
-
-      // Record deletion for batch shifting
-      if deletedLength > 0 {
-        deletions.append((deletedLocation + deletedLength, deletedLength, node.parent))
-      }
+      return false
     }
 
-    // Phase 2: Batch update childrenLength for all affected parents
-    // Group deletions by parent for efficient updates
-    var parentDeltas: [NodeKey: Int] = [:]
+		    // Phase 1: Collect planned deletions and update range cache.
+		    // Since removes are in reverse order, planned deletions don't affect each other's locations
+		    for (key, node) in removes {
+		      guard let cacheItem = editor.rangeCache[key] else { continue }
+
+		      var deletedLength = 0
+
+		      if wrapperOnlyRemoveKeys.contains(key), node is ElementNode {
+	        // Wrapper-only removal: delete only this node's preamble/postamble bytes.
+	        // Do not delete children/text regions because they may still be present elsewhere in `nextState`.
+	        let baseLoc = editor.actualLocation(for: key) ?? cacheItem.location
+	        let preLen = cacheItem.preambleLength
+	        let postLen = cacheItem.postambleLength
+	        let postStart = baseLoc + cacheItem.preambleLength + cacheItem.childrenLength + cacheItem.textLength
+
+		        if postLen > 0 {
+		          let postRange = NSRange(location: postStart, length: postLen)
+		          plannedDeletes.append((postRange, node.parent))
+		          deletedLength += postLen
+		        }
+
+		        if preLen > 0 {
+		          let preRange = NSRange(location: baseLoc, length: preLen)
+		          plannedDeletes.append((preRange, node.parent))
+		          deletedLength += preLen
+		        }
+
+#if DEBUG
+	        if debugLoggingEnabled, (preLen > 0 || postLen > 0), deletedLength > 0 {
+	          let attachmentLeak = isAttached(key: key, in: nextState)
+	          print(
+	            "🔥 ROPE_RECONCILER wrapper-only remove key=\(key) pre=\(preLen) post=\(postLen) deleted=\(deletedLength) attachedInNext=\(attachmentLeak)"
+	          )
+	        }
+#endif
+		      } else {
+		        let range = editor.actualRange(for: key) ?? cacheItem.range
+		        deletedLength = range.length
+
+#if DEBUG
+	        if debugLoggingEnabled {
+	          @inline(__always)
+	          func snippet(_ s: String, around location: Int, maxLength: Int = 60) -> String {
+	            guard !s.isEmpty else { return "" }
+	            let utf16 = Array(s.utf16)
+	            let start = Swift.max(0, Swift.min(location, utf16.count))
+	            let lo = Swift.max(0, start - maxLength / 2)
+	            let hi = Swift.min(utf16.count, lo + maxLength)
+	            let view = String(utf16CodeUnits: Array(utf16[lo..<hi]), count: hi - lo)
+	            return view.replacingOccurrences(of: "\n", with: "\\n")
+	          }
+
+	          let typeName = String(describing: type(of: node))
+	          let t = textStorage.string
+	          print(
+	            "🔥 ROPE_RECONCILER remove key=\(key) type=\(typeName) range={\(range.location),\(range.length)} storageLen=\(textStorage.length) ctx=\"\(snippet(t, around: range.location))\""
+	          )
+	        }
+#endif
+
+		        if deletedLength > 0 {
+		          plannedDeletes.append((range, node.parent))
+		        }
+		      }
+
+		      // Remove from range cache
+		      editor.rangeCache.removeValue(forKey: key)
+		    }
+
+		    // Apply deletes to TextStorage (in reverse order). If a clamp is provided, intersect deletes.
+		    var deletesToApply: [(range: NSRange, parentKey: NodeKey?)] = []
+		    deletesToApply.reserveCapacity(plannedDeletes.count)
+		    if let clamp = deletionClamp {
+		      var minStart: Int? = nil
+		      for (range, parentKey) in plannedDeletes {
+		        let inter = NSIntersectionRange(range, clamp)
+		        if inter.length > 0 {
+		          deletesToApply.append((inter, parentKey))
+		          if minStart == nil || inter.location < minStart! { minStart = inter.location }
+		        }
+		      }
+
+		      // If clamp starts before the first intersected delete, add a leading delete to cover
+		      // selection preamble left behind by grouping.
+		      if let ms = minStart, clamp.location < ms {
+		        let lead = NSRange(location: clamp.location, length: ms - clamp.location)
+		        if lead.length > 0 {
+		          let fallbackParent = plannedDeletes.first?.parentKey
+		          deletesToApply.append((lead, fallbackParent))
+		        }
+		      } else if deletesToApply.isEmpty, clamp.length > 0 {
+		        // No intersections: treat the clamp itself as the authoritative delete.
+		        let fallbackParent = plannedDeletes.first?.parentKey
+		        deletesToApply = [(clamp, fallbackParent)]
+		      }
+
+		      // Coalesce overlapping deletes (keep the first parentKey for a merged region).
+		      deletesToApply.sort { $0.range.location < $1.range.location }
+		      var merged: [(range: NSRange, parentKey: NodeKey?)] = []
+		      for (r, pk) in deletesToApply {
+		        guard r.length > 0 else { continue }
+		        if var last = merged.last, NSMaxRange(last.range) >= r.location {
+		          merged.removeLast()
+		          let newEnd = max(NSMaxRange(last.range), NSMaxRange(r))
+		          last.range = NSRange(location: last.range.location, length: newEnd - last.range.location)
+		          merged.append(last)
+		        } else {
+		          merged.append((r, pk))
+		        }
+		      }
+		      deletesToApply = merged
+		      editor.pendingDeletionClampRange = nil
+		    } else {
+		      deletesToApply = plannedDeletes
+		    }
+
+		    // Apply deletes in reverse order so earlier ranges are stable.
+		    for (range, parentKey) in deletesToApply.sorted(by: { $0.range.location > $1.range.location }) {
+		      guard range.length > 0 else { continue }
+		      guard range.location >= 0 else { continue }
+		      guard range.location + range.length <= textStorage.length else { continue }
+		      textStorage.deleteCharacters(in: range)
+		      deletions.append((range.location + range.length, range.length, parentKey))
+		    }
+
+	    // Phase 2: Batch update childrenLength for all affected parents
+	    // Group deletions by parent for efficient updates
+	    var parentDeltas: [NodeKey: Int] = [:]
     for (_, length, parentKey) in deletions {
       guard let pKey = parentKey else { continue }
       parentDeltas[pKey, default: 0] -= length
     }
     for (parentKey, delta) in parentDeltas {
-      propagateChildrenLengthDelta(fromParentKey: parentKey, delta: delta, editor: editor)
+      propagateChildrenLengthDelta(fromParentKey: parentKey, delta: delta, state: prevState, editor: editor)
     }
 
     // Phase 3: Batch shift remaining cache entries in a single O(n) pass
@@ -1215,7 +1487,7 @@ public enum RopeReconciler {
       var parentKey = node.parent
       while let pKey = parentKey {
         allExcludedKeys.insert(pKey)
-        parentKey = getNodeByKey(key: pKey)?.parent
+        parentKey = prevState.nodeMap[pKey]?.parent
       }
     }
 
@@ -1243,20 +1515,20 @@ public enum RopeReconciler {
   }
 
   /// Remove a node from the text storage.
-  private static func removeNode(
-    _ node: Node,
-    from textStorage: NSTextStorage,
-    editor: Editor
-  ) throws {
-    guard let cacheItem = editor.rangeCache[node.key] else { return }
+	  private static func removeNode(
+	    _ node: Node,
+	    from textStorage: NSTextStorage,
+	    editor: Editor
+	  ) throws {
+	    guard let cacheItem = editor.rangeCache[node.key] else { return }
 
-    let range = cacheItem.range
-    let deletedLength = range.length
-    let deletedLocation = range.location
+	    let range = editor.actualRange(for: node.key) ?? cacheItem.range
+	    let deletedLength = range.length
+	    let deletedLocation = range.location
 
-    if deletedLength > 0 && deletedLocation + deletedLength <= textStorage.length {
-      textStorage.deleteCharacters(in: range)
-    }
+	    if deletedLength > 0 && deletedLocation + deletedLength <= textStorage.length {
+	      textStorage.deleteCharacters(in: range)
+	    }
 
     // Remove from range cache
     editor.rangeCache.removeValue(forKey: node.key)
@@ -1432,8 +1704,9 @@ public enum RopeReconciler {
 
     let attributes = AttributeUtils.attributedStringStyles(from: next, state: state, theme: theme)
 
-    // Update preamble if necessary.
-    let nextPreamble = next.getPreamble()
+    // Update preamble/postamble without relying on global editor state (which can lag
+    // behind `state` during reconciliation).
+    let nextPreamble = computeElementPreamble(for: next, state: state)
     let nextPreambleLength = nextPreamble.utf16.count
     let oldPreambleLength = cacheItem.preambleLength
     if nextPreambleLength != oldPreambleLength
@@ -1463,7 +1736,7 @@ public enum RopeReconciler {
     }
 
     // Update postamble if necessary.
-    let nextPostamble = next.getPostamble()
+    let nextPostamble = computeElementPostamble(for: next, state: state)
     let nextPostambleLength = nextPostamble.utf16.count
     let oldPostambleLength = cacheItem.postambleLength
     if nextPostambleLength != oldPostambleLength
@@ -1502,6 +1775,50 @@ public enum RopeReconciler {
         shiftRangeCacheAfter(location: oldEnd, delta: delta, excludingKeys: excludingKeys, editor: editor)
       }
     }
+  }
+
+  private static func computeElementPreamble(for element: ElementNode, state: EditorState) -> String {
+    let intrinsic = element.getPreambleIntrinsic()
+    if element.isInline() { return intrinsic }
+
+    guard let parentKey = element.parent,
+          let parent = state.nodeMap[parentKey] as? ElementNode
+    else { return intrinsic }
+
+    let children = parent.getChildrenKeys(fromLatest: false)
+    guard let idx = children.firstIndex(of: element.key), idx > 0 else {
+      return intrinsic
+    }
+    let prevSiblingKey = children[idx - 1]
+    guard let prevSibling = state.nodeMap[prevSiblingKey] else { return intrinsic }
+
+    if parent is RootNode {
+      return ((prevSibling is DecoratorNode && !prevSibling.isInline()) ? "\n" : "") + intrinsic
+    }
+
+    return ((prevSibling is ElementNode) ? "" : "\n") + intrinsic
+  }
+
+  private static func computeElementPostamble(for element: ElementNode, state: EditorState) -> String {
+    let intrinsic = element.getPostambleIntrinsic()
+    guard let parentKey = element.parent,
+          let parent = state.nodeMap[parentKey] as? ElementNode
+    else { return intrinsic }
+
+    let children = parent.getChildrenKeys(fromLatest: false)
+    guard let idx = children.firstIndex(of: element.key) else { return intrinsic }
+    let hasNextSibling = idx + 1 < children.count
+    if !hasNextSibling { return intrinsic }
+
+    if element.isInline() {
+      let nextSiblingKey = children[idx + 1]
+      if let nextSibling = state.nodeMap[nextSiblingKey], !nextSibling.isInline() {
+        return intrinsic + "\n"
+      }
+      return intrinsic
+    }
+
+    return intrinsic + "\n"
   }
 
   // MARK: - Selection Reconciliation
@@ -1585,7 +1902,7 @@ public enum RopeReconciler {
     }
 
     // Add children content
-    for childKey in node.getChildrenKeys() {
+    for childKey in node.getChildrenKeys(fromLatest: false) {
       if let child = state.nodeMap[childKey] {
         result.append(buildAttributedContent(for: child, state: state, theme: theme))
       }
@@ -1609,7 +1926,7 @@ public enum RopeReconciler {
     var current: Node? = node
 
     while let cur = current, let parent = cur.getParent() {
-      let siblings = parent.getChildrenKeys()
+      let siblings = parent.getChildrenKeys(fromLatest: false)
       if let index = siblings.firstIndex(of: cur.key) {
         path.insert(index, at: 0)
       }
@@ -1642,7 +1959,7 @@ public enum RopeReconciler {
     guard let parentCache = editor.rangeCache[parent.key] else { return 0 }
 
     // Find the index of this node in parent's children
-    let children = parent.getChildrenKeys()
+    let children = parent.getChildrenKeys(fromLatest: false)
     guard let nodeIndex = children.firstIndex(of: node.key) else {
       // Append at end of parent's content
       return parentCache.location + parentCache.preambleLength + parentCache.childrenLength
@@ -1666,14 +1983,15 @@ public enum RopeReconciler {
     for node: Node,
     at location: Int,
     length: Int,
+    state: EditorState,
     editor: Editor
   ) {
     // Collect ancestor keys - we shouldn't shift ancestors since the insertion is inside them
     var ancestorKeys = Set<NodeKey>()
-    var ancestor = node.getParent()
-    while let a = ancestor {
-      ancestorKeys.insert(a.key)
-      ancestor = a.getParent()
+    var currentKey = node.parent
+    while let key = currentKey {
+      ancestorKeys.insert(key)
+      currentKey = state.nodeMap[key]?.parent
     }
 
     // Shift all existing nodes that come after this insertion point (excluding ancestors)
@@ -1697,12 +2015,13 @@ public enum RopeReconciler {
 
     editor.rangeCache[node.key] = cacheItem
 
-    propagateChildrenLengthDelta(fromParentKey: node.parent, delta: length, editor: editor)
+    propagateChildrenLengthDelta(fromParentKey: node.parent, delta: length, state: state, editor: editor)
   }
 
   private static func propagateChildrenLengthDelta(
     fromParentKey parentKey: NodeKey?,
     delta: Int,
+    state: EditorState? = nil,
     editor: Editor
   ) {
     guard delta != 0 else { return }
@@ -1712,7 +2031,11 @@ public enum RopeReconciler {
         item.childrenLength += delta
         editor.rangeCache[key] = item
       }
-      currentKey = getNodeByKey(key: key)?.parent
+      if let state {
+        currentKey = state.nodeMap[key]?.parent
+      } else {
+        currentKey = getNodeByKey(key: key)?.parent
+      }
     }
   }
 

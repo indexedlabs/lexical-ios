@@ -55,9 +55,8 @@ public class ListItemNode: ElementNode {
     .listItem
   }
 
-  override open func getPreamble() -> String {
-    let preamble = super.getPreamble()
-    return "\(preamble)\u{200B}"
+  override open func getPreambleIntrinsic() -> String {
+    return "\u{200B}"
   }
 
   public func getValue() -> Int {

@@ -235,7 +235,21 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
       inputDelegateProxy.isSuspended = false
     }
 
-    editor.dispatchCommand(type: .deleteCharacter, payload: true)
+    // Deletions driven by Lexical should not be treated as "native" TextStorage edits.
+    // When `TextStorage.mode` is `.none`, TextKit mutations can re-enter Lexical via
+    // `performControllerModeUpdate`, causing double-applies and selection drift at boundaries.
+    //
+    // Keep parity with `insertText(_:)` by running Lexical-driven deletes in controller mode.
+    if let textStorage = textStorage as? TextStorage {
+      let previousMode = textStorage.mode
+      if previousMode == .none {
+        textStorage.mode = .controllerMode
+      }
+      editor.dispatchCommand(type: .deleteCharacter, payload: true)
+      textStorage.mode = previousMode
+    } else {
+      editor.dispatchCommand(type: .deleteCharacter, payload: true)
+    }
 
     var handledByNonRangeSelection = false
     do {
@@ -248,6 +262,10 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
 
     // Fallback: if nothing changed (text and selection), delegate to UIKit's default handling
     if text == previousText && selectedRange == previousSelectedRange && !handledByNonRangeSelection {
+      // If we fall back to UIKit, we must allow the input delegate callbacks through so that:
+      // - `UITextView` can update selection normally
+      // - Lexical can observe and reconcile the native edit via the TextStorage delegate path
+      inputDelegateProxy.isSuspended = false
       super.deleteBackward()
       resetTypingAttributes(for: selectedRange)
       return

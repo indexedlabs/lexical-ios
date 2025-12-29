@@ -2415,6 +2415,28 @@ internal enum OptimizedReconciler {
     shouldReconcileSelection: Bool,
     fenwickAggregatedDeltas: inout [NodeKey: Int]
   ) throws -> Bool {
+    // This fast path computes delete instructions against TextKit storage locations.
+    // When Fenwick deltas are pending, `RangeCacheItem.location` is only a base location;
+    // structural deletes must operate on absolute locations to avoid deleting the wrong
+    // characters (or becoming a no-op) and diverging native vs Lexical text.
+    if editor.useFenwickLocations, editor.fenwickHasDeltas {
+      // Materialize deltas into absolute `RangeCacheItem.location` values so the rest of
+      // this fast path can safely use `location` and apply incremental shifts directly.
+      editor.invalidateDFSOrderCache()
+      _ = editor.cachedDFSOrderAndIndex()
+    }
+
+    @inline(__always)
+    func absoluteLocation(for key: NodeKey, item: RangeCacheItem) -> Int {
+      if editor.useFenwickLocations, editor.fenwickHasDeltas {
+        if item.dfsPosition > 0 {
+          return item.locationFromFenwick(using: editor.locationFenwickTree)
+        }
+        return editor.actualLocation(for: key) ?? item.location
+      }
+      return item.location
+    }
+
     // Safety: do NOT treat this update as a structural block delete if the user's
     // selection is a collapsed caret inside a TextNode (i.e., not at a text boundary).
     // This prevents cases where a single-character delete/backspace inside a line
@@ -2464,12 +2486,31 @@ internal enum OptimizedReconciler {
     }
     groups.append((s, e))
 
-    // Safety: if any removed direct child is still attached in the pending state,
-    // this is a move (not a delete). Bail out to avoid dropping content.
+    // Safety: if any removed direct child (or any of its descendants from the prev state)
+    // is still attached in the pending state, this is a move/merge (not a pure delete).
+    //
+    // Example: paragraph-merge via backspace removes a ParagraphNode but re-parents its
+    // TextNode children into a sibling. This fast path only applies deletes for removed
+    // subtrees; if we treat such a merge as a delete, native text will "swallow" content.
+    var removedRootsToCheck: [NodeKey] = []
+    removedRootsToCheck.reserveCapacity(removedIndices.count)
+    var seenRemovedRoots: Set<NodeKey> = []
+    seenRemovedRoots.reserveCapacity(removedIndices.count)
     for idx in removedIndices {
       let k = prevChildren[idx]
-      if let n = pendingEditorState.nodeMap[k], n.isAttached() {
-        return false
+      if seenRemovedRoots.insert(k).inserted {
+        removedRootsToCheck.append(k)
+      }
+    }
+    for rootKey in removedRootsToCheck {
+      var stack: [NodeKey] = [rootKey]
+      while let key = stack.popLast() {
+        if let n = pendingEditorState.nodeMap[key], n.isAttached() {
+          return false
+        }
+        if let el = currentEditorState.nodeMap[key] as? ElementNode {
+          stack.append(contentsOf: el.getChildrenKeys(fromLatest: false))
+        }
       }
     }
 
@@ -2511,7 +2552,8 @@ internal enum OptimizedReconciler {
           let newPostStr = prevSiblingNext.getPostamble()
           let newPost = newPostStr.lengthAsNSString()
           if newPost != oldPost {
-            let postLoc = prevSiblingRange.location + prevSiblingRange.preambleLength + prevSiblingRange.childrenLength + prevSiblingRange.textLength
+            let prevSiblingLoc = absoluteLocation(for: prevSiblingKey, item: prevSiblingRange)
+            let postLoc = prevSiblingLoc + prevSiblingRange.preambleLength + prevSiblingRange.childrenLength + prevSiblingRange.textLength
             if oldPost > 0 {
               instructions.append(.delete(range: NSRange(location: postLoc, length: oldPost)))
             }
@@ -2532,8 +2574,8 @@ internal enum OptimizedReconciler {
         }
       }
 
-      let start = firstItem.location
-      let end = lastItem.location + lastItem.range.length
+      let start = absoluteLocation(for: firstKey, item: firstItem)
+      let end = absoluteLocation(for: lastKey, item: lastItem) + lastItem.range.length
       let len = max(0, end - start)
       if len > 0 {
         instructions.append(.delete(range: NSRange(location: start, length: len)))

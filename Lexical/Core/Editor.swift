@@ -195,7 +195,7 @@ public class Editor: NSObject {
   internal var nextFenwickNodeIndex: Int = 1
 
   // Fenwick tree for lazy location computation. Stores deltas indexed by node DFS position.
-  // Location = baseLocation + fenwickTree.prefixSum(nodeIndex - 1)
+  // Location = baseLocation + fenwickTree.prefixSum(dfsPosition)
   internal var locationFenwickTree: FenwickTree = FenwickTree(0)
   internal var fenwickHasDeltas: Bool = false
 
@@ -1079,25 +1079,36 @@ public class Editor: NSObject {
     childIndexCache.removeAll(keepingCapacity: true)
   }
 
-	  internal func cachedDFSOrderAndIndex() -> ([NodeKey], [NodeKey: Int]) {
-	    if let cached = dfsOrderCache, let cachedIndex = dfsOrderIndexCache {
-	      return (cached, cachedIndex)
-	    }
+  internal func cachedDFSOrderAndIndex() -> ([NodeKey], [NodeKey: Int]) {
+    if let cached = dfsOrderCache, let cachedIndex = dfsOrderIndexCache {
+      return (cached, cachedIndex)
+    }
 
-	    #if DEBUG
-	    let startTime = CFAbsoluteTimeGetCurrent()
-	    #endif
-	    // Prefer deriving DFS order from the node tree to avoid an O(n log n) sort and large intermediate allocations.
-	    // Fall back to canonical (location asc, range.length desc) sorting if the derived order doesn't match.
-	    let stateForOrder = pendingEditorState ?? editorState
-	    let ordered =
-	      nodeKeysByTreeDFSOrder(state: stateForOrder, rangeCache: rangeCache)
-	      ?? sortedNodeKeysByLocation(rangeCache: rangeCache)
-	    var index: [NodeKey: Int] = [:]
-	    index.reserveCapacity(ordered.count)
-	    for (i, key) in ordered.enumerated() {
-	      let pos = i + 1
-	      index[key] = pos
+    // If we have pending Fenwick deltas but no cached DFS order, we can't safely rebuild the
+    // DFS index without first materializing the deltas into absolute `RangeCacheItem.location`
+    // values; otherwise the canonical-order validation (and fallbacks that sort by location)
+    // will operate on stale base locations and can corrupt DFS positions.
+    if useFenwickLocations, fenwickHasDeltas {
+      materializeFenwickLocationsUsingStoredDFSPositions()
+    }
+
+    #if DEBUG
+    let startTime = CFAbsoluteTimeGetCurrent()
+    #endif
+
+    // Prefer deriving DFS order from the node tree to avoid an O(n log n) sort and large intermediate allocations.
+    // Fall back to canonical (location asc, range.length desc) sorting if the derived order doesn't match.
+    let stateForOrder = pendingEditorState ?? editorState
+    let ordered =
+      nodeKeysByTreeDFSOrder(state: stateForOrder, rangeCache: rangeCache)
+      ?? sortedNodeKeysByLocation(rangeCache: rangeCache)
+
+    var index: [NodeKey: Int] = [:]
+    index.reserveCapacity(ordered.count)
+    for (i, key) in ordered.enumerated() {
+      let pos = i + 1
+      index[key] = pos
+
       // Store DFS position in each RangeCacheItem for O(1) lookup
       if var item = rangeCache[key] {
         item.dfsPosition = pos
@@ -1115,6 +1126,44 @@ public class Editor: NSObject {
     #endif
     return (ordered, index)
   }
+
+    private func materializeFenwickLocationsUsingStoredDFSPositions() {
+      // We rely on `RangeCacheItem.dfsPosition` having been assigned from a prior DFS order
+      // (which is required for applying Fenwick deltas in the first place). If it's missing,
+      // we can't safely interpret the Fenwick tree, so leave it as-is.
+      let count = rangeCache.count
+      guard count > 0 else {
+        resetFenwickTree(capacity: 1)
+        return
+      }
+
+      ensureFenwickCapacity(count)
+      let tree = locationFenwickTree
+
+      var pairs: [(pos: Int, key: NodeKey)] = []
+      pairs.reserveCapacity(count)
+      var seen: Set<Int> = []
+      seen.reserveCapacity(count)
+
+      for (key, item) in rangeCache {
+        let pos = item.dfsPosition
+        guard pos > 0 else { return }
+        guard seen.insert(pos).inserted else { return }
+        pairs.append((pos: pos, key: key))
+      }
+
+      guard pairs.count == count else { return }
+      pairs.sort { $0.pos < $1.pos }
+
+      // Apply deltas to each node's base location, then clear deltas.
+      for pair in pairs {
+        guard var item = rangeCache[pair.key] else { continue }
+        item.location = item.locationFromFenwick(using: tree)
+        rangeCache[pair.key] = item
+      }
+
+      resetFenwickTree(capacity: count)
+    }
 
   internal func cachedDFSOrder() -> [NodeKey] {
     cachedDFSOrderAndIndex().0
@@ -1149,10 +1198,10 @@ public class Editor: NSObject {
   }
 
   /// Gets the accumulated location delta for a node at the given index.
-  /// Returns prefixSum(index - 1) since deltas affect nodes AFTER the changed node.
+  /// Returns prefixSum(index) since deltas are recorded at the first affected node (inclusive).
   internal func getFenwickLocationDelta(forIndex index: Int) -> Int {
     guard useFenwickLocations, index >= 1 else { return 0 }
-    return locationFenwickTree.prefixSum(min(index - 1, locationFenwickTree.size))
+    return locationFenwickTree.prefixSum(min(index, locationFenwickTree.size))
   }
 
   /// Resets the Fenwick tree (called when locations are fully recomputed).
@@ -1174,7 +1223,7 @@ public class Editor: NSObject {
     guard let dfsPosition = positions[key], dfsPosition > 0 else { return item.location }
 
     // Compute actual location: baseLocation + accumulated delta from Fenwick tree
-    let delta = locationFenwickTree.prefixSum(min(dfsPosition - 1, locationFenwickTree.size))
+    let delta = locationFenwickTree.prefixSum(min(dfsPosition, locationFenwickTree.size))
     return max(0, item.location + delta)
   }
 
@@ -1184,7 +1233,7 @@ public class Editor: NSObject {
     guard let item = rangeCache[key] else { return nil }
     guard useFenwickLocations, dfsPosition > 0 else { return item.location }
 
-    let delta = locationFenwickTree.prefixSum(min(dfsPosition - 1, locationFenwickTree.size))
+    let delta = locationFenwickTree.prefixSum(min(dfsPosition, locationFenwickTree.size))
     return max(0, item.location + delta)
   }
 

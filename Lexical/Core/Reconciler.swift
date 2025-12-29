@@ -107,7 +107,7 @@ internal enum Reconciler {
     // has non-empty content, build the full attributed string once and initialize caches.
     if textStorage.length == 0 {
       if let root = pendingEditorState.getRootNode() {
-        let childKeys = root.getChildrenKeys()
+        let childKeys = root.getChildrenKeys(fromLatest: false)
         if !childKeys.isEmpty {
           func subtreeTotalLengthLocal(nodeKey: NodeKey, state: EditorState) -> Int {
             guard let node = state.nodeMap[nodeKey] else { return 0 }
@@ -115,7 +115,7 @@ internal enum Reconciler {
             total += node.getTextPart().lengthAsNSString()
             total += node.getPostamble().lengthAsNSString()
             if let el = node as? ElementNode {
-              for c in el.getChildrenKeys() {
+              for c in el.getChildrenKeys(fromLatest: false) {
                 total += subtreeTotalLengthLocal(nodeKey: c, state: state)
               }
             }
@@ -915,7 +915,7 @@ internal func performReconcilerSanityCheck(
   let theme = sanityCheckEditor.getTheme()
 
   let built = NSMutableAttributedString()
-  for child in root.getChildrenKeys() {
+  for child in root.getChildrenKeys(fromLatest: false) {
     built.append(try buildAttributedSubtree(nodeKey: child, state: sanityCheckEditor.getEditorState(), theme: theme))
   }
 
@@ -937,7 +937,7 @@ private func buildAttributedSubtree(
     NSAttributedString(string: node.getPreamble()), from: node, state: state, theme: theme)
   output.append(pre)
   if let element = node as? ElementNode {
-    for child in element.getChildrenKeys() {
+    for child in element.getChildrenKeys(fromLatest: false) {
       output.append(try buildAttributedSubtree(nodeKey: child, state: state, theme: theme))
     }
   }

@@ -226,7 +226,7 @@ public func stringLocationForPoint(_ point: Point, editor: Editor) throws -> Int
   case .element:
     guard let node = getNodeByKey(key: point.key) as? ElementNode else { return nil }
 
-    let childrenKeys = node.getChildrenKeys()
+    let childrenKeys = node.getChildrenKeys(fromLatest: false)
     if point.offset > childrenKeys.count {
       return nil
     }

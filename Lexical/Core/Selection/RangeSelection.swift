@@ -1105,9 +1105,13 @@ public class RangeSelection: BaseSelection {
     // Remember caret string location to allow clamping to a single-character deletion
     // if UIKit expands selection unexpectedly (e.g., predicts/selects the whole word).
     var caretStringLocation: Int? = nil
-    if wasCollapsed, let editor = getActiveEditor() {
-      caretStringLocation = try? stringLocationForPoint(anchor, editor: editor)
-    }
+	    if wasCollapsed, let editor = getActiveEditor() {
+	      if let nativeRange = editor.getNativeSelection().range {
+	        caretStringLocation = nativeRange.location
+	      } else {
+	        caretStringLocation = try? stringLocationForPoint(anchor, editor: editor)
+	      }
+	    }
     // Universal no-op: backspace at absolute document start should do nothing (parity with legacy)
     if isBackwards && wasCollapsed {
       if getActiveEditor() != nil {
@@ -1471,6 +1475,44 @@ public class RangeSelection: BaseSelection {
           } else {
             // No previous element, we're at the very start - nothing to do
             return
+          }
+        }
+      }
+      // UIKit delete/backspace parity: at the start of a root-level ParagraphNode, avoid relying on
+      // `modify(...)` to synthesize the 1-character selection. UIKit selection/tokenizer behavior
+      // can become unstable at large paragraph-boundary churn (many consecutive empty paragraphs),
+      // which can cause deletes to target the wrong boundary and "swallow" unrelated content.
+      //
+      // For plain root-level paragraphs, we can deterministically clamp to the composed character
+      // immediately preceding the caret in string space and delete exactly that.
+      if isBackwards, wasCollapsed,
+         focus == anchor,
+         anchor.offset == 0,
+         (anchor.type == .text || anchor.type == .element),
+         !didPreClampSingleChar,
+         let editor = getActiveEditor(),
+         editor.frontend is LexicalView,
+         let caretLoc = caretStringLocation,
+         caretLoc > 0,
+         let ns = editor.textStorage?.string as NSString?
+      {
+        let paragraph: ParagraphNode? = {
+          if anchor.type == .text {
+            guard let anchorText = (try? anchor.getNode()) as? TextNode else { return nil }
+            return anchorText.getParent() as? ParagraphNode
+          }
+          if anchor.type == .element {
+            return (try? anchor.getNode()) as? ParagraphNode
+          }
+          return nil
+        }()
+
+        if let paragraph, isRootNode(node: paragraph.getParent()) {
+          let clamp = ns.rangeOfComposedCharacterSequence(at: max(0, caretLoc - 1))
+          try applySelectionRange(clamp, affinity: .backward)
+          if !isCollapsed() {
+            editor.pendingDeletionClampRange = clamp
+            didPreClampSingleChar = true
           }
         }
       }
@@ -2222,24 +2264,44 @@ public class RangeSelection: BaseSelection {
         fenwickTree: fenwickTree)
     }
 
-    // For non-collapsed ranges, map the NSRange boundaries in a stable way:
+    // For non-collapsed ranges, map the NSRange boundaries in a stable way.
+    //
+    // In most cases:
     // - start boundary prefers the next node (forward)
     // - end boundary prefers the previous node (backward)
     //
-    // This avoids tie-breaking issues at block boundaries (e.g. paragraph separators) where
-    // using a single direction for both endpoints can incorrectly map a 1-char range onto
-    // the first character of the next TextNode.
+    // However, when the selected character is a paragraph separator (`\n`) the "character" is
+    // semantically owned by the preceding block (the element postamble). In that case, prefer:
+    // - start boundary prefers the previous node (backward)
+    // - end boundary prefers the next node (forward)
+    //
+    // This avoids incorrectly mapping a 1-char newline range onto the first character of the next
+    // TextNode, which can cause backspace/delete to affect the wrong side of a block boundary.
     if range.length > 0 {
-      if let startPoint = pointAt(range.location, prefer: .forward, fallback: .backward),
-        let endPoint = pointAt(range.location + range.length, prefer: .backward, fallback: .forward)
-      {
-        if affinity == .forward {
-          self.anchor = startPoint
-          self.focus = endPoint
-        } else {
-          self.anchor = endPoint
-          self.focus = startPoint
-        }
+      let isParagraphSeparatorSelection: Bool = {
+        guard range.length == 1,
+              let ns = editor.textStorage?.string as NSString?,
+              range.location >= 0,
+              range.location < ns.length
+        else { return false }
+        return ns.character(at: range.location) == 10 // "\n"
+      }()
+
+      let startPrimary: LexicalTextStorageDirection = isParagraphSeparatorSelection ? .backward : .forward
+      let startFallback: LexicalTextStorageDirection = startPrimary == .forward ? .backward : .forward
+      let endPrimary: LexicalTextStorageDirection = isParagraphSeparatorSelection ? .forward : .backward
+      let endFallback: LexicalTextStorageDirection = endPrimary == .forward ? .backward : .forward
+
+      if let startPoint = pointAt(range.location, prefer: startPrimary, fallback: startFallback),
+         let endPoint = pointAt(range.location + range.length, prefer: endPrimary, fallback: endFallback) {
+        let a = affinity == .forward ? startPoint : endPoint
+        let f = affinity == .forward ? endPoint : startPoint
+        let anchorPoint = Point(key: a.key, offset: a.offset, type: a.type)
+        let focusPoint = Point(key: f.key, offset: f.offset, type: f.type)
+        anchorPoint.selection = self
+        focusPoint.selection = self
+        self.anchor = anchorPoint
+        self.focus = focusPoint
         return
       }
     }
@@ -2247,38 +2309,87 @@ public class RangeSelection: BaseSelection {
     let anchorOffset = affinity == .forward ? range.location : range.location + range.length
     let focusOffset = affinity == .forward ? range.location + range.length : range.location
 
-    let otherDir: LexicalTextStorageDirection = (affinity == .forward) ? .backward : .forward
-    if let anchor = pointAt(anchorOffset, prefer: affinity, fallback: otherDir),
-      let focus = pointAt(focusOffset, prefer: affinity, fallback: otherDir)
-    {
-      // Guard against mismapped wide ranges (observed at line breaks) when the original
-      // native range length is 1. If the mapped points land on the same TextNode and span
-      // its full content, clamp to 1 char at the intended string offsets.
-      if range.length == 1,
-         anchor.type == .text, focus.type == .text, anchor.key == focus.key,
-         let tn = (try? anchor.getNode()) as? TextNode,
-         abs(anchor.offset - focus.offset) > 1,
-         abs(anchor.offset - focus.offset) >= tn.getTextContentSize() {
-        if let aPt = try? pointAtStringLocation(
-             anchorOffset,
-             searchDirection: .backward,
-             rangeCache: editor.rangeCache,
-             fenwickTree: fenwickTree),
-           let fPt = try? pointAtStringLocation(
-             focusOffset,
-             searchDirection: .forward,
-             rangeCache: editor.rangeCache,
-             fenwickTree: fenwickTree)
-        {
-          self.anchor = aPt; self.focus = fPt
-        } else {
-          self.anchor = anchor; self.focus = focus
-        }
-      } else {
-        self.anchor = anchor
-        self.focus = focus
-      }
+    // For a collapsed caret, do not use `affinity` to resolve boundary ties between adjacent nodes.
+    // UIKit may report a `.backward` affinity while the caret is visually positioned at a boundary,
+    // which can cause us to map to the end of the previous TextNode and then delete/insert against
+    // the wrong side of the boundary. Canonicalize caret mapping to prefer the next node.
+    let isCollapsed = range.length == 0
+    let primaryDir: LexicalTextStorageDirection = isCollapsed ? .forward : affinity
+    let fallbackDir: LexicalTextStorageDirection =
+      isCollapsed ? .backward : ((affinity == .forward) ? .backward : .forward)
+
+    guard let rawAnchor = pointAt(anchorOffset, prefer: primaryDir, fallback: fallbackDir),
+          let rawFocus = pointAt(focusOffset, prefer: primaryDir, fallback: fallbackDir)
+    else {
+      return
     }
+
+    @inline(__always)
+    func normalizedCaretPoint(_ point: Point) -> Point {
+      guard isCollapsed, point.type == .element,
+            let element = (try? point.getNode()) as? ElementNode
+      else { return point }
+
+      // Prefer mapping a collapsed caret to a concrete TextNode when possible.
+      // When the caret is exactly at an element boundary, `pointAtStringLocation` often
+      // returns an element Point (offset 0 or childrenSize). That is ambiguous and can
+      // cause delete/insert operations to act on the wrong side of the boundary.
+      if point.offset == 0, let firstText = findFirstTextNodeInElement(element) {
+        return Point(key: firstText.getKey(), offset: 0, type: .text)
+      }
+      if point.offset == element.getChildrenSize(),
+         let lastText = findLastTextNodeInElement(element) {
+        return Point(key: lastText.getKey(), offset: lastText.getTextContentSize(), type: .text)
+      }
+      return point
+    }
+
+    if isCollapsed {
+      let caret = normalizedCaretPoint(rawAnchor)
+      let anchorPoint = Point(key: caret.key, offset: caret.offset, type: caret.type)
+      let focusPoint = Point(key: caret.key, offset: caret.offset, type: caret.type)
+      anchorPoint.selection = self
+      focusPoint.selection = self
+      self.anchor = anchorPoint
+      self.focus = focusPoint
+      return
+    }
+
+    let normalizedAnchor = normalizedCaretPoint(rawAnchor)
+    let normalizedFocus = normalizedCaretPoint(rawFocus)
+
+    // Guard against mismapped wide ranges (observed at line breaks) when the original
+    // native range length is 1. If the mapped points land on the same TextNode and span
+    // its full content, clamp to 1 char at the intended string offsets.
+    let anchorPoint: Point
+    let focusPoint: Point
+    if range.length == 1,
+       normalizedAnchor.type == .text, normalizedFocus.type == .text, normalizedAnchor.key == normalizedFocus.key,
+       let tn = (try? normalizedAnchor.getNode()) as? TextNode,
+       abs(normalizedAnchor.offset - normalizedFocus.offset) > 1,
+       abs(normalizedAnchor.offset - normalizedFocus.offset) >= tn.getTextContentSize(),
+       let aPt = try? pointAtStringLocation(
+         anchorOffset,
+         searchDirection: .backward,
+         rangeCache: editor.rangeCache,
+         fenwickTree: fenwickTree),
+       let fPt = try? pointAtStringLocation(
+         focusOffset,
+         searchDirection: .forward,
+         rangeCache: editor.rangeCache,
+         fenwickTree: fenwickTree)
+    {
+      anchorPoint = Point(key: aPt.key, offset: aPt.offset, type: aPt.type)
+      focusPoint = Point(key: fPt.key, offset: fPt.offset, type: fPt.type)
+    } else {
+      anchorPoint = Point(key: normalizedAnchor.key, offset: normalizedAnchor.offset, type: normalizedAnchor.type)
+      focusPoint = Point(key: normalizedFocus.key, offset: normalizedFocus.offset, type: normalizedFocus.type)
+    }
+
+    anchorPoint.selection = self
+    focusPoint.selection = self
+    self.anchor = anchorPoint
+    self.focus = focusPoint
   }
 
   #if canImport(UIKit)
@@ -2328,12 +2439,16 @@ public class RangeSelection: BaseSelection {
       let clampedLen = max(0, min(range.length, remaining))
       let clampedRange = NSRange(location: clampedLoc, length: clampedLen)
       try applySelectionRange(
-        clampedRange, affinity: clampedRange.length == 0 ? .backward : nativeSelection.affinity)
+        clampedRange,
+        affinity: nativeSelection.affinity
+      )
       return
     }
 
     try applySelectionRange(
-      range, affinity: range.length == 0 ? .backward : nativeSelection.affinity)
+      range,
+      affinity: nativeSelection.affinity
+    )
   }
 
   @MainActor
@@ -2341,7 +2456,7 @@ public class RangeSelection: BaseSelection {
     guard let range = nativeSelection.range, let editor = getActiveEditor(),
       !nativeSelection.selectionIsNodeOrObject
     else { return nil }
-    let affinity = range.length == 0 ? .backward : nativeSelection.affinity
+    let affinity = nativeSelection.affinity
 
     let anchorOffset = affinity == .forward ? range.location : range.location + range.length
     let focusOffset = affinity == .forward ? range.location + range.length : range.location
@@ -2367,11 +2482,15 @@ public class RangeSelection: BaseSelection {
       return nil
     }
 
-    self.anchor = anchor
-    self.focus = focus
+    let anchorPoint = Point(key: anchor.key, offset: anchor.offset, type: anchor.type)
+    let focusPoint = Point(key: focus.key, offset: focus.offset, type: focus.type)
+    self.anchor = anchorPoint
+    self.focus = focusPoint
     self.dirty = false
     self.format = TextFormat()
     self.style = ""
+    self.anchor.selection = self
+    self.focus.selection = self
   }
   #elseif os(macOS) && !targetEnvironment(macCatalyst)
   @MainActor

@@ -50,12 +50,13 @@ public struct RangeCacheItem {
   ///
   /// The `location` field stores the BASE location (from when the node was created or
   /// last fully recomputed). The Fenwick tree stores DELTAS that accumulate as edits
-  /// happen. The actual location is: baseLocation + prefixSum(dfsPosition - 1).
+  /// happen. The actual location is: baseLocation + prefixSum(dfsPosition).
   @MainActor
   public func locationFromFenwick(using fenwickTree: FenwickTree? = nil) -> Int {
     guard let tree = fenwickTree, dfsPosition > 0 else { return location }
-    // prefixSum(dfsPosition - 1) gives us the accumulated delta for all nodes before this one.
-    let delta = tree.prefixSum(min(dfsPosition - 1, tree.size))
+    // prefixSum(dfsPosition) gives us the accumulated delta for this node and all nodes before it.
+    // Deltas are recorded at the first affected DFS position (inclusive).
+    let delta = tree.prefixSum(min(dfsPosition, tree.size))
     return max(0, location + delta)
   }
 
@@ -113,7 +114,9 @@ public func pointAtStringLocation(
     func deepestLastDescendant(of element: ElementNode) -> Node? {
       var current: Node = element
       while let el = current as? ElementNode {
-        guard let lastKey = el.getChildrenKeys().last, let next = getNodeByKey(key: lastKey) else {
+        guard let lastKey = el.getChildrenKeys(fromLatest: false).last,
+              let next = getNodeByKey(key: lastKey)
+        else {
           break
         }
         current = next
@@ -215,7 +218,7 @@ private func evaluateNode(
   }
 
   if let node = node as? ElementNode {
-    let childrenKeys = node.getChildrenKeys()
+    let childrenKeys = node.getChildrenKeys(fromLatest: false)
     var possibleBoundaryElementResult: RangeCacheSearchResult?
     if !childrenKeys.isEmpty {
       var low = 0
@@ -248,11 +251,14 @@ private func evaluateNode(
              let rightItem = rangeCache[childrenKeys[rightCandidate]],
              rightItem.locationFromFenwick(using: fenwickTree) == stringLocation
           {
+            // Tie break: when the caret is between two siblings, prefer the side indicated by
+            // `searchDirection` (e.g. `.forward` should resolve to the start of the right node).
             if searchDirection == .forward {
-              secondIndex = rightCandidate
-            } else {
               firstIndex = rightCandidate
               secondIndex = leftIndex
+            } else {
+              firstIndex = leftIndex
+              secondIndex = rightCandidate
             }
           }
         }

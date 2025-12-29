@@ -313,12 +313,14 @@ open class ElementNode: Node {
   }
 
   override open func getPreamble() -> String {
+    let intrinsic = getPreambleIntrinsic()
+
     if self.isInline() {
-      return ""
+      return intrinsic
     }
 
     guard let prevSibling = getPreviousSibling() else {
-      return ""
+      return intrinsic
     }
 
     // Top-level behavior: if the previous sibling is a decorator block (non-inline
@@ -326,37 +328,38 @@ open class ElementNode: Node {
     // new line even when read in isolation. Otherwise rely on the previous block's
     // postamble to provide spacing.
     if let parent = getParent(), isRootNode(node: parent) {
-      if isDecoratorBlockNode(prevSibling) { return "\n" }
+      if isDecoratorBlockNode(prevSibling) { return "\n" + intrinsic }
       // Otherwise, no top-level preamble
-      return ""
+      return intrinsic
     }
 
     guard prevSibling is ElementNode else {
       // Since prev is inline but not an element node, and we're not inline, return a newline
-      return "\n"
+      return "\n" + intrinsic
     }
 
     // note that if prev is an element node (inline or not), it'll handle the newline.
-    return ""
+    return intrinsic
   }
 
   override open func getPostamble() -> String {
+    let intrinsic = getPostambleIntrinsic()
     let nextSibling = getNextSibling()
 
     if nextSibling == nil {
       // we have no next sibling, return "" no matter whether we're inline or not
-      return ""
+      return intrinsic
     } else if isInline() {
       if let nextSibling, !nextSibling.isInline() {
         // we're inline but the next sibling is not inline
-        return "\n"
+        return intrinsic + "\n"
       } else {
         // we're inline, next sibling is either a text node or inline
-        return ""
+        return intrinsic
       }
     } else {
       // we're not inline
-      return "\n"
+      return intrinsic + "\n"
     }
   }
 
@@ -364,27 +367,29 @@ open class ElementNode: Node {
   /// Use this in hot paths like the reconciler to avoid redundant sibling searches.
   internal func getPreambleAndPostamble() -> (preamble: String, postamble: String) {
     let selfInline = isInline()
+    let intrinsicPreamble = getPreambleIntrinsic()
+    let intrinsicPostamble = getPostambleIntrinsic()
 
     // Inline elements have empty preamble
     if selfInline {
       // Still need to compute postamble
       let nextSibling = getNextSibling()
       if nextSibling == nil {
-        return ("", "")
+        return (intrinsicPreamble, intrinsicPostamble)
       } else if let nextSibling, !nextSibling.isInline() {
-        return ("", "\n")
+        return (intrinsicPreamble, intrinsicPostamble + "\n")
       } else {
-        return ("", "")
+        return (intrinsicPreamble, intrinsicPostamble)
       }
     }
 
     // Non-inline element: need to look up parent and siblings
     guard let parent = getParent() else {
-      return ("", "\n")
+      return (intrinsicPreamble, intrinsicPostamble + "\n")
     }
 
     guard let index = getIndexWithinParent() else {
-      return ("", "")
+      return (intrinsicPreamble, intrinsicPostamble)
     }
 
     let children = parent.children
@@ -410,7 +415,7 @@ open class ElementNode: Node {
     // Compute postamble (same logic as getPostamble() for non-inline)
     let postamble: String = nextSibling == nil ? "" : "\n"
 
-    return (preamble, postamble)
+    return (preamble + intrinsicPreamble, intrinsicPostamble + postamble)
   }
 
   public func getAllTextNodes(includeInert: Bool = false) -> [TextNode] {

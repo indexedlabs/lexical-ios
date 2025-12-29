@@ -93,6 +93,18 @@ open class Node: @preconcurrency Codable {
   ///
   /// In Lexical iOS, a node's content is split into four parts: preamble, children, text, postamble. ``ElementNode`` subclasses can implement preamble/postamble, and TextNode subclasses can implement the text part.
   open func getPreamble() -> String {
+    return getPreambleIntrinsic()
+  }
+
+  /// Provides any **intrinsic** preamble content for this node.
+  ///
+  /// This is intended for node-specific control characters that do not depend on sibling/parent
+  /// relationships (e.g. a placeholder/marker character for a list item).
+  ///
+  /// Prefer overriding this instead of `getPreamble()` when the additional content is independent
+  /// of structure, so reconciliation and range caching can compute boundary-dependent content using
+  /// an explicit `EditorState` without relying on global editor state.
+  open func getPreambleIntrinsic() -> String {
     return ""
   }
 
@@ -100,6 +112,14 @@ open class Node: @preconcurrency Codable {
   ///
   /// In Lexical iOS, a node's content is split into four parts: preamble, children, text, postamble. ``ElementNode`` subclasses can implement preamble/postamble, and TextNode subclasses can implement the text part.
   open func getPostamble() -> String {
+    return getPostambleIntrinsic()
+  }
+
+  /// Provides any **intrinsic** postamble content for this node.
+  ///
+  /// This is intended for node-specific control characters that do not depend on sibling/parent
+  /// relationships. Structural boundary newlines should generally remain in `getPostamble()`.
+  open func getPostambleIntrinsic() -> String {
     return ""
   }
 
