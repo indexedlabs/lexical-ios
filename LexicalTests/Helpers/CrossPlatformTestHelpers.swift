@@ -102,9 +102,11 @@ class TestEditorView {
   func setMarkedText(_ text: String, selectedRange: NSRange) {
     #if os(macOS) && !targetEnvironment(macCatalyst)
     // AppKit needs replacementRange - use the current selection or marked range
-    let replacement = lexicalView.textView.markedRange().location != NSNotFound
-      ? lexicalView.textView.markedRange()
-      : lexicalView.textView.selectedRange()
+    // Note: markedRange.location may not be NSNotFound even when there's no active composition;
+    // some implementations return a zero-length range at the selection. Check length > 0.
+    let markedRange = lexicalView.textView.markedRange()
+    let selRange = lexicalView.textView.selectedRange()
+    let replacement = (markedRange.location != NSNotFound && markedRange.length > 0) ? markedRange : selRange
     lexicalView.textView.setMarkedText(text, selectedRange: selectedRange, replacementRange: replacement)
     #else
     lexicalView.textView.setMarkedText(text, selectedRange: selectedRange)

@@ -251,14 +251,15 @@ private func evaluateNode(
              let rightItem = rangeCache[childrenKeys[rightCandidate]],
              rightItem.locationFromFenwick(using: fenwickTree) == stringLocation
           {
-            // Tie break: when the caret is between two siblings, prefer the side indicated by
-            // `searchDirection` (e.g. `.forward` should resolve to the start of the right node).
+            // Tie break: when the caret is between two siblings, `.forward` prefers the
+            // END of the left node, `.backward` prefers the START of the right node.
+            // This matches the original linear iteration behavior.
             if searchDirection == .forward {
-              firstIndex = rightCandidate
-              secondIndex = leftIndex
-            } else {
               firstIndex = leftIndex
               secondIndex = rightCandidate
+            } else {
+              firstIndex = rightCandidate
+              secondIndex = leftIndex
             }
           }
         }
