@@ -101,14 +101,18 @@ public func pointAtStringLocation(
   rangeCache: [NodeKey: RangeCacheItem],
   fenwickTree: FenwickTree?
 ) throws -> Point? {
+  let editor = getActiveEditor()
+  editor?.log(.editor, .verbose, "[pointAtStringLocation] START: location=\(location) searchDirection=\(searchDirection)")
   do {
     let searchResult = try evaluateNode(
       kRootNodeKey, stringLocation: location, searchDirection: searchDirection,
       rangeCache: rangeCache,
       fenwickTree: fenwickTree)
     guard let searchResult else {
+      editor?.log(.editor, .verbose, "[pointAtStringLocation] searchResult=nil")
       return nil
     }
+    editor?.log(.editor, .verbose, "[pointAtStringLocation] searchResult: nodeKey=\(searchResult.nodeKey) type=\(searchResult.type) offset=\(String(describing: searchResult.offset))")
 
     @inline(__always)
     func deepestLastDescendant(of element: ElementNode) -> Node? {
@@ -137,39 +141,54 @@ public func pointAtStringLocation(
       return Point(key: last.getKey(), offset: last.getTextContentSize(), type: .text)
     }
 
+    let point: Point?
     switch searchResult.type {
     case .text:
-      guard let offset = searchResult.offset else { return nil }
-      return Point(key: searchResult.nodeKey, offset: offset, type: .text)
-    case .element:
-      guard let offset = searchResult.offset else { return nil }
-      if let point = rootEndTextPointIfPossible(rootOffset: offset) {
-        return point
+      guard let offset = searchResult.offset else {
+        point = nil
+        break
       }
-      return Point(key: searchResult.nodeKey, offset: offset, type: .element)
+      point = Point(key: searchResult.nodeKey, offset: offset, type: .text)
+    case .element:
+      guard let offset = searchResult.offset else {
+        point = nil
+        break
+      }
+      if let p = rootEndTextPointIfPossible(rootOffset: offset) {
+        point = p
+      } else {
+        point = Point(key: searchResult.nodeKey, offset: offset, type: .element)
+      }
     case .startBoundary:
       if let _ = getNodeByKey(key: searchResult.nodeKey) as? ElementNode {
-        return Point(key: searchResult.nodeKey, offset: 0, type: .element)
+        point = Point(key: searchResult.nodeKey, offset: 0, type: .element)
+      } else if let _ = getNodeByKey(key: searchResult.nodeKey) as? TextNode {
+        point = Point(key: searchResult.nodeKey, offset: 0, type: .text)
+      } else {
+        point = nil
       }
-      if let _ = getNodeByKey(key: searchResult.nodeKey) as? TextNode {
-        return Point(key: searchResult.nodeKey, offset: 0, type: .text)
-      }
-      return nil
     case .endBoundary:
       if let element = getNodeByKey(key: searchResult.nodeKey) as? ElementNode {
         let offset = element.getChildrenSize()
-        if let point = rootEndTextPointIfPossible(rootOffset: offset) {
-          return point
+        if let p = rootEndTextPointIfPossible(rootOffset: offset) {
+          point = p
+        } else {
+          point = Point(key: searchResult.nodeKey, offset: offset, type: .element)
         }
-        return Point(key: searchResult.nodeKey, offset: offset, type: .element)
+      } else if let text = getNodeByKey(key: searchResult.nodeKey) as? TextNode {
+        point = Point(key: searchResult.nodeKey, offset: text.getTextContentSize(), type: .text)
+      } else {
+        point = nil
       }
-      if let text = getNodeByKey(key: searchResult.nodeKey) as? TextNode {
-        return Point(key: searchResult.nodeKey, offset: text.getTextContentSize(), type: .text)
-      }
-      return nil
     case .illegal:
-      return nil
+      point = nil
     }
+    if let point = point {
+      editor?.log(.editor, .verbose, "[pointAtStringLocation] END: returning (\(point.key),\(point.offset),\(point.type))")
+    } else {
+      editor?.log(.editor, .verbose, "[pointAtStringLocation] END: returning nil")
+    }
+    return point
   } catch LexicalError.rangeCacheSearch {
     return nil
   }
@@ -186,6 +205,11 @@ private func evaluateNode(
   }
 
   let nodeLoc = rangeCacheItem.locationFromFenwick(using: fenwickTree)
+  let editor = getActiveEditor()
+  // Log for root node and element nodes (to trace paragraph search)
+  if nodeKey == kRootNodeKey || node is ElementNode {
+    editor?.log(.editor, .verbose, "[evaluateNode] key=\(nodeKey) stringLocation=\(stringLocation) nodeLoc=\(nodeLoc) entireLen=\(rangeCacheItem.entireLength) preamble=\(rangeCacheItem.preambleLength) children=\(rangeCacheItem.childrenLength) text=\(rangeCacheItem.textLength) postamble=\(rangeCacheItem.postambleLength)")
+  }
 
   if let parentKey = node.parent, let parentRangeCacheItem = rangeCache[parentKey] {
     let parentLoc = parentRangeCacheItem.locationFromFenwick(using: fenwickTree)
@@ -238,6 +262,7 @@ private func evaluateNode(
         }
       }
 
+      editor?.log(.editor, .verbose, "[evaluateNode] key=\(nodeKey) binarySearch: low=\(low) childCount=\(childrenKeys.count)")
       if low < childrenKeys.count {
         let leftIndex = low
         var firstIndex = leftIndex
@@ -246,6 +271,7 @@ private func evaluateNode(
           let leftLoc = leftItem.locationFromFenwick(using: fenwickTree)
           let leftEnd = leftLoc + leftItem.entireLength
           let rightCandidate = leftIndex + 1
+          editor?.log(.editor, .verbose, "[evaluateNode] key=\(nodeKey) checking tie-break: leftKey=\(childrenKeys[leftIndex]) leftLoc=\(leftLoc) leftEnd=\(leftEnd) stringLocation=\(stringLocation)")
           if leftEnd == stringLocation,
              rightCandidate < childrenKeys.count,
              let rightItem = rangeCache[childrenKeys[rightCandidate]],
@@ -254,6 +280,7 @@ private func evaluateNode(
             // Tie break: when the caret is between two siblings, `.forward` prefers the
             // END of the left node, `.backward` prefers the START of the right node.
             // This matches the original linear iteration behavior.
+            editor?.log(.editor, .verbose, "[evaluateNode] key=\(nodeKey) TIE-BREAK: rightKey=\(childrenKeys[rightCandidate]) searchDirection=\(searchDirection)")
             if searchDirection == .forward {
               firstIndex = leftIndex
               secondIndex = rightCandidate
@@ -312,6 +339,7 @@ private func evaluateNode(
 
     if let possibleBoundaryElementResult {
       // We do this 'possible result' check so that we prioritise text results where we can.
+      editor?.log(.editor, .verbose, "[evaluateNode] key=\(nodeKey) returning possibleBoundaryElementResult: offset=\(String(describing: possibleBoundaryElementResult.offset))")
       return possibleBoundaryElementResult
     }
   }
@@ -319,28 +347,34 @@ private func evaluateNode(
   if rangeCacheItem.entireLength == 0 {
     // caret is at the last row - element with no children
     if entireRange.length == 0, stringLocation == nodeLoc {
+      editor?.log(.editor, .verbose, "[evaluateNode] key=\(nodeKey) entireLength=0, returning element offset=0")
       return RangeCacheSearchResult(nodeKey: nodeKey, type: .element, offset: 0)
     }
 
     // return the appropriate boundary for the search direction!
     let boundary: RangeCacheSearchResultType =
       (searchDirection == .forward) ? .startBoundary : .endBoundary
+    editor?.log(.editor, .verbose, "[evaluateNode] key=\(nodeKey) entireLength=0, returning \(boundary)")
     return RangeCacheSearchResult(nodeKey: nodeKey, type: boundary, offset: nil)
   }
 
   if stringLocation == nodeLoc {
     if rangeCacheItem.preambleLength == 0 && node is ElementNode {
+      editor?.log(.editor, .verbose, "[evaluateNode] key=\(nodeKey) stringLocation==nodeLoc, preamble=0, returning element offset=0")
       return RangeCacheSearchResult(nodeKey: nodeKey, type: .element, offset: 0)
     }
 
+    editor?.log(.editor, .verbose, "[evaluateNode] key=\(nodeKey) stringLocation==nodeLoc, returning startBoundary")
     return RangeCacheSearchResult(nodeKey: nodeKey, type: .startBoundary, offset: nil)
   }
 
   if stringLocation == entireRange.upperBound {
     if rangeCacheItem.selectableRange().length == 0 {
+      editor?.log(.editor, .verbose, "[evaluateNode] key=\(nodeKey) at upperBound, selectableLen=0, returning element offset=0")
       return RangeCacheSearchResult(nodeKey: nodeKey, type: .element, offset: 0)
     }
 
+    editor?.log(.editor, .verbose, "[evaluateNode] key=\(nodeKey) at upperBound, returning endBoundary")
     return RangeCacheSearchResult(nodeKey: nodeKey, type: .endBoundary, offset: nil)
   }
 
