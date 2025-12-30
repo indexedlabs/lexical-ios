@@ -737,16 +737,21 @@ private class TextViewDelegate: NSObject, UITextViewDelegate {
 
   public func textViewDidChangeSelection(_ textView: UITextView) {
     guard let textView = textView as? TextView else { return }
+    let currentRange = textView.selectedRange
+
     if textView.isUpdatingNativeSelection {
+      editor.log(.TextView, .verbose, "[textViewDidChangeSelection] IGNORED (isUpdatingNativeSelection): \(currentRange)")
       return
     }
 
     if let interception = textView.interceptNextSelectionChangeAndReplaceWithRange {
+      editor.log(.TextView, .verbose, "[textViewDidChangeSelection] INTERCEPTED: native=\(currentRange) -> forced=\(interception)")
       textView.interceptNextSelectionChangeAndReplaceWithRange = nil
       textView.selectedRange = interception
       return
     }
 
+    editor.log(.TextView, .verbose, "[textViewDidChangeSelection] PROCESSING: nativeRange=\(currentRange)")
     textView.validateNativeSelection(textView)
     onSelectionChange(editor: textView.editor)
   }

@@ -120,8 +120,15 @@ extension TextViewAppKit {
 
   /// Insert newline (Return/Enter key).
   public override func insertNewline(_ sender: Any?) {
+    let beforeRange = selectedRange()
+    editor.log(.TextView, .verbose, "[insertNewline] BEFORE: nativeSelection=\(beforeRange)")
+
     // Dispatch Lexical command for paragraph insertion
     editor.dispatchCommand(type: .insertParagraph, payload: nil)
+
+    let afterRange = selectedRange()
+    editor.log(.TextView, .verbose, "[insertNewline] AFTER: nativeSelection=\(afterRange)")
+
     updatePlaceholderVisibility()
     scrollRangeToVisible(selectedRange())
   }

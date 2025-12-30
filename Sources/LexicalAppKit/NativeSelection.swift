@@ -217,20 +217,25 @@ extension TextViewAppKit {
   ///
   /// Override point for tracking selection changes and syncing with Lexical.
   internal func handleSelectionChange() {
+    let currentRange = selectedRange()
+
     // AppKit can deliver selection-change callbacks asynchronously, after we have
     // reset `isUpdatingNativeSelection`. Guard against feeding programmatic selection
     // updates back into Lexical by ignoring the next callback when it matches.
     if let ignoreRange = ignoreNextSelectionChangeIfMatchesRange {
-      let current = selectedRange()
-      if NSEqualRanges(current, ignoreRange) {
+      if NSEqualRanges(currentRange, ignoreRange) {
+        editor.log(.TextView, .verbose, "[handleSelectionChange] IGNORED (matches ignoreRange): \(currentRange)")
         ignoreNextSelectionChangeIfMatchesRange = nil
         return
       }
     }
 
     guard !isUpdatingNativeSelection else {
+      editor.log(.TextView, .verbose, "[handleSelectionChange] IGNORED (isUpdatingNativeSelection): \(currentRange)")
       return
     }
+
+    editor.log(.TextView, .verbose, "[handleSelectionChange] PROCESSING: nativeRange=\(currentRange)")
 
     // Get the current selection
     let selection = nativeSelection
@@ -261,12 +266,16 @@ extension TextViewAppKit {
       }
     } catch {
       // Conversion failed - this can happen if range cache is stale
+      editor.log(.TextView, .verbose, "[notifyLexicalOfSelectionChange] FAILED: nativeRange=\(range) error=\(error)")
       return
     }
 
     guard let anchor = anchor, let focus = focus else {
+      editor.log(.TextView, .verbose, "[notifyLexicalOfSelectionChange] FAILED: nativeRange=\(range) anchor=\(String(describing: anchor)) focus=\(String(describing: focus))")
       return
     }
+
+    editor.log(.TextView, .verbose, "[notifyLexicalOfSelectionChange] nativeRange=\(range) -> anchor=(\(anchor.key),\(anchor.offset),\(anchor.type)) focus=(\(focus.key),\(focus.offset),\(focus.type))")
 
     // Apply the selection change
     try? editor.update {

@@ -917,6 +917,8 @@ public class RangeSelection: BaseSelection {
 
   @MainActor
   public func insertParagraph() throws {
+    getActiveEditor()?.log(.editor, .verbose, "[insertParagraph] START: anchor=(\(anchor.key),\(anchor.offset),\(anchor.type)) focus=(\(focus.key),\(focus.offset),\(focus.type))")
+
     if !isCollapsed() {
       try removeText()
     }
@@ -1062,12 +1064,15 @@ public class RangeSelection: BaseSelection {
       if !newElement.canBeEmpty() && newElement.getChildrenSize() == 0 {
         try newElement.selectPrevious(anchorOffset: nil, focusOffset: nil)
         try newElement.remove()
+        getActiveEditor()?.log(.editor, .verbose, "[insertParagraph] removed empty element, selection=(\(anchor.key),\(anchor.offset),\(anchor.type))")
       } else {
         if !result.skipSelectStart {
           _ = try newElement.selectStart()
+          getActiveEditor()?.log(.editor, .verbose, "[insertParagraph] selectStart on newElement=\(newElement.key), selection=(\(anchor.key),\(anchor.offset),\(anchor.type))")
         }
       }
     }
+    getActiveEditor()?.log(.editor, .verbose, "[insertParagraph] END: anchor=(\(anchor.key),\(anchor.offset),\(anchor.type)) focus=(\(focus.key),\(focus.offset),\(focus.type))")
   }
 
   // Note that "line break" is different to "paragraph", and pressing return/enter does the latter.
@@ -2291,6 +2296,8 @@ public class RangeSelection: BaseSelection {
       throw LexicalError.invariantViolation("Calling applySelectionRange when no active editor")
     }
 
+    editor.log(.editor, .verbose, "[applySelectionRange] START: nativeRange=\(range) affinity=\(affinity)")
+
     let fenwickTree: FenwickTree? = {
       guard editor.useFenwickLocations, editor.fenwickHasDeltas else { return nil }
       _ = editor.cachedDFSOrderAndIndex()
@@ -2387,8 +2394,11 @@ public class RangeSelection: BaseSelection {
     guard let rawAnchor = pointAt(anchorOffset, prefer: primaryDir, fallback: fallbackDir),
           let rawFocus = pointAt(focusOffset, prefer: primaryDir, fallback: fallbackDir)
     else {
+      editor.log(.editor, .verbose, "[applySelectionRange] FAILED: no anchor/focus for range=\(range)")
       return
     }
+
+    editor.log(.editor, .verbose, "[applySelectionRange] rawAnchor=(\(rawAnchor.key),\(rawAnchor.offset),\(rawAnchor.type)) rawFocus=(\(rawFocus.key),\(rawFocus.offset),\(rawFocus.type))")
 
     @inline(__always)
     func normalizedCaretPoint(_ point: Point) -> Point {
@@ -2412,6 +2422,7 @@ public class RangeSelection: BaseSelection {
 
     if isCollapsed {
       let caret = normalizedCaretPoint(rawAnchor)
+      editor.log(.editor, .verbose, "[applySelectionRange] collapsed -> normalized=(\(caret.key),\(caret.offset),\(caret.type))")
       let anchorPoint = Point(key: caret.key, offset: caret.offset, type: caret.type)
       let focusPoint = Point(key: caret.key, offset: caret.offset, type: caret.type)
       anchorPoint.selection = self
