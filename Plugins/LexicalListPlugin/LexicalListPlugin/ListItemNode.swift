@@ -252,14 +252,16 @@ public class ListItemNode: ElementNode {
       return true
     }
 
-    let paragraph = createParagraphNode()
-    let children = self.getChildren()
-    try paragraph.append(children)
     let listNode = try self.getParentOrThrow()
     let listNodeParent = try listNode.getParentOrThrow()
     let isIndented = listNodeParent is ListItemNode
 
     if listNode.getChildrenSize() == 1 {
+      // Only create paragraph and move children when converting list to paragraph
+      let paragraph = createParagraphNode()
+      let children = self.getChildren()
+      try paragraph.append(children)
+
       if isIndented {
         // if the list node is nested, we just want to remove it,
         // effectively unindenting it.
@@ -283,7 +285,25 @@ public class ListItemNode: ElementNode {
         }
       }
     } else {
-      try self.remove()
+      // Merge this item's content into the previous sibling list item
+      if let prevSibling = self.getPreviousSibling() as? ListItemNode {
+        let children = self.getChildren()
+        let prevChildCount = prevSibling.getChildrenSize()
+        for child in children {
+          try prevSibling.append([child])
+        }
+        // Update selection to the merge point
+        if let lastTextBeforeMerge = prevSibling.getChildAtIndex(index: prevChildCount - 1) as? TextNode {
+          let textLen = lastTextBeforeMerge.getTextPartSize()
+          try lastTextBeforeMerge.select(anchorOffset: textLen, focusOffset: textLen)
+        } else {
+          try prevSibling.select(anchorOffset: prevChildCount, focusOffset: prevChildCount)
+        }
+        try self.remove()
+      } else {
+        // No previous sibling - just remove (original behavior for first item)
+        try self.remove()
+      }
     }
 
     return true
