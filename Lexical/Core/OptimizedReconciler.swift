@@ -1613,7 +1613,6 @@ internal enum OptimizedReconciler {
     var instructions: [Instruction] = []
     var deleteOldPostRange: NSRange? = nil
     var combinedInsertPrefix: NSAttributedString? = nil
-    var postambleDelta = 0
 
     if firstAddedIdx > 0 {
       let prevSiblingKey = nextChildren[firstAddedIdx - 1]
@@ -1629,7 +1628,6 @@ internal enum OptimizedReconciler {
             NSAttributedString(string: prevSiblingNext.getPostamble()),
             from: prevSiblingNext, state: pendingEditorState, theme: theme)
           if postAttrStr.length > 0 { combinedInsertPrefix = postAttrStr }
-          postambleDelta = newPost - oldPost
           if var it = editor.rangeCache[prevSiblingKey] {
             it.postambleLength = newPost
             editor.rangeCache[prevSiblingKey] = it
@@ -1784,6 +1782,12 @@ internal enum OptimizedReconciler {
     // Read-only contexts (no real TextView) can have different layout/spacing ordering.
     // Keep optimized active but skip this structural fast path in read-only to preserve parity.
     if isReadOnlyFrontendContext(editor) { return false }
+    // This fast path relies on absolute TextStorage offsets. If Fenwick deltas are pending,
+    // materialize them first so location math stays correct.
+    if editor.useFenwickLocations, editor.fenwickHasDeltas {
+      editor.invalidateDFSOrderCache()
+      _ = editor.cachedDFSOrderAndIndex()
+    }
 
     // Find a parent Element whose children gained exactly one child (no removals)
     // and no other structural deltas.
@@ -2083,6 +2087,12 @@ internal enum OptimizedReconciler {
     }
     // Read-only contexts skip structural fast paths
     if isReadOnlyFrontendContext(editor) { return false }
+    // This fast path uses absolute TextStorage locations; materialize any pending
+    // Fenwick deltas to avoid inserting/deleting at stale offsets.
+    if editor.useFenwickLocations, editor.fenwickHasDeltas {
+      editor.invalidateDFSOrderCache()
+      _ = editor.cachedDFSOrderAndIndex()
+    }
 
     // STEP 1: Detect the split-paragraph pattern
     // Find a parent Element that gained exactly one child
@@ -2198,9 +2208,7 @@ internal enum OptimizedReconciler {
     // Handle previous sibling's postamble change (newline for paragraph)
     var combinedInsertPrefix: NSAttributedString? = nil
     var deleteOldPostRange: NSRange? = nil
-    var postDelta = 0
     if insertIndex > 0 {
-      let prevSiblingKey = nextChildren[insertIndex - 1]
       if let prevSiblingRange = editor.rangeCache[prevSiblingKey],
          let prevSiblingNext = pendingEditorState.nodeMap[prevSiblingKey] {
         let oldPost = prevSiblingRange.postambleLength
@@ -2212,7 +2220,6 @@ internal enum OptimizedReconciler {
             NSAttributedString(string: prevSiblingNext.getPostamble()),
             from: prevSiblingNext, state: pendingEditorState, theme: theme)
           if postAttrStr.length > 0 { combinedInsertPrefix = postAttrStr }
-          postDelta = newPost - oldPost
           if var it = editor.rangeCache[prevSiblingKey] {
             it.postambleLength = newPost
             editor.rangeCache[prevSiblingKey] = it
@@ -2223,7 +2230,10 @@ internal enum OptimizedReconciler {
 
     // Build attributed string for the new block
     let newBlockAttr = buildAttributedSubtree(nodeKey: addedKey, state: pendingEditorState, theme: theme)
-    let effectiveInsertLoc = deleteOldPostRange?.location ?? insertLoc
+    let insertLocAfterTruncation: Int = {
+      if let del = deleteOldPostRange { return del.location + textDelta }
+      return insertLoc
+    }()
 
     // STEP 5: Apply TextStorage changes in single editing session
     let previousMode = textStorage.mode
@@ -2242,18 +2252,17 @@ internal enum OptimizedReconciler {
     }
 
     // 3. Insert new block (with optional postamble prefix)
-    let insertLocAdjusted = effectiveInsertLoc + textDelta - (deleteOldPostRange?.length ?? 0)
     if let prefix = combinedInsertPrefix {
       let combined = NSMutableAttributedString(attributedString: prefix)
       combined.append(newBlockAttr)
-      textStorage.insert(combined, at: insertLocAdjusted)
+      textStorage.insert(combined, at: insertLocAfterTruncation)
     } else {
-      textStorage.insert(newBlockAttr, at: insertLocAdjusted)
+      textStorage.insert(newBlockAttr, at: insertLocAfterTruncation)
     }
 
     // Fix attributes
     let fixStart = max(0, textStart)
-    let fixEnd = insertLocAdjusted + (combinedInsertPrefix?.length ?? 0) + newBlockAttr.length
+    let fixEnd = insertLocAfterTruncation + (combinedInsertPrefix?.length ?? 0) + newBlockAttr.length
     if fixEnd > fixStart {
       textStorage.fixAttributes(in: NSRange(location: fixStart, length: fixEnd - fixStart))
     }
@@ -2290,20 +2299,11 @@ internal enum OptimizedReconciler {
     cursor = parentKey
     while let k = cursor {
       if var it = editor.rangeCache[k] {
-        it.childrenLength += totalBlockDelta + postDelta
+        it.childrenLength += totalBlockDelta
         editor.rangeCache[k] = it
       }
       cursor = pendingEditorState.nodeMap[k]?.parent
     }
-
-    // Add range cache entries for the new block
-    let addedStartLoc = insertLocAdjusted + prefixLen
-    _ = recomputeRangeCacheSubtree(
-      nodeKey: addedKey,
-      state: pendingEditorState,
-      startLocation: addedStartLoc,
-      editor: editor
-    )
 
     // Shift locations for nodes after the truncated text using Fenwick tree
     if textDelta != 0 || totalBlockDelta != 0 {
@@ -2333,7 +2333,7 @@ internal enum OptimizedReconciler {
 
       // Shift for block insertion (nodes after the inserted block)
       if totalBlockDelta != 0 {
-        let shiftStartKey: NodeKey = lastDescendantKey(state: pendingEditorState, root: addedKey)
+        let shiftStartKey: NodeKey = lastDescendantKey(state: pendingEditorState, root: prevSiblingKey)
         applyIncrementalLocationShifts(
           rangeCache: &editor.rangeCache,
           ranges: [(startKey: shiftStartKey, endKeyExclusive: Optional<NodeKey>.none, delta: totalBlockDelta)],
@@ -2343,6 +2343,15 @@ internal enum OptimizedReconciler {
         )
       }
     }
+
+    // Add range cache entries for the new block
+    let addedStartLoc = insertLocAfterTruncation + prefixLen
+    _ = recomputeRangeCacheSubtree(
+      nodeKey: addedKey,
+      state: pendingEditorState,
+      startLocation: addedStartLoc,
+      editor: editor
+    )
 
     // Decorator reconciliation - only for the newly added block (not the entire parent tree)
     // The truncated paragraph's decorators are unchanged; we only need to check the new subtree

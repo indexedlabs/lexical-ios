@@ -481,6 +481,83 @@ final class CrossPlatformBoundaryRegressionTests: XCTestCase {
     try assertTextParity(testView)
   }
 
+  /// Tests Enter between two paragraphs inserts a blank line (not splitting line2 at offset 1).
+  func testEnter_BetweenParagraphs_InsertsBlankLine_NotSplitSecondParagraphAtOffset1() throws {
+    let testView = createTestEditorView()
+    let editor = testView.editor
+
+    try editor.update {
+      guard let root = getRoot() else { return }
+      for child in root.getChildren() {
+        try child.remove()
+      }
+
+      let p1 = createParagraphNode()
+      let t1 = createTextNode(text: "Line1")
+      try p1.append([t1])
+
+      let p2 = createParagraphNode()
+      let t2 = createTextNode(text: "Line2")
+      try p2.append([t2])
+
+      try root.append([p1, p2])
+    }
+    drainMainQueue()
+
+    let native = testView.attributedTextString as NSString
+    let newlineLoc = native.range(of: "\n").location
+    XCTAssertNotEqual(newlineLoc, NSNotFound, "Expected paragraph separator in native text")
+    testView.setSelectedRange(NSRange(location: newlineLoc, length: 0))
+
+    _ = editor.dispatchCommand(type: .insertText, payload: "\n")
+    drainMainQueue()
+
+    try assertTextParity(testView)
+    XCTAssertEqual(testView.attributedTextString, "Line1\n\nLine2")
+  }
+
+  /// Tests backspace after inserting multiple paragraphs at start does not swallow first character.
+  func testBackspace_AfterMultipleInsertParagraphAtStart_DoesNotSwallowFirstChar() throws {
+    let testView = createTestEditorView()
+    let editor = testView.editor
+
+    try editor.update {
+      guard let root = getRoot() else { return }
+      for child in root.getChildren() {
+        try child.remove()
+      }
+
+      let p1 = createParagraphNode()
+      let t1 = createTextNode(text: "Hello")
+      try p1.append([t1])
+      try root.append([p1])
+    }
+    drainMainQueue()
+
+    testView.setSelectedRange(NSRange(location: 0, length: 0))
+
+    for _ in 0..<3 {
+      _ = editor.dispatchCommand(type: .insertText, payload: "\n")
+      drainMainQueue()
+    }
+
+    let nativeBefore = testView.attributedTextString as NSString
+    let helloLoc = nativeBefore.range(of: "Hello").location
+    XCTAssertNotEqual(helloLoc, NSNotFound, "Expected Hello in native text after inserts")
+    testView.setSelectedRange(NSRange(location: helloLoc, length: 0))
+    try editor.update {
+      guard let selection = try getSelection() as? RangeSelection else { return }
+      try selection.applySelectionRange(NSRange(location: helloLoc, length: 0), affinity: .forward)
+    }
+    drainMainQueue()
+
+    _ = editor.dispatchCommand(type: .deleteCharacter, payload: true)
+    drainMainQueue()
+
+    try assertTextParity(testView)
+    XCTAssertTrue(testView.attributedTextString.hasSuffix("Hello"))
+  }
+
   // MARK: - Range Cache Consistency Tests
 
   /// Tests that multiple Enter presses maintain correct range cache locations.

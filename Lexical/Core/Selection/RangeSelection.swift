@@ -1150,31 +1150,33 @@ public class RangeSelection: BaseSelection {
     if isBackwards, wasCollapsed, anchor.type == .text, anchor.offset == 0,
        let parentElement = (try? anchor.getNode() as? TextNode)?.getParent() as? ElementNode
     {
-      let elementPoint = Point(key: parentElement.getKey(), offset: 0, type: .element)
+      let textNode = (try? anchor.getNode()) as? TextNode
+      let indexInParent = textNode?.getIndexWithinParent() ?? 0
+      let elementPoint = Point(key: parentElement.getKey(), offset: indexInParent, type: .element)
       elementPoint.selection = self
       self.anchor = elementPoint
       self.focus = elementPoint
       try deleteCharacter(isBackwards: true)
       return
     }
-	    var shouldDeleteLeadingInlineDecoratorAfterParagraphMerge = false
-	    let startedAtElementOffsetZero = wasCollapsed && isBackwards && anchor.type == .element && anchor.offset == 0
-	    let startedAtInlineDecorator =
-	      startedAtElementOffsetZero
-      && (try? (anchor.getNode() as? ElementNode)?.getChildAtIndex(index: anchor.offset) as? DecoratorNode)?
-        .isInline() == true
+    var shouldDeleteLeadingInlineDecoratorAfterParagraphMerge = false
+    let startedAtElementOffsetZero = wasCollapsed && isBackwards && anchor.type == .element && anchor.offset == 0
+    let startedAtInlineDecorator =
+      startedAtElementOffsetZero
+        && (try? (anchor.getNode() as? ElementNode)?.getChildAtIndex(index: anchor.offset) as? DecoratorNode)?
+          .isInline() == true
     let startedInEmptyElement =
       startedAtElementOffsetZero && ((try? (anchor.getNode() as? ElementNode)?.isEmpty()) == true)
     // Remember caret string location to allow clamping to a single-character deletion
     // if UIKit expands selection unexpectedly (e.g., predicts/selects the whole word).
     var caretStringLocation: Int? = nil
-	    if wasCollapsed, let editor = getActiveEditor() {
-	      if let nativeRange = editor.getNativeSelection().range {
-	        caretStringLocation = nativeRange.location
-	      } else {
-	        caretStringLocation = try? stringLocationForPoint(anchor, editor: editor)
-	      }
-	    }
+    if wasCollapsed, let editor = getActiveEditor() {
+      if let nativeRange = editor.getNativeSelection().range {
+        caretStringLocation = nativeRange.location
+      } else {
+        caretStringLocation = try? stringLocationForPoint(anchor, editor: editor)
+      }
+    }
     // Universal no-op: backspace at absolute document start should do nothing (parity with legacy)
     if isBackwards && wasCollapsed {
       if getActiveEditor() != nil {
