@@ -1552,6 +1552,16 @@ public enum RopeReconciler {
     theme: Theme,
     useLazyLocations: Bool
   ) throws {
+    // Check if node was reparented - if so, we need to update both old and new parent's childrenLength
+    let wasReparented = prev.parent != next.parent
+    if wasReparented, let cacheItem = editor.rangeCache[prev.key] {
+      let nodeLength = cacheItem.entireLength
+      // Decrement old parent's childrenLength
+      propagateChildrenLengthDelta(fromParentKey: prev.parent, delta: -nodeLength, editor: editor)
+      // Increment new parent's childrenLength
+      propagateChildrenLengthDelta(fromParentKey: next.parent, delta: nodeLength, state: state, editor: editor)
+    }
+
     // Handle text node changes
     if let prevText = prev as? TextNode, let nextText = next as? TextNode {
       try updateTextNode(
