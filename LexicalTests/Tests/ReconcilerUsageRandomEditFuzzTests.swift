@@ -145,10 +145,15 @@ final class ReconcilerUsageRandomEditFuzzTests: XCTestCase {
     try editor.read { lexical = getRoot()?.getTextContent() ?? "" }
     let native = textView.text ?? ""
     if lexical != native {
+      let lexicalEsc = lexical.replacingOccurrences(of: "\n", with: "\\n")
+      let nativeEsc = native.replacingOccurrences(of: "\n", with: "\\n")
       XCTFail(
         """
         Native text diverged from Lexical.
         lexicalLen=\(lexical.lengthAsNSString()) nativeLen=\(native.lengthAsNSString())
+        lexical="\(lexicalEsc)"
+        native="\(nativeEsc)"
+        selection=\(textView.selectedRange)
         """,
         file: file,
         line: line

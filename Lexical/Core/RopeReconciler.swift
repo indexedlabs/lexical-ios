@@ -244,12 +244,30 @@ public enum RopeReconciler {
         return false
       }
 
+      // Check if any ancestor of `key` in `nextState` is being inserted.
+      // If so, the content will be rebuilt via the insert, so we shouldn't preserve it via wrapper-only.
+      @inline(__always)
+      func hasInsertedAncestor(key: NodeKey) -> Bool {
+        var cursor: NodeKey? = key
+        while let k = cursor {
+          if insertedKeys.contains(k) { return true }
+          guard let node = nextState.nodeMap[k] else { return false }
+          cursor = node.parent
+        }
+        return false
+      }
+
       @inline(__always)
       func hasAttachedDescendant(under key: NodeKey) -> Bool {
         guard let root = prevState.nodeMap[key] as? ElementNode else { return false }
         var stack = root.getChildrenKeys(fromLatest: false)
         while let k = stack.popLast() {
-          if isAttached(key: k, in: nextState) { return true }
+          // Descendant must be attached in nextState AND its new parent must NOT be inserted.
+          // If an ancestor is being inserted, buildAttributedContent will include this descendant's
+          // content, so removing the old parent should delete the content (not preserve it).
+          if isAttached(key: k, in: nextState) && !hasInsertedAncestor(key: k) {
+            return true
+          }
           if let element = prevState.nodeMap[k] as? ElementNode {
             stack.append(contentsOf: element.getChildrenKeys(fromLatest: false))
           }
