@@ -1147,6 +1147,16 @@ public class RangeSelection: BaseSelection {
         }
       }
     }
+    if isBackwards, wasCollapsed, anchor.type == .text, anchor.offset == 0,
+       let parentElement = (try? anchor.getNode() as? TextNode)?.getParent() as? ElementNode
+    {
+      let elementPoint = Point(key: parentElement.getKey(), offset: 0, type: .element)
+      elementPoint.selection = self
+      self.anchor = elementPoint
+      self.focus = elementPoint
+      try deleteCharacter(isBackwards: true)
+      return
+    }
 	    var shouldDeleteLeadingInlineDecoratorAfterParagraphMerge = false
 	    let startedAtElementOffsetZero = wasCollapsed && isBackwards && anchor.type == .element && anchor.offset == 0
 	    let startedAtInlineDecorator =

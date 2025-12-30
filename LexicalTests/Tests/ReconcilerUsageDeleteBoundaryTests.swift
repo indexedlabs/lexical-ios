@@ -590,6 +590,43 @@ final class ReconcilerUsageDeleteBoundaryTests: XCTestCase {
     try assertSelectionRoundTrips(editor, textView)
   }
 
+  func testEnterThenBackspaceInMiddleOfParagraph_DoesNotDropTrailingParagraphs() throws {
+    let testView = createTestEditorView()
+    let editor = testView.editor
+    let textView = testView.view.textView
+    setupWindowWithView(testView)
+    textView.becomeFirstResponder()
+
+    textView.insertText("AAA")
+    textView.insertText("\n")
+    textView.insertText("BBB")
+    textView.insertText("\n")
+    textView.insertText("CCC")
+    drainMainQueue()
+    guard try assertTextParity(editor, textView) else { return }
+
+    let before = textView.text ?? ""
+    let beforeNS = before as NSString
+    let bbbRange = beforeNS.range(of: "BBB")
+    XCTAssertNotEqual(bbbRange.location, NSNotFound)
+    let caretLoc = bbbRange.location + 1
+
+    textView.selectedRange = NSRange(location: caretLoc, length: 0)
+    syncSelection(textView)
+    drainMainQueue()
+
+    textView.insertText("\n")
+    drainMainQueue()
+    textView.deleteBackward()
+    drainMainQueue()
+
+    XCTAssertEqual(textView.text, before, "Enter + backspace should restore original text")
+    XCTAssertEqual(textView.selectedRange, NSRange(location: caretLoc, length: 0))
+    XCTAssertTrue((textView.text ?? "").contains("CCC"))
+    guard try assertTextParity(editor, textView) else { return }
+    try assertSelectionRoundTrips(editor, textView)
+  }
+
   func testBackspaceAtStartOfParagraph_AfterFenwickDeltas_DoesNotDeleteForwardText() throws {
     let testView = createTestEditorView()
     let editor = testView.editor
