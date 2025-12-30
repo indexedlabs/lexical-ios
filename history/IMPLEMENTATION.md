@@ -1,5 +1,9 @@
 # Implementation Log (Lexical iOS)
 
+## 2025-12-30
+- lexical-ios-d3s (in progress): Remapped backspace at start-of-paragraph when the previous sibling is an empty element so deletion targets the empty paragraph boundary instead of the next paragraph's first character; corrected RopeReconciler clamp handling so structural deletes outside the clamp are preserved (fixes text duplication when merging paragraphs); expanded empty-paragraph guard to handle caret-at-text-start boundary mapping and added affinity-focused usage tests (backspace/insert at boundary + multiple empty paragraphs).
+- Tests: `xcodebuild -workspace Playground/LexicalPlayground.xcodeproj/project.xcworkspace -scheme Lexical-Package -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.0' -only-testing:LexicalTests/ReconcilerUsageDeleteBoundaryTests test` (passed). Log: `/tmp/lexical-test-results.log`.
+
 ## 2025-12-29
 - lexical-ios-7nw.6 (in progress): Investigated backspace-at-boundary regressions; added native-selection boundary test; adjusted range-cache mapping for postamble locations and tightened backspace selection clamping + paragraph-boundary fallback selection in `RangeSelection.deleteCharacter` / `applySelectionRange`.
 - Tests: `xcodebuild -workspace Playground/LexicalPlayground.xcodeproj/project.xcworkspace -scheme Lexical-Package -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.0' -only-testing:LexicalTests/ReconcilerUsageDeleteBoundaryTests test` (failed; 29 failures). Log: `/tmp/lexical-test-results.log`.

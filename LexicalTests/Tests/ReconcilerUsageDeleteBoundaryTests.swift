@@ -380,6 +380,216 @@ final class ReconcilerUsageDeleteBoundaryTests: XCTestCase {
     try assertSelectionRoundTrips(editor, textView)
   }
 
+  func testBackspaceInEmptyParagraph_PlacesCaretBeforeNextParagraph() throws {
+    let testView = createTestEditorView()
+    let editor = testView.editor
+    let textView = testView.view.textView
+    setupWindowWithView(testView)
+    textView.becomeFirstResponder()
+
+    textView.insertText("AAA")
+    textView.insertText("\n")
+    textView.insertText("\n")
+    textView.insertText("BBB")
+    drainMainQueue()
+    guard try assertTextParity(editor, textView) else { return }
+
+    let text = (textView.text ?? "") as NSString
+    let firstNewline = text.range(of: "\n")
+    XCTAssertNotEqual(firstNewline.location, NSNotFound)
+
+    let searchRange = NSRange(
+      location: firstNewline.location + firstNewline.length,
+      length: max(0, text.length - (firstNewline.location + firstNewline.length))
+    )
+    let secondNewline = text.range(of: "\n", options: [], range: searchRange)
+    XCTAssertNotEqual(secondNewline.location, NSNotFound)
+
+    // Place the caret at the empty paragraph boundary (affinity backward via backspace).
+    textView.selectedRange = NSRange(location: secondNewline.location, length: 0)
+    syncSelection(textView)
+    drainMainQueue()
+
+    textView.deleteBackward()
+    drainMainQueue()
+
+    let after = (textView.text ?? "") as NSString
+    let bbbRange = after.range(of: "BBB")
+    XCTAssertNotEqual(bbbRange.location, NSNotFound)
+    XCTAssertEqual(
+      textView.selectedRange,
+      NSRange(location: max(0, bbbRange.location - 1), length: 0),
+      "Caret should land before the next paragraph (backward affinity)"
+    )
+    guard try assertTextParity(editor, textView) else { return }
+    try assertSelectionRoundTrips(editor, textView)
+  }
+
+  func testInsertTextInEmptyParagraph_PrefersEmptyLineOverNextParagraph() throws {
+    let testView = createTestEditorView()
+    let editor = testView.editor
+    let textView = testView.view.textView
+    setupWindowWithView(testView)
+    textView.becomeFirstResponder()
+
+    textView.insertText("AAA")
+    textView.insertText("\n")
+    textView.insertText("\n")
+    textView.insertText("BBB")
+    drainMainQueue()
+    guard try assertTextParity(editor, textView) else { return }
+
+    let text = (textView.text ?? "") as NSString
+    let firstNewline = text.range(of: "\n")
+    XCTAssertNotEqual(firstNewline.location, NSNotFound)
+
+    let searchRange = NSRange(
+      location: firstNewline.location + firstNewline.length,
+      length: max(0, text.length - (firstNewline.location + firstNewline.length))
+    )
+    let secondNewline = text.range(of: "\n", options: [], range: searchRange)
+    XCTAssertNotEqual(secondNewline.location, NSNotFound)
+
+    // Place the caret at the empty paragraph boundary (affinity forward via insertText).
+    textView.selectedRange = NSRange(location: secondNewline.location, length: 0)
+    syncSelection(textView)
+    drainMainQueue()
+
+    let caret = textView.selectedRange.location
+    let expected = NSMutableString(string: textView.text ?? "")
+    expected.insert("Z", at: caret)
+
+    textView.insertText("Z")
+    drainMainQueue()
+
+    XCTAssertEqual(
+      textView.text,
+      expected as String,
+      "Insert should target the empty paragraph, not the next paragraph"
+    )
+    let after = (textView.text ?? "") as NSString
+    let bbbRange = after.range(of: "BBB")
+    XCTAssertNotEqual(bbbRange.location, NSNotFound)
+    XCTAssertEqual(
+      textView.selectedRange,
+      NSRange(location: max(0, bbbRange.location - 1), length: 0),
+      "Caret should land after inserted text (forward affinity)"
+    )
+    guard try assertTextParity(editor, textView) else { return }
+    try assertSelectionRoundTrips(editor, textView)
+  }
+
+  func testBackspaceAtStartOfTextAfterEmptyParagraph_DoesNotDeleteFirstCharacter() throws {
+    let testView = createTestEditorView()
+    let editor = testView.editor
+    let textView = testView.view.textView
+    setupWindowWithView(testView)
+    textView.becomeFirstResponder()
+
+    textView.insertText("AAA")
+    textView.insertText("\n")
+    textView.insertText("\n")
+    textView.insertText("BBB")
+    drainMainQueue()
+    guard try assertTextParity(editor, textView) else { return }
+
+    let before = (textView.text ?? "") as NSString
+    let bbbRange = before.range(of: "BBB")
+    XCTAssertNotEqual(bbbRange.location, NSNotFound)
+
+    // Place the caret at the start of "BBB" (after the empty paragraph).
+    textView.selectedRange = NSRange(location: bbbRange.location, length: 0)
+    syncSelection(textView)
+    drainMainQueue()
+
+    let expected = NSMutableString(string: textView.text ?? "")
+    expected.deleteCharacters(in: NSRange(location: bbbRange.location - 1, length: 1))
+
+    textView.deleteBackward()
+    drainMainQueue()
+
+    XCTAssertEqual(
+      textView.text,
+      expected as String,
+      "Backspace should delete the empty paragraph newline, not the first character of BBB"
+    )
+    let after = (textView.text ?? "") as NSString
+    let newBBBRange = after.range(of: "BBB")
+    XCTAssertNotEqual(newBBBRange.location, NSNotFound)
+    XCTAssertEqual(textView.selectedRange, NSRange(location: newBBBRange.location, length: 0))
+    guard try assertTextParity(editor, textView) else { return }
+    try assertSelectionRoundTrips(editor, textView)
+  }
+
+  func testBackspaceAtStartOfText_AcrossMultipleEmptyParagraphs() throws {
+    let testView = createTestEditorView()
+    let editor = testView.editor
+    let textView = testView.view.textView
+    setupWindowWithView(testView)
+    textView.becomeFirstResponder()
+
+    textView.insertText("AAA")
+    textView.insertText("\n")
+    textView.insertText("\n")
+    textView.insertText("\n")
+    textView.insertText("BBB")
+    drainMainQueue()
+    guard try assertTextParity(editor, textView) else { return }
+
+    func placeCaretAtBBB() {
+      let current = (textView.text ?? "") as NSString
+      let range = current.range(of: "BBB")
+      XCTAssertNotEqual(range.location, NSNotFound)
+      textView.selectedRange = NSRange(location: range.location, length: 0)
+      syncSelection(textView)
+      drainMainQueue()
+    }
+
+    placeCaretAtBBB()
+    textView.deleteBackward()
+    drainMainQueue()
+    XCTAssertEqual(textView.text, "AAA\n\nBBB")
+
+    placeCaretAtBBB()
+    textView.deleteBackward()
+    drainMainQueue()
+    XCTAssertEqual(textView.text, "AAA\nBBB")
+
+    guard try assertTextParity(editor, textView) else { return }
+    try assertSelectionRoundTrips(editor, textView)
+  }
+
+  func testInsertTextAtStartOfTextAfterEmptyParagraph_InsertsBeforeText() throws {
+    let testView = createTestEditorView()
+    let editor = testView.editor
+    let textView = testView.view.textView
+    setupWindowWithView(testView)
+    textView.becomeFirstResponder()
+
+    textView.insertText("AAA")
+    textView.insertText("\n")
+    textView.insertText("\n")
+    textView.insertText("BBB")
+    drainMainQueue()
+    guard try assertTextParity(editor, textView) else { return }
+
+    let before = (textView.text ?? "") as NSString
+    let bbbRange = before.range(of: "BBB")
+    XCTAssertNotEqual(bbbRange.location, NSNotFound)
+
+    textView.selectedRange = NSRange(location: bbbRange.location, length: 0)
+    syncSelection(textView)
+    drainMainQueue()
+
+    textView.insertText("Z")
+    drainMainQueue()
+
+    XCTAssertEqual(textView.text, "AAA\n\nZBBB")
+    XCTAssertEqual(textView.selectedRange, NSRange(location: bbbRange.location + 1, length: 0))
+    guard try assertTextParity(editor, textView) else { return }
+    try assertSelectionRoundTrips(editor, textView)
+  }
+
   func testBackspaceAtStartOfParagraph_AfterFenwickDeltas_DoesNotDeleteForwardText() throws {
     let testView = createTestEditorView()
     let editor = testView.editor

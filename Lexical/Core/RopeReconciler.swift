@@ -1327,8 +1327,8 @@ public enum RopeReconciler {
 		    // This prevents structural diff logic from deleting the wrong separator/newline when
 		    // RangeCache locations are temporarily inconsistent during churn.
 		    let deletionClamp = editor.pendingDeletionClampRange
-		    var plannedDeletes: [(range: NSRange, parentKey: NodeKey?)] = []
-		    plannedDeletes.reserveCapacity(removes.count)
+    var plannedDeletes: [(range: NSRange, parentKey: NodeKey?, clampSensitive: Bool)] = []
+    plannedDeletes.reserveCapacity(removes.count)
 
     @inline(__always)
     func isAttached(key: NodeKey, in state: EditorState) -> Bool {
@@ -1356,17 +1356,17 @@ public enum RopeReconciler {
 	        let postLen = cacheItem.postambleLength
 	        let postStart = baseLoc + cacheItem.preambleLength + cacheItem.childrenLength + cacheItem.textLength
 
-		        if postLen > 0 {
-		          let postRange = NSRange(location: postStart, length: postLen)
-		          plannedDeletes.append((postRange, node.parent))
-		          deletedLength += postLen
-		        }
+        if postLen > 0 {
+          let postRange = NSRange(location: postStart, length: postLen)
+          plannedDeletes.append((postRange, node.parent, true))
+          deletedLength += postLen
+        }
 
-		        if preLen > 0 {
-		          let preRange = NSRange(location: baseLoc, length: preLen)
-		          plannedDeletes.append((preRange, node.parent))
-		          deletedLength += preLen
-		        }
+        if preLen > 0 {
+          let preRange = NSRange(location: baseLoc, length: preLen)
+          plannedDeletes.append((preRange, node.parent, true))
+          deletedLength += preLen
+        }
 
 #if DEBUG
 	        if debugLoggingEnabled, (preLen > 0 || postLen > 0), deletedLength > 0 {
@@ -1401,45 +1401,58 @@ public enum RopeReconciler {
 	        }
 #endif
 
-		        if deletedLength > 0 {
-		          plannedDeletes.append((range, node.parent))
-		        }
-		      }
+        if deletedLength > 0 {
+          plannedDeletes.append((range, node.parent, !(node is TextNode)))
+        }
+      }
 
 		      // Remove from range cache
 		      editor.rangeCache.removeValue(forKey: key)
 		    }
 
 		    // Apply deletes to TextStorage (in reverse order). If a clamp is provided, intersect deletes.
-		    var deletesToApply: [(range: NSRange, parentKey: NodeKey?)] = []
-		    deletesToApply.reserveCapacity(plannedDeletes.count)
-		    if let clamp = deletionClamp {
-		      var minStart: Int? = nil
-		      for (range, parentKey) in plannedDeletes {
-		        let inter = NSIntersectionRange(range, clamp)
-		        if inter.length > 0 {
-		          deletesToApply.append((inter, parentKey))
-		          if minStart == nil || inter.location < minStart! { minStart = inter.location }
-		        }
-		      }
+    var deletesToApply: [(range: NSRange, parentKey: NodeKey?)] = []
+    deletesToApply.reserveCapacity(plannedDeletes.count)
+    if let clamp = deletionClamp {
+      var minStart: Int? = nil
+      for (range, parentKey, clampSensitive) in plannedDeletes {
+        if clampSensitive {
+          let inter = NSIntersectionRange(range, clamp)
+          if inter.length > 0 {
+            deletesToApply.append((inter, parentKey))
+            if minStart == nil || inter.location < minStart! { minStart = inter.location }
+          } else {
+            deletesToApply.append((range, parentKey))
+          }
+        } else {
+          deletesToApply.append((range, parentKey))
+        }
+      }
 
 		      // If clamp starts before the first intersected delete, add a leading delete to cover
 		      // selection preamble left behind by grouping.
-		      if let ms = minStart, clamp.location < ms {
-		        let lead = NSRange(location: clamp.location, length: ms - clamp.location)
-		        if lead.length > 0 {
-		          let fallbackParent = plannedDeletes.first?.parentKey
-		          deletesToApply.append((lead, fallbackParent))
-		        }
-		      } else if deletesToApply.isEmpty, clamp.length > 0 {
-		        // No intersections: treat the clamp itself as the authoritative delete.
-		        let fallbackParent = plannedDeletes.first?.parentKey
-		        deletesToApply = [(clamp, fallbackParent)]
-		      }
+      if let ms = minStart, clamp.location < ms {
+        let lead = NSRange(location: clamp.location, length: ms - clamp.location)
+        if lead.length > 0 {
+          let fallbackParent = plannedDeletes.first?.parentKey
+          deletesToApply.append((lead, fallbackParent))
+        }
+      }
 
-		      // Coalesce overlapping deletes (keep the first parentKey for a merged region).
-		      deletesToApply.sort { $0.range.location < $1.range.location }
-		      var merged: [(range: NSRange, parentKey: NodeKey?)] = []
+      if clamp.length > 0 {
+        let clampCovered = deletesToApply.contains { entry in
+          entry.range.location <= clamp.location
+            && NSMaxRange(entry.range) >= NSMaxRange(clamp)
+        }
+        if !clampCovered {
+          let fallbackParent = plannedDeletes.first?.parentKey
+          deletesToApply.append((clamp, fallbackParent))
+        }
+      }
+
+      // Coalesce overlapping deletes (keep the first parentKey for a merged region).
+      deletesToApply.sort { $0.range.location < $1.range.location }
+      var merged: [(range: NSRange, parentKey: NodeKey?)] = []
 		      for (r, pk) in deletesToApply {
 		        guard r.length > 0 else { continue }
 		        if var last = merged.last, NSMaxRange(last.range) >= r.location {
@@ -1451,11 +1464,11 @@ public enum RopeReconciler {
 		          merged.append((r, pk))
 		        }
 		      }
-		      deletesToApply = merged
-		      editor.pendingDeletionClampRange = nil
-		    } else {
-		      deletesToApply = plannedDeletes
-		    }
+      deletesToApply = merged
+      editor.pendingDeletionClampRange = nil
+    } else {
+      deletesToApply = plannedDeletes.map { (range: $0.range, parentKey: $0.parentKey) }
+    }
 
 		    // Apply deletes in reverse order so earlier ranges are stable.
 		    for (range, parentKey) in deletesToApply.sorted(by: { $0.range.location > $1.range.location }) {

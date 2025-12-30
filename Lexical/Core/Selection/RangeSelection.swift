@@ -1096,9 +1096,57 @@ public class RangeSelection: BaseSelection {
   }
 
   #if canImport(UIKit)
-	  @MainActor
-	  public func deleteCharacter(isBackwards: Bool) throws {
-	    let wasCollapsed = isCollapsed()
+  @MainActor
+  public func deleteCharacter(isBackwards: Bool) throws {
+    let wasCollapsed = isCollapsed()
+    if isBackwards, wasCollapsed, anchor.offset == 0,
+       let editor = getActiveEditor()
+    {
+      let caretLoc: Int? = {
+        if let nativeRange = editor.getNativeSelection().range { return nativeRange.location }
+        return try? stringLocationForPoint(anchor, editor: editor)
+      }()
+      let currentElement: ElementNode? = {
+        switch anchor.type {
+        case .text:
+          return (try? anchor.getNode() as? TextNode)?.getParent() as? ElementNode
+        case .element:
+          return try? anchor.getNode() as? ElementNode
+        default:
+          return nil
+        }
+      }()
+      if let currentElement,
+         let prevElement = currentElement.getPreviousSibling() as? ElementNode,
+         prevElement.isEmpty()
+      {
+        let fenwickTree: FenwickTree? = {
+          guard editor.useFenwickLocations, editor.fenwickHasDeltas else { return nil }
+          _ = editor.cachedDFSOrderAndIndex()
+          return editor.locationFenwickTree
+        }()
+        let prevItem = editor.rangeCache[prevElement.getKey()]
+        let currentItem = editor.rangeCache[currentElement.getKey()]
+        let prevLoc = prevItem?.locationFromFenwick(using: fenwickTree)
+        let prevEnd = prevLoc.map { $0 + (prevItem?.entireLength ?? 0) }
+        let currentLoc = currentItem?.locationFromFenwick(using: fenwickTree)
+        let atBoundary = {
+          guard let caretLoc else { return true }
+          if let currentLoc, caretLoc == currentLoc { return true }
+          if let prevEnd, caretLoc == prevEnd { return true }
+          return false
+        }()
+        if atBoundary {
+          try prevElement.remove()
+          if let firstText = findFirstTextNodeInElement(currentElement) {
+            try firstText.select(anchorOffset: 0, focusOffset: 0)
+          } else {
+            try currentElement.selectStart()
+          }
+          return
+        }
+      }
+    }
 	    var shouldDeleteLeadingInlineDecoratorAfterParagraphMerge = false
 	    let startedAtElementOffsetZero = wasCollapsed && isBackwards && anchor.type == .element && anchor.offset == 0
 	    let startedAtInlineDecorator =
@@ -2126,6 +2174,57 @@ public class RangeSelection: BaseSelection {
               return
             } else {
               // No previous element, nothing to delete
+              return
+            }
+          } else if anchor.offset > 0 {
+            // Element selection at offset > 0 (cursor is AFTER some children)
+            // For backspace, we should delete from the last text content before the cursor position
+            // Get the child just before the cursor position
+            if let childBefore = element.getChildAtIndex(index: anchor.offset - 1) {
+              // Find the last text node in that child (or the child itself if it's a text node)
+              if let textNode = childBefore as? TextNode {
+                // Position at end of text and delete one character
+                let textLength = textNode.getTextContentSize()
+                if textLength > 0 {
+                  try textNode.select(anchorOffset: textLength, focusOffset: textLength)
+                  try deleteCharacter(isBackwards: true)
+                  return
+                }
+              } else if let elementChild = childBefore as? ElementNode {
+                // Find last text in the element child
+                if let lastText = findLastTextNodeInElement(elementChild) {
+                  let textLength = lastText.getTextContentSize()
+                  if textLength > 0 {
+                    try lastText.select(anchorOffset: textLength, focusOffset: textLength)
+                    try deleteCharacter(isBackwards: true)
+                    return
+                  }
+                }
+                // If no text, check if it's an empty element to remove
+                if elementChild.isEmpty() {
+                  // Find where to position cursor after removal
+                  if anchor.offset >= 2, let prevChild = element.getChildAtIndex(index: anchor.offset - 2) {
+                    if let prevText = prevChild as? TextNode {
+                      try prevText.select(anchorOffset: prevText.getTextContentSize(), focusOffset: prevText.getTextContentSize())
+                    } else if let prevElement = prevChild as? ElementNode {
+                      try prevElement.selectEnd()
+                    }
+                  } else {
+                    // Position at start of element
+                    try element.select(anchorOffset: 0, focusOffset: 0)
+                  }
+                  try elementChild.remove()
+                  return
+                }
+              }
+            }
+            // Fallback: if we couldn't handle it, position cursor at the actual content and retry
+            if let lastChild = element.getChildAtIndex(index: anchor.offset - 1) {
+              if let textNode = lastChild as? TextNode {
+                try textNode.select(anchorOffset: textNode.getTextContentSize(), focusOffset: textNode.getTextContentSize())
+              } else if let elementNode = lastChild as? ElementNode {
+                try elementNode.selectEnd()
+              }
               return
             }
           }
