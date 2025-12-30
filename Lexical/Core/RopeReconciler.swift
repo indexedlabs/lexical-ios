@@ -70,6 +70,8 @@ public enum RopeReconciler {
     )
   }
 
+  private static var reconcileCounter = 0
+
   /// Internal implementation of reconciliation.
   private static func reconcileInternal(
     from prevState: EditorState?,
@@ -79,6 +81,9 @@ public enum RopeReconciler {
     markedTextOperation: MarkedTextOperation?
   ) throws {
     guard let textStorage = editor.textStorage else { return }
+    reconcileCounter += 1
+    let reconcileId = reconcileCounter
+    print("🔍🔍🔍 RECONCILE #\(reconcileId) START storage=\"\(textStorage.string.replacingOccurrences(of: "\n", with: "\\n"))\"  🔍🔍🔍")
 
     let shouldRecordMetrics =
       editor.metricsContainer != nil
@@ -270,6 +275,9 @@ public enum RopeReconciler {
     // Filter removes: skip nodes whose parent is also being removed.
     // Removing the parent deletes the entire subtree's content, so deleting descendants would double-delete ranges.
     let removedKeys = Set(removes.map { $0.key })
+    print("🔍 DEBUG removes BEFORE filter: \(removes.map { "(\($0.key), \(type(of: $0.node)))" })")
+    print("🔍 DEBUG wrapperOnlyRemoveKeys: \(wrapperOnlyRemoveKeys)")
+    print("🔍 DEBUG updates: \(updates.map { "(\($0.key), \(type(of: $0.next)))" })")
     removes = removes.filter { (_, node) in
       guard let parentKey = node.parent else { return true }
       // If the parent is being removed as wrapper-only, descendants may still represent real
@@ -277,6 +285,7 @@ public enum RopeReconciler {
       guard removedKeys.contains(parentKey) else { return true }
       return wrapperOnlyRemoveKeys.contains(parentKey)
     }
+    print("🔍 DEBUG removes AFTER filter: \(removes.map { "(\($0.key), \(type(of: $0.node)))" })")
 
     // Batch all text storage edits in a single editing session
     // This prevents layout manager from generating glyphs mid-edit
@@ -394,9 +403,12 @@ public enum RopeReconciler {
       }
 
       // Update candidates in document order to apply shifts consistently.
+      // Skip nodes that are already in the updates list - they'll be updated there.
+      let updateKeys = Set(updates.map { $0.key })
       let candidateKeys: [NodeKey] = boundaryCandidateKeys
         .filter { key in
-          (prevState.nodeMap[key] as? ElementNode) != nil
+          !updateKeys.contains(key)
+            && (prevState.nodeMap[key] as? ElementNode) != nil
             && (nextState.nodeMap[key] as? ElementNode) != nil
             && editor.rangeCache[key] != nil
         }
@@ -407,11 +419,14 @@ public enum RopeReconciler {
           return a < b
         }
 
+      print("🔍 DEBUG boundary candidates: \(candidateKeys) storage=\"\(textStorage.string.replacingOccurrences(of: "\n", with: "\\n"))\"")
       for key in candidateKeys {
         guard let prevElement = prevState.nodeMap[key] as? ElementNode,
               let nextElement = nextState.nodeMap[key] as? ElementNode
         else { continue }
+        print("🔍 DEBUG calling updateElementNode for key=\(key)")
         try updateElementNode(from: prevElement, to: nextElement, in: textStorage, state: nextState, editor: editor, theme: theme)
+        print("🔍 DEBUG after updateElementNode for key=\(key) storage=\"\(textStorage.string.replacingOccurrences(of: "\n", with: "\\n"))\"")
       }
     }
 #if DEBUG
@@ -477,6 +492,7 @@ public enum RopeReconciler {
       )
     }
 #endif
+    print("🔍 DEBUG before inserts: storage=\"\(textStorage.string.replacingOccurrences(of: "\n", with: "\\n"))\" inserts.count=\(inserts.count)")
     var insertIndex = 0
     while insertIndex < inserts.count {
       let consumed = try bulkInsertElementSiblingRunIfPossible(
@@ -504,10 +520,18 @@ public enum RopeReconciler {
       let aLoc = editor.rangeCache[a.key]?.location ?? 0
       let bLoc = editor.rangeCache[b.key]?.location ?? 0
       if aLoc != bLoc { return aLoc < bLoc }
+      // Within the same location, process TextNodes before ElementNodes.
+      // TextNode updates change content lengths that ElementNode updates depend on.
+      let aIsText = a.next is TextNode
+      let bIsText = b.next is TextNode
+      if aIsText != bIsText { return aIsText }
       return a.key < b.key
     }
+    print("🔍 DEBUG before updates: storage=\"\(textStorage.string.replacingOccurrences(of: "\n", with: "\\n"))\" updates.count=\(updates.count) keys=\(updates.map { $0.key })")
 
-    for (_, prev, next) in updates {
+    for (key, prev, next) in updates {
+      print("🔍 DEBUG calling updateNode for key=\(key) type=\(type(of: next)) storage=\"\(textStorage.string.replacingOccurrences(of: "\n", with: "\\n"))\"")
+      defer { print("🔍 DEBUG after updateNode for key=\(key) storage=\"\(textStorage.string.replacingOccurrences(of: "\n", with: "\\n"))\"") }
       try updateNode(
         from: prev,
         to: next,
@@ -1413,18 +1437,23 @@ public enum RopeReconciler {
 		    // Apply deletes to TextStorage (in reverse order). If a clamp is provided, intersect deletes.
     var deletesToApply: [(range: NSRange, parentKey: NodeKey?)] = []
     deletesToApply.reserveCapacity(plannedDeletes.count)
+    print("🔍 DEBUG plannedDeletes: \(plannedDeletes.map { "(range=\($0.range), parentKey=\($0.parentKey ?? "nil"), clampSensitive=\($0.clampSensitive))" })")
+    print("🔍 DEBUG deletionClamp: \(String(describing: deletionClamp))")
     if let clamp = deletionClamp {
       var minStart: Int? = nil
       for (range, parentKey, clampSensitive) in plannedDeletes {
         if clampSensitive {
+          // Clamp-sensitive deletes (structural nodes like paragraphs) should only
+          // delete the portion that intersects with the user's intended deletion range.
+          // If no intersection exists, skip this delete entirely.
           let inter = NSIntersectionRange(range, clamp)
           if inter.length > 0 {
             deletesToApply.append((inter, parentKey))
             if minStart == nil || inter.location < minStart! { minStart = inter.location }
-          } else {
-            deletesToApply.append((range, parentKey))
           }
+          // If no intersection, skip this delete - user didn't intend to delete this region
         } else {
+          // Non-clamp-sensitive deletes (TextNodes) are applied in full
           deletesToApply.append((range, parentKey))
         }
       }
@@ -1469,15 +1498,19 @@ public enum RopeReconciler {
     } else {
       deletesToApply = plannedDeletes.map { (range: $0.range, parentKey: $0.parentKey) }
     }
+    print("🔍 DEBUG deletesToApply: \(deletesToApply.map { "(range=\($0.range), parentKey=\($0.parentKey ?? "nil"))" })")
+    print("🔍 DEBUG textStorage.string before deletes: \"\(textStorage.string.replacingOccurrences(of: "\n", with: "\\n"))\"")
 
 		    // Apply deletes in reverse order so earlier ranges are stable.
 		    for (range, parentKey) in deletesToApply.sorted(by: { $0.range.location > $1.range.location }) {
 		      guard range.length > 0 else { continue }
 		      guard range.location >= 0 else { continue }
 		      guard range.location + range.length <= textStorage.length else { continue }
+		      print("🔍 DEBUG deleting range \(range)")
 		      textStorage.deleteCharacters(in: range)
 		      deletions.append((range.location + range.length, range.length, parentKey))
 		    }
+    print("🔍 DEBUG textStorage.string after deletes: \"\(textStorage.string.replacingOccurrences(of: "\n", with: "\\n"))\"")
 
 	    // Phase 2: Batch update childrenLength for all affected parents
 	    // Group deletions by parent for efficient updates
@@ -1610,7 +1643,7 @@ public enum RopeReconciler {
     theme: Theme,
     useLazyLocations: Bool
   ) throws {
-    guard let cacheItem = editor.rangeCache[prev.key] else { return }
+    guard var cacheItem = editor.rangeCache[prev.key] else { return }
 
     let oldText = prev.getTextPart(fromLatest: false)
     let newText = next.getTextPart(fromLatest: false)
@@ -1630,8 +1663,42 @@ public enum RopeReconciler {
 
     let textStart = nodeLoc + cacheItem.preambleLength + cacheItem.childrenLength
     let textRange = NSRange(location: textStart, length: oldLength)
+    print("🔍 DEBUG updateTextNode key=\(prev.key) oldText=\(oldText) newText=\(newText) textRange=\(textRange) storageLen=\(textStorage.length) storage=\"\(textStorage.string.replacingOccurrences(of: "\n", with: "\\n"))\"")
 
     guard textRange.location + textRange.length <= textStorage.length else { return }
+
+    // Check if the storage has been modified by a prior merge operation (e.g., paragraph merge via backspace).
+    // This can happen when deleting a paragraph boundary causes adjacent text to merge physically,
+    // and then a TextNode update tries to reflect the same change.
+    // We detect this by checking if the new content is already at the expected location.
+    if newLength > oldLength, textStart + newLength <= textStorage.length {
+      let newContentRange = NSRange(location: textStart, length: newLength)
+      let actualContent = textStorage.attributedSubstring(from: newContentRange).string
+      if actualContent == newText {
+        // Storage already has the new content at this location - merge already happened.
+        // Just update cache and attributes without modifying storage.
+        let actualNewLength = newLength
+        let delta = actualNewLength - oldLength
+        cacheItem.textLength = actualNewLength
+        editor.rangeCache[next.key] = cacheItem
+
+        if delta != 0 {
+          propagateChildrenLengthDelta(fromParentKey: next.parent, delta: delta, state: state, editor: editor)
+          let oldEnd = textStart + oldLength
+          let excludingKeys = ancestorKeys(fromParentKey: next.parent)
+          shiftRangeCacheAfter(location: oldEnd, delta: delta, excludingKeys: excludingKeys, editor: editor)
+        }
+
+        // Apply attributes to the existing content
+        let attributes = AttributeUtils.attributedStringStyles(from: next, state: state, theme: theme)
+        textStorage.setAttributes(attributes, range: newContentRange)
+        if newContentRange.length > 0 {
+          textStorage.fixAttributes(in: newContentRange)
+        }
+        print("🔍 DEBUG updateTextNode SKIPPED (content already merged) key=\(prev.key)")
+        return
+      }
+    }
 
     // Incremental text updates: avoid replacing the entire TextNode content (which can be large
     // after big pastes) for small edits like typing.
