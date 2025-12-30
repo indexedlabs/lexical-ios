@@ -1137,11 +1137,23 @@ public class RangeSelection: BaseSelection {
           return false
         }()
         if atBoundary {
-          try prevElement.remove()
-          if let firstText = findFirstTextNodeInElement(currentElement) {
-            try firstText.select(anchorOffset: 0, focusOffset: 0)
+          // When cursor is at element offset 0 (before a decorator/element child), merge
+          // currentElement's children INTO prevElement to preserve prevElement's identity.
+          // When cursor is at text offset 0, just remove the empty prevElement (original behavior).
+          if anchor.type == .element {
+            let children = currentElement.getChildren()
+            for child in children {
+              try prevElement.append([child])
+            }
+            try currentElement.remove()
+            try prevElement.select(anchorOffset: 0, focusOffset: 0)
           } else {
-            try currentElement.selectStart()
+            try prevElement.remove()
+            if let firstText = findFirstTextNodeInElement(currentElement) {
+              try firstText.select(anchorOffset: 0, focusOffset: 0)
+            } else {
+              try currentElement.selectStart()
+            }
           }
           return
         }
