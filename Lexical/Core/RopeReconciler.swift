@@ -1468,7 +1468,12 @@ public enum RopeReconciler {
         }
       }
 
-      if clamp.length > 0 {
+      // Only add the clamp as a fallback delete if:
+      // 1. There were planned deletes (meaning Lexical intended to delete something)
+      // 2. The clamp isn't already covered by existing deletes
+      // If plannedDeletes is empty, it means Lexical didn't plan to delete anything,
+      // so the clamp should not force a deletion (it might be stale or wrong).
+      if clamp.length > 0, !plannedDeletes.isEmpty {
         let clampCovered = deletesToApply.contains { entry in
           entry.range.location <= clamp.location
             && NSMaxRange(entry.range) >= NSMaxRange(clamp)
