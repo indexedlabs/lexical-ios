@@ -349,4 +349,135 @@ final class CrossPlatformBoundaryRegressionTests: XCTestCase {
     XCTAssertEqual(afterFirst, initialCount - 1, "Should delete one empty paragraph")
     try assertTextParity(testView)
   }
+
+  // MARK: - Enter Key Tests
+
+  /// Tests that pressing Enter at end of line moves cursor to new line, not start of current line.
+  /// Regression test for bug where cursor jumped to beginning of current line after Enter.
+  func testEnterAtEndOfLine_CursorMovesToNewLine() throws {
+    let testView = createTestEditorView()
+    let editor = testView.editor
+
+    // Set up a paragraph with text
+    try editor.update {
+      guard let root = getRoot() else { return }
+      // Clear existing
+      for child in root.getChildren() {
+        try child.remove()
+      }
+
+      let p1 = createParagraphNode()
+      let t1 = createTextNode(text: "Hello world")
+      try p1.append([t1])
+      try root.append([p1])
+
+      // Position at end of text
+      try t1.select(anchorOffset: 11, focusOffset: 11)
+    }
+    drainMainQueue()
+
+    let beforeNativePos = testView.selectedRange.location
+    let beforeTextLen = testView.attributedTextString.lengthAsNSString()
+
+    // Press Enter (insert paragraph)
+    try editor.update {
+      guard let selection = try getSelection() as? RangeSelection else { return }
+      try selection.insertParagraph()
+    }
+    drainMainQueue()
+
+    // After Enter, native text should be longer (added newline)
+    let afterTextLen = testView.attributedTextString.lengthAsNSString()
+    XCTAssertGreaterThan(afterTextLen, beforeTextLen, "Text length should increase after Enter")
+
+    // The cursor should be AFTER the newline, not at the start of the previous line
+    let afterNativePos = testView.selectedRange.location
+    XCTAssertGreaterThan(afterNativePos, beforeNativePos,
+                         "Cursor should move forward after Enter, not backward. Before: \(beforeNativePos), After: \(afterNativePos)")
+
+    // Verify the selection is in the new paragraph
+    var isInNewParagraph = false
+    var anchorKey = ""
+    var anchorOffset = 0
+    try editor.read {
+      guard let selection = try getSelection() as? RangeSelection else { return }
+      anchorKey = selection.anchor.key
+      anchorOffset = selection.anchor.offset
+
+      // The selection should be at offset 0 in a new node (new paragraph or its child)
+      // NOT at offset 0 in the original text node
+      guard let root = getRoot() else { return }
+      let paragraphs = root.getChildren()
+      XCTAssertEqual(paragraphs.count, 2, "Should have 2 paragraphs after Enter")
+
+      if let secondPara = paragraphs.last as? ElementNode {
+        // Check if anchor is in or is the second paragraph
+        if selection.anchor.key == secondPara.key {
+          isInNewParagraph = true
+        } else if let firstChild = secondPara.getFirstChild(),
+                  selection.anchor.key == firstChild.key {
+          isInNewParagraph = true
+        }
+      }
+    }
+
+    XCTAssertTrue(isInNewParagraph,
+                  "Cursor should be in new paragraph after Enter. Anchor: (\(anchorKey), \(anchorOffset))")
+
+    try assertTextParity(testView)
+  }
+
+  /// Tests Enter at end of line followed by typing inserts text on new line.
+  func testEnterThenType_TextAppearsOnNewLine() throws {
+    let testView = createTestEditorView()
+    let editor = testView.editor
+
+    // Set up a paragraph with text
+    try editor.update {
+      guard let root = getRoot() else { return }
+      for child in root.getChildren() {
+        try child.remove()
+      }
+
+      let p1 = createParagraphNode()
+      let t1 = createTextNode(text: "Line1")
+      try p1.append([t1])
+      try root.append([p1])
+
+      // Position at end
+      try t1.select(anchorOffset: 5, focusOffset: 5)
+    }
+    drainMainQueue()
+
+    // Press Enter
+    try editor.update {
+      guard let selection = try getSelection() as? RangeSelection else { return }
+      try selection.insertParagraph()
+    }
+    drainMainQueue()
+
+    // Type on new line
+    try editor.update {
+      guard let selection = try getSelection() as? RangeSelection else { return }
+      try selection.insertText("Line2")
+    }
+    drainMainQueue()
+
+    var text = ""
+    try editor.read { text = getRoot()?.getTextContent() ?? "" }
+
+    // Should have Line1 and Line2 on separate lines
+    XCTAssertTrue(text.contains("Line1"), "Should contain Line1")
+    XCTAssertTrue(text.contains("Line2"), "Should contain Line2")
+
+    // The two lines should be separated by a newline
+    let lines = text.components(separatedBy: .newlines).filter { !$0.isEmpty }
+    XCTAssertEqual(lines.count, 2, "Should have 2 non-empty lines")
+    if lines.count >= 2 {
+      XCTAssertEqual(lines[0], "Line1", "First line should be Line1")
+      XCTAssertEqual(lines[1], "Line2", "Second line should be Line2")
+    }
+
+    try assertTextParity(testView)
+  }
 }
