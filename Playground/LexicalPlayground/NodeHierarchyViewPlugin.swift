@@ -605,14 +605,75 @@ public class NodeHierarchyViewPlugin: Plugin {
       debugOutput += "Error serializing state: \(error)\n"
     }
 
-    // Range cache
-    debugOutput += "\n\n--- RANGE CACHE ---\n"
+    // RangeCache full dump (helps debug cursor position issues)
+    debugOutput += "\n\n--- RANGE CACHE (full) ---\n"
     debugOutput += "rangeCache.count: \(editor.rangeCache.count)\n"
-    if let anchorKey {
-      if let item = editor.rangeCache[anchorKey] {
-        debugOutput += "anchorKey=\(anchorKey) range=(\(item.location),\(item.textLength)) pre=\(item.preambleLength) text=\(item.textLength) children=\(item.childrenLength) post=\(item.postambleLength)\n"
-      } else {
-        debugOutput += "anchorKey=\(anchorKey) rangeCache: missing\n"
+    try? editor.read {
+      // Get root and traverse in document order
+      if let root = getRoot() {
+        // Collect nodes in DFS order with their indents
+        var nodeStack: [(Node, String)] = [(root, "")]
+        while !nodeStack.isEmpty {
+          let (node, indent) = nodeStack.removeLast()
+          let key = node.key
+          let nodeType = String(describing: type(of: node)).replacingOccurrences(of: "Node", with: "")
+          if let item = editor.rangeCache[key] {
+            // Use base location for simplicity in debug output
+            let loc = item.location
+            let end = loc + item.entireLength
+            debugOutput += "\(indent)\(nodeType)[\(key)] loc=\(loc) end=\(end) (pre=\(item.preambleLength) children=\(item.childrenLength) text=\(item.textLength) post=\(item.postambleLength))"
+            if let textNode = node as? TextNode {
+              let text = textNode.getTextPart()
+              let preview = text.prefix(20)
+              debugOutput += " \"\(preview)\(text.count > 20 ? "..." : "")\""
+            }
+            debugOutput += "\n"
+          } else {
+            debugOutput += "\(indent)\(nodeType)[\(key)] NO CACHE\n"
+          }
+          if let element = node as? ElementNode {
+            // Push children in reverse order so they're processed in correct order
+            for child in element.getChildren().reversed() {
+              nodeStack.append((child, indent + "  "))
+            }
+          }
+        }
+      }
+
+      // Selection anchor info
+      if let selection = try? getSelection() as? RangeSelection {
+        let key = selection.anchor.key
+        debugOutput += "\nSelection anchor: key=\(key) offset=\(selection.anchor.offset) type=\(selection.anchor.type)\n"
+        if let item = editor.rangeCache[key] {
+          debugOutput += "  -> cache: loc=\(item.location) entireLen=\(item.entireLength)\n"
+        }
+      }
+    }
+
+    // Native selection -> Lexical point mapping
+    if let lexicalView {
+      let nativeRange = lexicalView.textView.selectedRange
+      debugOutput += "\n--- SELECTION MAPPING ---\n"
+      debugOutput += "Native: location=\(nativeRange.location) length=\(nativeRange.length)\n"
+      try? editor.read {
+        let rangeCache = editor.rangeCache
+
+        // Try to map native position to Lexical point (using nil fenwick = base locations)
+        if let anchorPoint = try? pointAtStringLocation(nativeRange.location, searchDirection: .forward, rangeCache: rangeCache, fenwickTree: nil) {
+          debugOutput += "Mapped anchor (forward): key=\(anchorPoint.key) offset=\(anchorPoint.offset) type=\(anchorPoint.type)\n"
+        } else {
+          debugOutput += "Mapped anchor (forward): nil\n"
+        }
+        if let anchorPointBack = try? pointAtStringLocation(nativeRange.location, searchDirection: .backward, rangeCache: rangeCache, fenwickTree: nil) {
+          debugOutput += "Mapped anchor (backward): key=\(anchorPointBack.key) offset=\(anchorPointBack.offset) type=\(anchorPointBack.type)\n"
+        }
+
+        if nativeRange.length > 0 {
+          let focusLoc = nativeRange.location + nativeRange.length
+          if let focusPoint = try? pointAtStringLocation(focusLoc, searchDirection: .forward, rangeCache: rangeCache, fenwickTree: nil) {
+            debugOutput += "Mapped focus (forward): key=\(focusPoint.key) offset=\(focusPoint.offset) type=\(focusPoint.type)\n"
+          }
+        }
       }
     }
 
