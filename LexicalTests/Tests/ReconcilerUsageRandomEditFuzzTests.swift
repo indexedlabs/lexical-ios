@@ -135,9 +135,13 @@ final class ReconcilerUsageRandomEditFuzzTests: XCTestCase {
     textView.delegate?.textViewDidChangeSelection?(textView)
   }
 
+  private static let debugFuzz = ProcessInfo.processInfo.environment["LEXICAL_FUZZ_DEBUG"] == "1"
+
   private func assertTextParity(
     _ editor: Editor,
     _ textView: UITextView,
+    step: Int = -1,
+    ops: [Op] = [],
     file: StaticString = #file,
     line: UInt = #line
   ) throws -> Bool {
@@ -147,13 +151,15 @@ final class ReconcilerUsageRandomEditFuzzTests: XCTestCase {
     if lexical != native {
       let lexicalEsc = lexical.replacingOccurrences(of: "\n", with: "\\n")
       let nativeEsc = native.replacingOccurrences(of: "\n", with: "\\n")
+      let opsStr = ops.map(\.description).joined(separator: " -> ")
       XCTFail(
         """
-        Native text diverged from Lexical.
+        Native text diverged from Lexical at step \(step).
         lexicalLen=\(lexical.lengthAsNSString()) nativeLen=\(native.lengthAsNSString())
         lexical="\(lexicalEsc)"
         native="\(nativeEsc)"
         selection=\(textView.selectedRange)
+        ops=\(opsStr)
         """,
         file: file,
         line: line
@@ -216,13 +222,20 @@ final class ReconcilerUsageRandomEditFuzzTests: XCTestCase {
     setupWindowWithView(testView)
     textView.becomeFirstResponder()
 
+    if Self.debugFuzz {
+      print("[FUZZ] seed=\(String(format: "0x%llX", seed)) steps=\(steps) initialText=\(String(reflecting: initialText))")
+    }
+
     var model = Model(text: textView.text ?? "")
     model.select(textView.selectedRange)
     assertModelMatchesTextView(model, textView, file: file, line: line)
     if !initialText.isEmpty {
+      if Self.debugFuzz {
+        print("[FUZZ] init: insertText(\(String(reflecting: initialText)))")
+      }
       textView.insertText(initialText)
       drainMainQueue()
-      guard try assertTextParity(editor, textView, file: file, line: line) else { return }
+      guard try assertTextParity(editor, textView, step: -1, ops: ops, file: file, line: line) else { return }
       model.insert(initialText)
       assertModelMatchesTextView(model, textView, file: file, line: line)
     }
@@ -236,23 +249,29 @@ final class ReconcilerUsageRandomEditFuzzTests: XCTestCase {
         let maxLen = max(0, len - loc)
         let selLen = rng.chance(1, 4) ? rng.nextInt(max(1, min(6, maxLen + 1))) : 0
         let range = NSRange(location: loc, length: min(selLen, maxLen))
+        if Self.debugFuzz {
+          print("[FUZZ] step \(i): select(\(range.location),\(range.length)) textLen=\(len)")
+        }
         textView.selectedRange = range
         if programmaticSelectionSyncMode.shouldSync(rng: &rng) {
           syncSelection(textView)
         }
         drainMainQueue()
         ops.append(.select(location: range.location, length: range.length))
-        guard try assertTextParity(editor, textView, file: file, line: line) else { return }
+        guard try assertTextParity(editor, textView, step: i, ops: ops, file: file, line: line) else { return }
         model.select(range)
         assertModelMatchesTextView(model, textView, file: file, line: line)
         continue
       }
 
       if rng.chance(1, 3) {
+        if Self.debugFuzz {
+          print("[FUZZ] step \(i): backspace sel=\(textView.selectedRange) textLen=\(len)")
+        }
         textView.deleteBackward()
         drainMainQueue()
         ops.append(.backspace)
-        guard try assertTextParity(editor, textView, file: file, line: line) else { return }
+        guard try assertTextParity(editor, textView, step: i, ops: ops, file: file, line: line) else { return }
         model.backspace()
         assertModelMatchesTextView(model, textView, file: file, line: line)
         if i % 10 == 0 { try assertSelectionRoundTrips(editor, textView, file: file, line: line) }
@@ -266,13 +285,16 @@ final class ReconcilerUsageRandomEditFuzzTests: XCTestCase {
         return String(alphabet[rng.nextInt(alphabet.count)])
       }()
 
+      if Self.debugFuzz {
+        print("[FUZZ] step \(i): insert(\(String(reflecting: insert))) sel=\(textView.selectedRange) textLen=\(len)")
+      }
       textView.insertText(insert)
       drainMainQueue()
       ops.append(.insert(insert))
       model.insert(insert)
 
       do {
-        guard try assertTextParity(editor, textView, file: file, line: line) else { return }
+        guard try assertTextParity(editor, textView, step: i, ops: ops, file: file, line: line) else { return }
         assertModelMatchesTextView(model, textView, file: file, line: line)
         if i % 10 == 0 { try assertSelectionRoundTrips(editor, textView, file: file, line: line) }
       } catch {
@@ -318,6 +340,314 @@ final class ReconcilerUsageRandomEditFuzzTests: XCTestCase {
       initialText: "AAA\n\n\nBBB",
       programmaticSelectionSyncMode: .never
     )
+  }
+
+  /// Super minimal test: just check paragraph merge with trailing content
+  func testParagraphMergeWithTrailingSpace() throws {
+    let testView = createTestEditorView()
+    let editor = testView.editor
+    let textView = testView.view.textView
+    setupWindowWithView(testView)
+    textView.becomeFirstResponder()
+
+    // Setup: two paragraphs, second one has trailing "m \n\n"
+    textView.insertText("Line1\n\nLine2 m \n\n")
+    drainMainQueue()
+
+    func logState(_ label: String) {
+      var lexical = ""
+      try? editor.read { lexical = getRoot()?.getTextContent() ?? "" }
+      let native = textView.text ?? ""
+      let lexicalEsc = lexical.replacingOccurrences(of: "\n", with: "\\n")
+      let nativeEsc = native.replacingOccurrences(of: "\n", with: "\\n")
+      print("[\(label)] lexical=\"\(lexicalEsc)\" native=\"\(nativeEsc)\" sel=\(textView.selectedRange)")
+    }
+
+    logState("init")
+
+    // Move cursor to start of "Line2" (position 7 = after "Line1\n\n")
+    textView.selectedRange = NSRange(location: 7, length: 0)
+    syncSelection(textView)
+    drainMainQueue()
+    logState("after select(7,0)")
+
+    // Backspace to merge paragraphs (delete the \n at position 6)
+    textView.deleteBackward()
+    drainMainQueue()
+    logState("after backspace")
+
+    // Check parity
+    var lexical = ""
+    try editor.read { lexical = getRoot()?.getTextContent() ?? "" }
+    let native = textView.text ?? ""
+
+    if lexical != native {
+      let lexicalEsc = lexical.replacingOccurrences(of: "\n", with: "\\n")
+      let nativeEsc = native.replacingOccurrences(of: "\n", with: "\\n")
+      XCTFail("""
+        Text diverged after paragraph merge
+        lexical="\(lexicalEsc)"
+        native="\(nativeEsc)"
+        """)
+    }
+  }
+
+  /// Build the problematic 5-paragraph structure programmatically
+  func testProgrammaticMultiParagraphMerge() throws {
+    let testView = createTestEditorView()
+    let editor = testView.editor
+    let textView = testView.view.textView
+    setupWindowWithView(testView)
+    textView.becomeFirstResponder()
+
+    // Build the structure directly in Lexical:
+    // Root
+    //   Para0: "A👩🏽‍💻B\n"
+    //   Para1: "é\n\nBBB z"
+    //   Para2: "m "
+    //   Para3: empty
+    //   Para4: empty
+    try editor.update {
+      guard let root = getRoot() else { return }
+      // Remove default paragraph
+      for child in root.getChildren() {
+        try child.remove()
+      }
+
+      let p0 = ParagraphNode()
+      let t0 = TextNode(text: "A👩🏽‍💻B\n")
+      try p0.append([t0])
+
+      let p1 = ParagraphNode()
+      let t1 = TextNode(text: "é\n\nBBB z")
+      try p1.append([t1])
+
+      let p2 = ParagraphNode()
+      let t2 = TextNode(text: "m ")
+      try p2.append([t2])
+
+      let p3 = ParagraphNode()  // empty
+      let p4 = ParagraphNode()  // empty
+
+      try root.append([p0, p1, p2, p3, p4])
+
+      // Set selection at start of p1 (position 11 - after "A👩🏽‍💻B\n" + postamble "\n")
+      _ = try t1.select(anchorOffset: 0, focusOffset: 0)
+    }
+    drainMainQueue()
+
+    func logState(_ label: String) {
+      var lexical = ""
+      try? editor.read { lexical = getRoot()?.getTextContent() ?? "" }
+      let native = textView.text ?? ""
+      let lexicalEsc = lexical.replacingOccurrences(of: "\n", with: "\\n")
+      let nativeEsc = native.replacingOccurrences(of: "\n", with: "\\n")
+      print("[\(label)] lexical=\"\(lexicalEsc)\" native=\"\(nativeEsc)\" sel=\(textView.selectedRange)")
+    }
+
+    logState("init")
+    dumpNodeTree(editor, label: "init")
+    print("textView.selectedRange = \(textView.selectedRange)")
+
+    // Backspace to merge p0 and p1
+    textView.deleteBackward()
+    drainMainQueue()
+    logState("after backspace")
+    dumpNodeTree(editor, label: "after backspace")
+
+    // Check parity
+    var lexical = ""
+    try editor.read { lexical = getRoot()?.getTextContent() ?? "" }
+    let native = textView.text ?? ""
+
+    if lexical != native {
+      let lexicalEsc = lexical.replacingOccurrences(of: "\n", with: "\\n")
+      let nativeEsc = native.replacingOccurrences(of: "\n", with: "\\n")
+      XCTFail("""
+        DIVERGED after programmatic backspace
+        lexical="\(lexicalEsc)" len=\(lexical.utf16.count)
+        native="\(nativeEsc)" len=\(native.utf16.count)
+        """)
+    }
+  }
+
+  /// Test exact state from step 27-28 of emoji fuzz test
+  func testExactStep28State() throws {
+    let testView = createTestEditorView()
+    let editor = testView.editor
+    let textView = testView.view.textView
+    setupWindowWithView(testView)
+    textView.becomeFirstResponder()
+
+    // State right before step 28 was:
+    // text="A👩🏽‍💻B\n\né\n\nBBB z\nm \n\n" sel={11,0}
+    // Let's set that up exactly
+    let state = "A👩🏽‍💻B\n\ne\u{301}\n\nBBB z\nm \n\n"
+    textView.insertText(state)
+    drainMainQueue()
+
+    func logState(_ label: String) {
+      var lexical = ""
+      try? editor.read { lexical = getRoot()?.getTextContent() ?? "" }
+      let native = textView.text ?? ""
+      let lexicalEsc = lexical.replacingOccurrences(of: "\n", with: "\\n")
+      let nativeEsc = native.replacingOccurrences(of: "\n", with: "\\n")
+      print("[\(label)] lexical=\"\(lexicalEsc)\" native=\"\(nativeEsc)\" sel=\(textView.selectedRange) len=\(native.utf16.count)")
+    }
+
+    logState("init")
+    print("UTF-16 length: \(state.utf16.count)")
+    dumpNodeTree(editor, label: "init")
+
+    // Move cursor to position 11
+    textView.selectedRange = NSRange(location: 11, length: 0)
+    syncSelection(textView)
+    drainMainQueue()
+    logState("after select(11,0)")
+    dumpNodeTree(editor, label: "after select(11,0)")
+
+    // Backspace - this should delete the \n at position 10
+    textView.deleteBackward()
+    drainMainQueue()
+    logState("after backspace")
+    dumpNodeTree(editor, label: "after backspace")
+
+    // Check parity
+    var lexical = ""
+    try editor.read { lexical = getRoot()?.getTextContent() ?? "" }
+    let native = textView.text ?? ""
+
+    if lexical != native {
+      let lexicalEsc = lexical.replacingOccurrences(of: "\n", with: "\\n")
+      let nativeEsc = native.replacingOccurrences(of: "\n", with: "\\n")
+      XCTFail("""
+        DIVERGED after backspace at position 11
+        lexical="\(lexicalEsc)" len=\(lexical.utf16.count)
+        native="\(nativeEsc)" len=\(native.utf16.count)
+        """)
+    }
+  }
+
+  /// Dump Lexical node tree for debugging
+  private func dumpNodeTree(_ editor: Editor, label: String) {
+    do {
+      try editor.read {
+        guard let root = getRoot() else {
+          print("[\(label)] No root node")
+          return
+        }
+        print("[\(label)] Node tree:")
+        dumpNode(root, indent: 0)
+      }
+    } catch {
+      print("[\(label)] Error reading: \(error)")
+    }
+  }
+
+  private func dumpNode(_ node: Node, indent: Int) {
+    let prefix = String(repeating: "  ", count: indent)
+    let typeName = String(describing: type(of: node))
+    if let textNode = node as? TextNode {
+      let text = textNode.getTextPart().replacingOccurrences(of: "\n", with: "\\n")
+      print("\(prefix)\(typeName) key=\(node.key) text=\"\(text)\"")
+    } else if let element = node as? ElementNode {
+      print("\(prefix)\(typeName) key=\(node.key) children=\(element.getChildrenSize())")
+      for child in element.getChildren() {
+        dumpNode(child, indent: indent + 1)
+      }
+    } else {
+      print("\(prefix)\(typeName) key=\(node.key)")
+    }
+  }
+
+  /// Minimal reproduction of emoji fuzz failure - isolated operations
+  func testMinimalEmojiDivergence() throws {
+    let testView = createTestEditorView()
+    let editor = testView.editor
+    let textView = testView.view.textView
+    setupWindowWithView(testView)
+    textView.becomeFirstResponder()
+
+    // Initial text from emoji fuzz test
+    let initialText = "A👩🏽‍💻B\ne\u{301}\n\nBBB"
+    textView.insertText(initialText)
+    drainMainQueue()
+
+    func logState(_ label: String) {
+      var lexical = ""
+      try? editor.read { lexical = getRoot()?.getTextContent() ?? "" }
+      let native = textView.text ?? ""
+      let lexicalEsc = lexical.replacingOccurrences(of: "\n", with: "\\n")
+      let nativeEsc = native.replacingOccurrences(of: "\n", with: "\\n")
+      print("[\(label)] lexical=\"\(lexicalEsc)\" native=\"\(nativeEsc)\" sel=\(textView.selectedRange)")
+    }
+
+    logState("init")
+
+    // Ops from failure: the sequence that leads to divergence
+    let ops: [(String, () -> Void)] = [
+      ("insert(' ')", { textView.insertText(" ") }),
+      ("insert('z')", { textView.insertText("z") }),
+      ("insert('q')", { textView.insertText("q") }),
+      ("backspace", { textView.deleteBackward() }),
+      ("insert('l')", { textView.insertText("l") }),
+      ("insert('\\n')", { textView.insertText("\n") }),
+      ("insert('h')", { textView.insertText("h") }),
+      ("backspace", { textView.deleteBackward() }),
+      ("insert('\\n')", { textView.insertText("\n") }),
+      ("select(19,0)", { textView.selectedRange = NSRange(location: 19, length: 0); self.syncSelection(textView) }),
+      ("insert('\\n')", { textView.insertText("\n") }),
+      ("insert('t')", { textView.insertText("t") }),
+      ("select(22,0)", { textView.selectedRange = NSRange(location: 22, length: 0); self.syncSelection(textView) }),
+      ("backspace", { textView.deleteBackward() }),
+      ("backspace", { textView.deleteBackward() }),
+      ("select(20,0)", { textView.selectedRange = NSRange(location: 20, length: 0); self.syncSelection(textView) }),
+      ("insert('m')", { textView.insertText("m") }),
+      ("insert(' ')", { textView.insertText(" ") }),
+      ("select(10,0)", { textView.selectedRange = NSRange(location: 10, length: 0); self.syncSelection(textView) }),
+      ("insert('\\n')", { textView.insertText("\n") }),
+      ("insert(' ')", { textView.insertText(" ") }),
+      ("backspace", { textView.deleteBackward() }),
+      ("insert('n')", { textView.insertText("n") }),
+      ("insert('\\n')", { textView.insertText("\n") }),
+      ("backspace", { textView.deleteBackward() }),
+      ("backspace", { textView.deleteBackward() }),
+      ("insert('x')", { textView.insertText("x") }),
+      ("backspace", { textView.deleteBackward() }),
+      ("backspace", { textView.deleteBackward() }),
+    ]
+
+    for (i, (name, op)) in ops.enumerated() {
+      // Dump node tree before steps 27 and 28 for debugging
+      if i == 27 || i == 28 {
+        dumpNodeTree(editor, label: "BEFORE step \(i)")
+      }
+
+      op()
+      drainMainQueue()
+      logState("step \(i): \(name)")
+
+      // Dump node tree after steps 27 and 28
+      if i == 27 || i == 28 {
+        dumpNodeTree(editor, label: "AFTER step \(i)")
+      }
+
+      var lexical = ""
+      try editor.read { lexical = getRoot()?.getTextContent() ?? "" }
+      let native = textView.text ?? ""
+
+      if lexical != native {
+        let lexicalEsc = lexical.replacingOccurrences(of: "\n", with: "\\n")
+        let nativeEsc = native.replacingOccurrences(of: "\n", with: "\\n")
+        dumpNodeTree(editor, label: "DIVERGED at step \(i)")
+        XCTFail("""
+          DIVERGED at step \(i) (\(name))
+          lexical="\(lexicalEsc)"
+          native="\(nativeEsc)"
+          """)
+        return
+      }
+    }
   }
 }
 
