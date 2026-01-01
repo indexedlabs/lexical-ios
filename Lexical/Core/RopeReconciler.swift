@@ -617,6 +617,7 @@ public enum RopeReconciler {
     // (e.g., deleting wrong content when a later reconcile has removes but the clamp is from
     // an earlier operation that didn't have removes).
     editor.pendingDeletionClampRange = nil
+
 #if DEBUG
     t_afterEndEditing = CFAbsoluteTimeGetCurrent()
 #endif
@@ -1692,6 +1693,9 @@ public enum RopeReconciler {
       if actualContent == newText {
         // Storage already has the new content at this location - merge already happened.
         // Just update cache and attributes without modifying storage.
+        // IMPORTANT: We do NOT call shiftRangeCacheAfter here because the batch removal
+        // phase already shifted downstream entries. The text "growth" here is just this
+        // node inheriting content from a removed sibling - no additional physical shift occurred.
         let actualNewLength = newLength
         let delta = actualNewLength - oldLength
         cacheItem.textLength = actualNewLength
@@ -1699,9 +1703,6 @@ public enum RopeReconciler {
 
         if delta != 0 {
           propagateChildrenLengthDelta(fromParentKey: next.parent, delta: delta, state: state, editor: editor)
-          let oldEnd = textStart + oldLength
-          let excludingKeys = ancestorKeys(fromParentKey: next.parent)
-          shiftRangeCacheAfter(location: oldEnd, delta: delta, excludingKeys: excludingKeys, editor: editor)
         }
 
         // Apply attributes to the existing content
@@ -1807,6 +1808,32 @@ public enum RopeReconciler {
     guard var cacheItem = editor.rangeCache[prev.key] else { return }
 
     let attributes = AttributeUtils.attributedStringStyles(from: next, state: state, theme: theme)
+
+    // Recompute childrenLength based on actual children in the current state.
+    // This is necessary when children are reparented (e.g., wrapperOnly removal causes
+    // child to move from one paragraph to another). The cache's childrenLength may be
+    // stale in this case.
+    var actualChildrenLength = 0
+    for childKey in next.getChildrenKeys(fromLatest: false) {
+      if let childCache = editor.rangeCache[childKey] {
+        actualChildrenLength += childCache.range.length
+      }
+    }
+    if actualChildrenLength != cacheItem.childrenLength {
+      // Children have changed. The old postamble is at the wrong position.
+      // Remove it first, then update cache. New postamble will be added by the postamble update logic below.
+      let oldPostambleStart = cacheItem.location + cacheItem.preambleLength + cacheItem.childrenLength + cacheItem.textLength
+      let oldPostambleLen = cacheItem.postambleLength
+      if oldPostambleLen > 0 && oldPostambleStart + oldPostambleLen <= textStorage.length {
+        textStorage.deleteCharacters(in: NSRange(location: oldPostambleStart, length: oldPostambleLen))
+        // Shift downstream entries
+        shiftRangeCacheAfter(location: oldPostambleStart + oldPostambleLen, delta: -oldPostambleLen, excludingKeys: ancestorKeys(fromParentKey: next.parent), editor: editor)
+        propagateChildrenLengthDelta(fromParentKey: next.parent, delta: -oldPostambleLen, editor: editor)
+      }
+      cacheItem.childrenLength = actualChildrenLength
+      cacheItem.postambleLength = 0  // Will be set by postamble update logic
+      editor.rangeCache[next.key] = cacheItem
+    }
 
     // Update preamble/postamble without relying on global editor state (which can lag
     // behind `state` during reconciliation).

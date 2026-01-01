@@ -974,6 +974,169 @@ final class ReconcilerUsageRandomEditFuzzTests: XCTestCase {
 
     print("\n✅ All steps passed")
   }
+
+  /// Minimal reproduction of seed 0x12345678 step 82 failure
+  /// The divergence is: lexical has "   " (3 spaces) but native has " \n " (space, newline, space)
+  func testMinimalSeed0x12345678_Step82() throws {
+    let testView = createTestEditorView()
+    let editor = testView.editor
+    let textView = testView.view.textView
+    setupWindowWithView(testView)
+    textView.becomeFirstResponder()
+
+    // Initial text from the fuzz test
+    let initialText = "AAA\n\n\nBBB"
+    textView.insertText(initialText)
+    drainMainQueue()
+
+    func logState(_ label: String) {
+      var lexical = ""
+      try? editor.read { lexical = getRoot()?.getTextContent() ?? "" }
+      let native = textView.text ?? ""
+      let storage = editor.textStorage?.string ?? ""
+      let lexicalEsc = lexical.replacingOccurrences(of: "\n", with: "\\n")
+      let nativeEsc = native.replacingOccurrences(of: "\n", with: "\\n")
+      let storageEsc = storage.replacingOccurrences(of: "\n", with: "\\n")
+      print("[\(label)]")
+      print("  lexical(\(lexical.utf16.count))=\"\(lexicalEsc)\"")
+      print("  native(\(native.utf16.count))=\"\(nativeEsc)\"")
+      print("  storage(\(storage.utf16.count))=\"\(storageEsc)\"")
+      print("  sel=\(textView.selectedRange)")
+      if lexical != native || native != storage {
+        print("  ⚠️ MISMATCH DETECTED")
+      }
+    }
+
+    logState("init")
+
+    // Ops from seed 0x12345678 (extracted using PRNG simulation)
+    let ops: [(String, () -> Void)] = [
+      ("select(6,0)", { textView.selectedRange = NSRange(location: 6, length: 0); self.syncSelection(textView) }),
+      ("insert('\\n')", { textView.insertText("\n") }),
+      ("insert('f')", { textView.insertText("f") }),
+      ("backspace", { textView.deleteBackward() }),
+      ("backspace", { textView.deleteBackward() }),
+      ("insert('w')", { textView.insertText("w") }),
+      ("select(9,0)", { textView.selectedRange = NSRange(location: 9, length: 0); self.syncSelection(textView) }),
+      ("backspace", { textView.deleteBackward() }),
+      ("select(5,2)", { textView.selectedRange = NSRange(location: 5, length: 2); self.syncSelection(textView) }),
+      ("select(7,2)", { textView.selectedRange = NSRange(location: 7, length: 2); self.syncSelection(textView) }),
+      ("insert('e')", { textView.insertText("e") }),
+      ("insert(' ')", { textView.insertText(" ") }),
+      ("select(4,0)", { textView.selectedRange = NSRange(location: 4, length: 0); self.syncSelection(textView) }),
+      ("insert('\\n')", { textView.insertText("\n") }),
+      ("select(6,0)", { textView.selectedRange = NSRange(location: 6, length: 0); self.syncSelection(textView) }),
+      ("insert('k')", { textView.insertText("k") }),
+      ("backspace", { textView.deleteBackward() }),
+      ("backspace", { textView.deleteBackward() }),
+      ("backspace", { textView.deleteBackward() }),
+      ("backspace", { textView.deleteBackward() }),
+      ("insert('b')", { textView.insertText("b") }),
+      ("select(4,0)", { textView.selectedRange = NSRange(location: 4, length: 0); self.syncSelection(textView) }),
+      ("backspace", { textView.deleteBackward() }),
+      ("backspace", { textView.deleteBackward() }),
+      ("insert('m')", { textView.insertText("m") }),
+      ("backspace", { textView.deleteBackward() }),
+      ("select(0,0)", { textView.selectedRange = NSRange(location: 0, length: 0); self.syncSelection(textView) }),
+      ("insert('y')", { textView.insertText("y") }),
+      ("insert('d')", { textView.insertText("d") }),
+      ("insert('s')", { textView.insertText("s") }),
+      ("backspace", { textView.deleteBackward() }),
+      ("insert('x')", { textView.insertText("x") }),
+      ("backspace", { textView.deleteBackward() }),
+      ("insert('q')", { textView.insertText("q") }),
+      ("insert('n')", { textView.insertText("n") }),
+      ("select(10,0)", { textView.selectedRange = NSRange(location: 10, length: 0); self.syncSelection(textView) }),
+      ("insert('\\n')", { textView.insertText("\n") }),
+      ("select(10,0)", { textView.selectedRange = NSRange(location: 10, length: 0); self.syncSelection(textView) }),
+      ("insert('s')", { textView.insertText("s") }),
+      ("insert('l')", { textView.insertText("l") }),
+      ("insert('\\n')", { textView.insertText("\n") }),
+      ("insert(' ')", { textView.insertText(" ") }),
+      ("insert('r')", { textView.insertText("r") }),
+      ("insert('g')", { textView.insertText("g") }),
+      ("insert('h')", { textView.insertText("h") }),
+      ("insert('w')", { textView.insertText("w") }),
+      ("insert('v')", { textView.insertText("v") }),
+      ("insert('w')", { textView.insertText("w") }),
+      ("backspace", { textView.deleteBackward() }),
+      ("backspace", { textView.deleteBackward() }),
+      ("insert(' ')", { textView.insertText(" ") }),
+      ("insert('r')", { textView.insertText("r") }),
+      ("backspace", { textView.deleteBackward() }),
+      ("backspace", { textView.deleteBackward() }),
+      ("insert('\\n')", { textView.insertText("\n") }),
+      ("insert('b')", { textView.insertText("b") }),
+      ("insert('\\n')", { textView.insertText("\n") }),
+      ("insert('d')", { textView.insertText("d") }),
+      ("insert('\\n')", { textView.insertText("\n") }),
+      ("insert(' ')", { textView.insertText(" ") }),
+      ("insert(' ')", { textView.insertText(" ") }),
+      ("insert(' ')", { textView.insertText(" ") }),
+      ("insert('h')", { textView.insertText("h") }),
+      ("insert('c')", { textView.insertText("c") }),
+      ("insert(' ')", { textView.insertText(" ") }),
+      ("insert('v')", { textView.insertText("v") }),
+      ("backspace", { textView.deleteBackward() }),
+      ("insert('u')", { textView.insertText("u") }),
+      ("insert('d')", { textView.insertText("d") }),
+      ("select(7,1)", { textView.selectedRange = NSRange(location: 7, length: 1); self.syncSelection(textView) }),
+      ("select(13,1)", { textView.selectedRange = NSRange(location: 13, length: 1); self.syncSelection(textView) }),
+      ("insert('\\n')", { textView.insertText("\n") }),  // Step 71
+      ("insert(' ')", { textView.insertText(" ") }),
+      ("insert(' ')", { textView.insertText(" ") }),
+      ("insert(' ')", { textView.insertText(" ") }),
+      ("insert(' ')", { textView.insertText(" ") }),
+      ("backspace", { textView.deleteBackward() }),
+      ("insert('j')", { textView.insertText("j") }),
+      ("backspace", { textView.deleteBackward() }),
+      ("insert('i')", { textView.insertText("i") }),
+      ("insert('x')", { textView.insertText("x") }),
+      ("insert('\\n')", { textView.insertText("\n") }),  // Step 81
+      ("backspace", { textView.deleteBackward() }),      // Step 82 - the divergence step
+    ]
+
+    for (i, (name, op)) in ops.enumerated() {
+      print("\n=== STEP \(i): \(name) ===")
+
+      if i >= 75 {  // Log more detail near the failure
+        print("--- BEFORE step \(i) ---")
+        dumpNodeTree(editor, label: "tree")
+        dumpRangeCache(editor, label: "cache")
+      }
+
+      op()
+      drainMainQueue()
+      logState("after")
+
+      if i >= 75 {
+        print("--- AFTER step \(i) ---")
+        dumpNodeTree(editor, label: "tree")
+        dumpRangeCache(editor, label: "cache")
+      }
+
+      var lexical = ""
+      try editor.read { lexical = getRoot()?.getTextContent() ?? "" }
+      let native = textView.text ?? ""
+      let storage = editor.textStorage?.string ?? ""
+
+      if lexical != native {
+        let lexicalEsc = lexical.replacingOccurrences(of: "\n", with: "\\n")
+        let nativeEsc = native.replacingOccurrences(of: "\n", with: "\\n")
+        let storageEsc = storage.replacingOccurrences(of: "\n", with: "\\n")
+        print("\n!!! DIVERGED at step \(i) (\(name)) !!!")
+        print("  lexical=\"\(lexicalEsc)\"")
+        print("  native=\"\(nativeEsc)\"")
+        print("  storage=\"\(storageEsc)\"")
+        dumpNodeTree(editor, label: "FINAL")
+        dumpRangeCache(editor, label: "FINAL")
+        XCTFail("DIVERGED at step \(i) (\(name))")
+        return
+      }
+    }
+
+    print("\n✅ All steps passed")
+  }
 }
 
 #endif
