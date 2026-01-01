@@ -716,6 +716,153 @@ final class ReconcilerUsageRandomEditFuzzTests: XCTestCase {
 
     print("\n✅ All steps passed")
   }
+
+  /// Minimal reproduction of seed 0xdeadbeef step 63 failure
+  /// The divergence is: lexical="tzm" vs native="tmz" (z and m swapped)
+  func testMinimalSeed0xdeadbeef_Step63() throws {
+    let testView = createTestEditorView()
+    let editor = testView.editor
+    let textView = testView.view.textView
+    setupWindowWithView(testView)
+    textView.becomeFirstResponder()
+
+    // Initial text from the fuzz test
+    let initialText = "AAA\n\n\nBBB"
+    textView.insertText(initialText)
+    drainMainQueue()
+
+    func logState(_ label: String) {
+      var lexical = ""
+      try? editor.read { lexical = getRoot()?.getTextContent() ?? "" }
+      let native = textView.text ?? ""
+      let storage = editor.textStorage?.string ?? ""
+      let lexicalEsc = lexical.replacingOccurrences(of: "\n", with: "\\n")
+      let nativeEsc = native.replacingOccurrences(of: "\n", with: "\\n")
+      let storageEsc = storage.replacingOccurrences(of: "\n", with: "\\n")
+      print("[\(label)]")
+      print("  lexical(\(lexical.utf16.count))=\"\(lexicalEsc)\"")
+      print("  native(\(native.utf16.count))=\"\(nativeEsc)\"")
+      print("  storage(\(storage.utf16.count))=\"\(storageEsc)\"")
+      print("  sel=\(textView.selectedRange)")
+
+      if lexical != native || native != storage {
+        print("  ⚠️ MISMATCH DETECTED")
+      }
+    }
+
+    logState("init")
+
+    // Ops from seed 0xdeadbeef that lead to step 63 divergence
+    let ops: [(String, () -> Void)] = [
+      ("insert('\\n')", { textView.insertText("\n") }),
+      ("insert('b')", { textView.insertText("b") }),
+      ("insert('o')", { textView.insertText("o") }),
+      ("backspace", { textView.deleteBackward() }),
+      ("backspace", { textView.deleteBackward() }),
+      ("backspace", { textView.deleteBackward() }),
+      ("insert('l')", { textView.insertText("l") }),
+      ("select(4,0)", { textView.selectedRange = NSRange(location: 4, length: 0) }),
+      ("insert('t')", { textView.insertText("t") }),
+      ("select(5,0)", { textView.selectedRange = NSRange(location: 5, length: 0) }),
+      ("select(0,0)", { textView.selectedRange = NSRange(location: 0, length: 0) }),
+      ("insert('s')", { textView.insertText("s") }),
+      ("insert('p')", { textView.insertText("p") }),
+      ("insert('\\n')", { textView.insertText("\n") }),
+      ("backspace", { textView.deleteBackward() }),
+      ("backspace", { textView.deleteBackward() }),
+      ("backspace", { textView.deleteBackward() }),
+      ("insert(' ')", { textView.insertText(" ") }),
+      ("insert('b')", { textView.insertText("b") }),
+      ("insert('\\n')", { textView.insertText("\n") }),
+      ("backspace", { textView.deleteBackward() }),
+      ("select(6,0)", { textView.selectedRange = NSRange(location: 6, length: 0) }),
+      ("insert('\\n')", { textView.insertText("\n") }),
+      ("insert(' ')", { textView.insertText(" ") }),
+      ("select(2,0)", { textView.selectedRange = NSRange(location: 2, length: 0) }),
+      ("select(1,0)", { textView.selectedRange = NSRange(location: 1, length: 0) }),
+      ("insert('l')", { textView.insertText("l") }),
+      ("select(11,0)", { textView.selectedRange = NSRange(location: 11, length: 0) }),
+      ("backspace", { textView.deleteBackward() }),
+      ("insert('z')", { textView.insertText("z") }),
+      ("insert('\\n')", { textView.insertText("\n") }),
+      ("insert('r')", { textView.insertText("r") }),
+      ("insert('\\n')", { textView.insertText("\n") }),
+      ("backspace", { textView.deleteBackward() }),
+      ("insert(' ')", { textView.insertText(" ") }),
+      ("insert('n')", { textView.insertText("n") }),
+      ("select(6,0)", { textView.selectedRange = NSRange(location: 6, length: 0) }),
+      ("insert('p')", { textView.insertText("p") }),
+      ("backspace", { textView.deleteBackward() }),
+      ("select(10,3)", { textView.selectedRange = NSRange(location: 10, length: 3) }),
+      ("select(19,1)", { textView.selectedRange = NSRange(location: 19, length: 1) }),
+      ("select(14,3)", { textView.selectedRange = NSRange(location: 14, length: 3) }),
+      ("backspace", { textView.deleteBackward() }),
+      ("insert('\\n')", { textView.insertText("\n") }),
+      ("backspace", { textView.deleteBackward() }),
+      ("insert('f')", { textView.insertText("f") }),
+      ("insert('\\n')", { textView.insertText("\n") }),
+      ("backspace", { textView.deleteBackward() }),
+      ("backspace", { textView.deleteBackward() }),
+      ("insert(' ')", { textView.insertText(" ") }),
+      ("insert('b')", { textView.insertText("b") }),
+      ("insert('w')", { textView.insertText("w") }),
+      ("backspace", { textView.deleteBackward() }),
+      ("select(6,0)", { textView.selectedRange = NSRange(location: 6, length: 0) }),
+      ("backspace", { textView.deleteBackward() }),
+      ("insert('a')", { textView.insertText("a") }),
+      ("backspace", { textView.deleteBackward() }),
+      ("insert(' ')", { textView.insertText(" ") }),
+      ("insert(' ')", { textView.insertText(" ") }),
+      ("insert('d')", { textView.insertText("d") }),
+      ("insert('y')", { textView.insertText("y") }),
+      ("backspace", { textView.deleteBackward() }),
+      ("select(12,0)", { textView.selectedRange = NSRange(location: 12, length: 0) }),
+      ("insert('m')", { textView.insertText("m") }),  // Step 63 - the divergence step
+    ]
+
+    for (i, (name, op)) in ops.enumerated() {
+      print("\n=== STEP \(i): \(name) ===")
+
+      // Dump state before critical steps - log all steps to trace the issue
+      print("--- BEFORE step \(i) ---")
+      dumpNodeTree(editor, label: "tree")
+      dumpRangeCache(editor, label: "cache")
+
+      op()
+      drainMainQueue()
+      logState("after")
+
+      // Dump state after every step to trace the issue
+      print("--- AFTER step \(i) ---")
+      dumpNodeTree(editor, label: "tree")
+      dumpRangeCache(editor, label: "cache")
+
+      var lexical = ""
+      try editor.read { lexical = getRoot()?.getTextContent() ?? "" }
+      let native = textView.text ?? ""
+      let storage = editor.textStorage?.string ?? ""
+
+      if lexical != native {
+        let lexicalEsc = lexical.replacingOccurrences(of: "\n", with: "\\n")
+        let nativeEsc = native.replacingOccurrences(of: "\n", with: "\\n")
+        let storageEsc = storage.replacingOccurrences(of: "\n", with: "\\n")
+        print("\n!!! DIVERGED at step \(i) (\(name)) !!!")
+        print("  lexical=\"\(lexicalEsc)\"")
+        print("  native=\"\(nativeEsc)\"")
+        print("  storage=\"\(storageEsc)\"")
+        dumpNodeTree(editor, label: "FINAL")
+        dumpRangeCache(editor, label: "FINAL")
+        XCTFail("DIVERGED at step \(i) (\(name))")
+        return
+      }
+
+      if storage != lexical {
+        print("⚠️ Storage diverged from lexical at step \(i), but native still matches")
+      }
+    }
+
+    print("\n✅ All steps passed")
+  }
 }
 
 #endif

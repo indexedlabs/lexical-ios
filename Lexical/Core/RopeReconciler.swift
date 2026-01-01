@@ -314,11 +314,9 @@ public enum RopeReconciler {
       pathLabel = "rope-mixed"
     }
 
-    let useLazyLocations =
-      editor.useFenwickLocations
-      && inserts.isEmpty
-      && removes.isEmpty
-      && updates.allSatisfy({ $0.prev is TextNode && $0.next is TextNode })
+    // TEMPORARILY DISABLED lazy locations to fix cache corruption bug (lexical-ios-852)
+    // TODO: Re-enable once root cause of stale location preservation is fixed
+    let useLazyLocations = false
 
     if editor.useFenwickLocations {
       if editor.fenwickHasDeltas && !useLazyLocations {
