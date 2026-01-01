@@ -560,6 +560,43 @@ final class ReconcilerUsageRandomEditFuzzTests: XCTestCase {
     }
   }
 
+  /// Dump range cache for debugging
+  private func dumpRangeCache(_ editor: Editor, label: String) {
+    print("[\(label)] Range cache:")
+    let sortedKeys = editor.rangeCache.keys.sorted { a, b in
+      let aLoc = editor.rangeCache[a]?.location ?? 0
+      let bLoc = editor.rangeCache[b]?.location ?? 0
+      return aLoc < bLoc
+    }
+    for key in sortedKeys {
+      if let item = editor.rangeCache[key] {
+        print("  key=\(key) loc=\(item.location) pre=\(item.preambleLength) text=\(item.textLength) children=\(item.childrenLength) post=\(item.postambleLength) total=\(item.entireLength)")
+      }
+    }
+  }
+
+  /// Compare TextStorage string with expected at each step
+  private func verifyTextStorageParity(_ editor: Editor, _ textView: UITextView, step: Int) -> Bool {
+    var lexical = ""
+    try? editor.read { lexical = getRoot()?.getTextContent() ?? "" }
+    let native = textView.text ?? ""
+    let storage = (editor.textStorage?.string ?? "") as String
+
+    // Check all three match
+    let allMatch = (lexical == native) && (native == storage)
+    if !allMatch {
+      let lexicalEsc = lexical.replacingOccurrences(of: "\n", with: "\\n")
+      let nativeEsc = native.replacingOccurrences(of: "\n", with: "\\n")
+      let storageEsc = storage.replacingOccurrences(of: "\n", with: "\\n")
+      print("[step \(step)] PARITY MISMATCH:")
+      print("  lexical(\(lexical.utf16.count))=\"\(lexicalEsc)\"")
+      print("  native(\(native.utf16.count))=\"\(nativeEsc)\"")
+      print("  storage(\(storage.utf16.count))=\"\(storageEsc)\"")
+      return false
+    }
+    return true
+  }
+
   /// Minimal reproduction of emoji fuzz failure - isolated operations
   func testMinimalEmojiDivergence() throws {
     let testView = createTestEditorView()
@@ -577,12 +614,25 @@ final class ReconcilerUsageRandomEditFuzzTests: XCTestCase {
       var lexical = ""
       try? editor.read { lexical = getRoot()?.getTextContent() ?? "" }
       let native = textView.text ?? ""
+      let storage = editor.textStorage?.string ?? ""
       let lexicalEsc = lexical.replacingOccurrences(of: "\n", with: "\\n")
       let nativeEsc = native.replacingOccurrences(of: "\n", with: "\\n")
-      print("[\(label)] lexical=\"\(lexicalEsc)\" native=\"\(nativeEsc)\" sel=\(textView.selectedRange)")
+      let storageEsc = storage.replacingOccurrences(of: "\n", with: "\\n")
+      print("[\(label)]")
+      print("  lexical(\(lexical.utf16.count))=\"\(lexicalEsc)\"")
+      print("  native(\(native.utf16.count))=\"\(nativeEsc)\"")
+      print("  storage(\(storage.utf16.count))=\"\(storageEsc)\"")
+      print("  sel=\(textView.selectedRange)")
+
+      // Compare all three
+      if lexical != native || native != storage {
+        print("  ⚠️ MISMATCH DETECTED")
+      }
     }
 
     logState("init")
+    print("--- init range cache ---")
+    dumpRangeCache(editor, label: "init")
 
     // Ops from failure: the sequence that leads to divergence
     let ops: [(String, () -> Void)] = [
@@ -618,36 +668,53 @@ final class ReconcilerUsageRandomEditFuzzTests: XCTestCase {
     ]
 
     for (i, (name, op)) in ops.enumerated() {
-      // Dump node tree before steps 27 and 28 for debugging
-      if i == 27 || i == 28 {
-        dumpNodeTree(editor, label: "BEFORE step \(i)")
+      print("\n=== STEP \(i): \(name) ===")
+
+      // Dump full state before critical steps
+      if i >= 26 {
+        print("--- BEFORE step \(i) ---")
+        dumpNodeTree(editor, label: "tree")
+        dumpRangeCache(editor, label: "cache")
       }
 
       op()
       drainMainQueue()
-      logState("step \(i): \(name)")
+      logState("after")
 
-      // Dump node tree after steps 27 and 28
-      if i == 27 || i == 28 {
-        dumpNodeTree(editor, label: "AFTER step \(i)")
+      // Dump full state after critical steps
+      if i >= 26 {
+        print("--- AFTER step \(i) ---")
+        dumpNodeTree(editor, label: "tree")
+        dumpRangeCache(editor, label: "cache")
       }
 
       var lexical = ""
       try editor.read { lexical = getRoot()?.getTextContent() ?? "" }
       let native = textView.text ?? ""
+      let storage = editor.textStorage?.string ?? ""
 
+      // Check lexical vs native (the main test)
       if lexical != native {
         let lexicalEsc = lexical.replacingOccurrences(of: "\n", with: "\\n")
         let nativeEsc = native.replacingOccurrences(of: "\n", with: "\\n")
-        dumpNodeTree(editor, label: "DIVERGED at step \(i)")
-        XCTFail("""
-          DIVERGED at step \(i) (\(name))
-          lexical="\(lexicalEsc)"
-          native="\(nativeEsc)"
-          """)
+        let storageEsc = storage.replacingOccurrences(of: "\n", with: "\\n")
+        print("\n!!! DIVERGED at step \(i) (\(name)) !!!")
+        print("  lexical=\"\(lexicalEsc)\"")
+        print("  native=\"\(nativeEsc)\"")
+        print("  storage=\"\(storageEsc)\"")
+        dumpNodeTree(editor, label: "FINAL")
+        dumpRangeCache(editor, label: "FINAL")
+        XCTFail("DIVERGED at step \(i) (\(name))")
         return
       }
+
+      // Also check storage matches (could diverge before native does)
+      if storage != lexical {
+        print("⚠️ Storage diverged from lexical at step \(i), but native still matches")
+      }
     }
+
+    print("\n✅ All steps passed")
   }
 }
 

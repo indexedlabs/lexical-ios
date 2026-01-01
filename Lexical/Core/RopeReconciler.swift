@@ -389,9 +389,11 @@ public enum RopeReconciler {
       )
     }
 
-    // Removals can change boundary-derived preambles/postambles of adjacent element nodes
-    // (e.g. the last paragraph losing its trailing newline). These nodes are often not cloned
-    // in `nextState`, so they won't appear in `updates` and would otherwise be skipped.
+    // NOTE: Boundary updates for adjacent elements are now deferred to AFTER text updates.
+    // This ensures that when content is merged (e.g., paragraph merge via backspace), the
+    // text update that replaces orphaned content happens before we try to update postambles.
+    // See the "Deferred boundary updates" section after the updates loop.
+    var deferredBoundaryCandidateKeys: [NodeKey] = []
     if let prevState, !removes.isEmpty {
       var boundaryCandidateKeys = Set<NodeKey>()
       boundaryCandidateKeys.reserveCapacity(removes.count * 2)
@@ -417,7 +419,7 @@ public enum RopeReconciler {
       // Update candidates in document order to apply shifts consistently.
       // Skip nodes that are already in the updates list - they'll be updated there.
       let updateKeys = Set(updates.map { $0.key })
-      let candidateKeys: [NodeKey] = boundaryCandidateKeys
+      deferredBoundaryCandidateKeys = boundaryCandidateKeys
         .filter { key in
           !updateKeys.contains(key)
             && (prevState.nodeMap[key] as? ElementNode) != nil
@@ -430,13 +432,6 @@ public enum RopeReconciler {
           if aLoc != bLoc { return aLoc < bLoc }
           return a < b
         }
-
-      for key in candidateKeys {
-        guard let prevElement = prevState.nodeMap[key] as? ElementNode,
-              let nextElement = nextState.nodeMap[key] as? ElementNode
-        else { continue }
-        try updateElementNode(from: prevElement, to: nextElement, in: textStorage, state: nextState, editor: editor, theme: theme)
-      }
     }
 #if DEBUG
     t_afterRemoves = CFAbsoluteTimeGetCurrent()
@@ -547,6 +542,18 @@ public enum RopeReconciler {
         useLazyLocations: useLazyLocations
       )
     }
+
+    // Deferred boundary updates: now that text updates have been applied, we can safely
+    // update preambles/postambles for adjacent elements whose boundaries may have changed.
+    if !deferredBoundaryCandidateKeys.isEmpty, let prevState {
+      for key in deferredBoundaryCandidateKeys {
+        guard let prevElement = prevState.nodeMap[key] as? ElementNode,
+              let nextElement = nextState.nodeMap[key] as? ElementNode
+        else { continue }
+        try updateElementNode(from: prevElement, to: nextElement, in: textStorage, state: nextState, editor: editor, theme: theme)
+      }
+    }
+
 #if DEBUG
     t_afterUpdates = CFAbsoluteTimeGetCurrent()
 #endif
@@ -1830,6 +1837,7 @@ public enum RopeReconciler {
     let nextPostamble = computeElementPostamble(for: next, state: state)
     let nextPostambleLength = nextPostamble.utf16.count
     let oldPostambleLength = cacheItem.postambleLength
+
     if nextPostambleLength != oldPostambleLength
       || (oldPostambleLength > 0
         && NSMaxRange(
