@@ -314,8 +314,9 @@ public enum RopeReconciler {
       pathLabel = "rope-mixed"
     }
 
-    // TEMPORARILY DISABLED lazy locations to fix cache corruption bug (lexical-ios-852)
-    // TODO: Re-enable once root cause of stale location preservation is fixed
+    // DISABLED: Lazy Fenwick locations cause range calculation crashes (lowerBound > upperBound).
+    // The performance optimization conflicts with updateElementNode's childrenLength recomputation.
+    // TODO: Fix the interaction between lazy locations and reparenting logic.
     let useLazyLocations = false
 
     if editor.useFenwickLocations {
