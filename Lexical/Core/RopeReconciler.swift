@@ -367,6 +367,7 @@ public enum RopeReconciler {
       let bLoc = editor.rangeCache[b.key]?.location ?? 0
       return aLoc > bLoc  // Reverse order
     }
+
     if let prevState {
       try batchRemoveNodes(
         removes,
@@ -609,6 +610,13 @@ public enum RopeReconciler {
       (textStorage as? ReconcilerTextStorageAppKit)?.mode = previousMode
       #endif
     }
+
+    // Always clear the deletion clamp at the end of each reconcile cycle.
+    // The clamp is a one-shot hint from deleteCharacter() to constrain structural deletes.
+    // If not cleared, stale clamps from previous reconciles can cause incorrect deletions
+    // (e.g., deleting wrong content when a later reconcile has removes but the clamp is from
+    // an earlier operation that didn't have removes).
+    editor.pendingDeletionClampRange = nil
 #if DEBUG
     t_afterEndEditing = CFAbsoluteTimeGetCurrent()
 #endif
