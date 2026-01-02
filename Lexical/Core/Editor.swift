@@ -1179,10 +1179,13 @@ public class Editor: NSObject {
       // Rebuild with larger capacity - preserves existing deltas
       var newTree = FenwickTree(count)
       // Copy existing deltas (requires iterating, but only on resize)
-      for i in 1...locationFenwickTree.size {
-        let delta = locationFenwickTree.prefixSum(i) - locationFenwickTree.prefixSum(i - 1)
-        if delta != 0 {
-          newTree.add(i, delta)
+      let oldSize = locationFenwickTree.size
+      if oldSize > 0 {
+        for i in 1...oldSize {
+          let delta = locationFenwickTree.prefixSum(i) - locationFenwickTree.prefixSum(i - 1)
+          if delta != 0 {
+            newTree.add(i, delta)
+          }
         }
       }
       locationFenwickTree = newTree
