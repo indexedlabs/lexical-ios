@@ -176,27 +176,43 @@ This repo contains Lexical iOS — a Swift Package with a modular plugin archite
 - Place tests in the corresponding `*Tests` target; mirror source structure where practical.
 - New public APIs or behavior changes require tests. Aim to cover edge cases found in `LexicalTests/EdgeCases` and performance scenarios separately.
 - Run locally with `swift test` or via Xcode using the `Lexical-Package` scheme on iOS simulator.
-- **Always log test output to a file for analysis**: Test runs can take a long time. Log output to a tmp file so you can analyze results without re-running:
+- **Test runs are slow (10+ minutes)**: Full Xcode test runs take at least 10 minutes. Plan accordingly:
+  - Always pipe output to a file (do NOT use `tee` — it wastes context window)
+  - Analyze results with `grep` after the run completes
+  - If you need to check different patterns, re-grep the file instead of re-running tests
 
   **For `swift test` (macOS/AppKit tests):**
   ```bash
-  swift test 2>&1 | tee /tmp/swift-test-results.log
-  # Then analyze results:
+  # Run tests and save output to file (no tee!)
+  swift test 2>&1 > /tmp/swift-test-results.log
+
+  # Then analyze results with grep:
   grep -E "(passed|failed|error:)" /tmp/swift-test-results.log
-  # Count failures:
   grep -c "failed" /tmp/swift-test-results.log
-  # Find specific failures:
   grep -B 2 "failed" /tmp/swift-test-results.log
   ```
 
   **For `xcodebuild` (iOS Simulator tests):**
   ```bash
+  # Run tests and save output to file (no tee!)
   xcodebuild -workspace Playground/LexicalPlayground.xcodeproj/project.xcworkspace \
     -scheme Lexical-Package \
     -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.0' \
-    test 2>&1 | tee /tmp/lexical-test-results.log
-  # Then analyze results:
+    test 2>&1 > /tmp/lexical-test-results.log
+
+  # Then analyze results with grep:
   grep -E "(Test Case|passed|failed|error:)" /tmp/lexical-test-results.log
+  grep "TEST SUCCEEDED\|TEST FAILED" /tmp/lexical-test-results.log
+  ```
+
+  **For macOS-only tests (e.g., AppKit):**
+  ```bash
+  # Run tests and save output to file
+  xcodebuild test -scheme Lexical -destination 'platform=macOS' \
+    2>&1 > /tmp/macos-test-results.log
+
+  # Analyze results:
+  grep -E "TEST SUCCEEDED|TEST FAILED|Executed.*failures" /tmp/macos-test-results.log
   ```
 - Important: For any significant change — especially items taken from `IMPLEMENTATION.md` — add or update unit tests that:
   - Prove the new/changed behavior (happy path) and key edge cases.
