@@ -79,7 +79,6 @@ extension LexicalViewDelegate {
     self.textView = TextView(editorConfig: editorConfig, featureFlags: featureFlags)
     self.textView.showsVerticalScrollIndicator = false
     self.textView.clipsToBounds = true
-    self.textView.accessibilityTraits = .staticText
     self.placeholderText = placeholderText
     self.overlayView = LexicalOverlayView(textView: textView)
 
