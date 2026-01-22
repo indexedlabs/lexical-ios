@@ -54,6 +54,13 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
     return _keyCommands
   }
 
+  override public func accessibilityActivate() -> Bool {
+    if !isFirstResponder {
+      _ = becomeFirstResponder()
+    }
+    return true
+  }
+
   // MARK: - Init
 
   init(editorConfig: EditorConfig, featureFlags: FeatureFlags, pasteboard: UIPasteboard = .general) {
