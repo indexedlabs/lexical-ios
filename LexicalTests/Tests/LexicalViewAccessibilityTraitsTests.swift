@@ -1,3 +1,4 @@
+#if canImport(UIKit)
 import XCTest
 
 @testable import Lexical
@@ -14,4 +15,4 @@ final class LexicalViewAccessibilityTraitsTests: XCTestCase {
     XCTAssertEqual(lexicalView.textView.accessibilityTraits, baselineTextView.accessibilityTraits)
   }
 }
-
+#endif
