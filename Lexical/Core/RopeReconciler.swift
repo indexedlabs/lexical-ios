@@ -1866,6 +1866,13 @@ public enum RopeReconciler {
         let excludingKeys = ancestorKeys(fromParentKey: next.parent)
         shiftRangeCacheAfter(location: oldEnd, delta: delta, excludingKeys: excludingKeys, editor: editor)
       }
+    } else if oldPreambleLength > 0 {
+      // Preamble text is unchanged but node properties may have changed (e.g. isChecked).
+      // Re-apply attributes so rendered state reflects the updated node.
+      let preambleRange = NSRange(location: cacheItem.location, length: oldPreambleLength)
+      if preambleRange.location + preambleRange.length <= textStorage.length {
+        textStorage.setAttributes(attributes, range: preambleRange)
+      }
     }
 
     // Update postamble if necessary.
@@ -1907,6 +1914,12 @@ public enum RopeReconciler {
         let oldEnd = postambleStart + oldPostambleLength
         let excludingKeys = ancestorKeys(fromParentKey: next.parent)
         shiftRangeCacheAfter(location: oldEnd, delta: delta, excludingKeys: excludingKeys, editor: editor)
+      }
+    } else if oldPostambleLength > 0 {
+      let postambleStart = cacheItem.location + cacheItem.preambleLength + cacheItem.childrenLength + cacheItem.textLength
+      let postambleRange = NSRange(location: postambleStart, length: oldPostambleLength)
+      if postambleRange.location + postambleRange.length <= textStorage.length {
+        textStorage.setAttributes(attributes, range: postambleRange)
       }
     }
   }
