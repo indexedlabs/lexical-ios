@@ -341,6 +341,18 @@ private func evaluateNode(
       return RangeCacheSearchResult(nodeKey: nodeKey, type: .element, offset: 0)
     }
 
+    // For elements with only a preamble but no children/text content (e.g., an empty
+    // ListItemNode with a checkbox preamble), the upperBound equals preambleEnd.
+    // In this case, the cursor position is semantically "inside the empty element"
+    // rather than "after the element". Return an element point so selection resolves
+    // correctly and subsequent inserts go into this element, not the previous sibling.
+    if node is ElementNode,
+       rangeCacheItem.childrenLength == 0,
+       rangeCacheItem.textLength == 0,
+       rangeCacheItem.preambleLength > 0 {
+      return RangeCacheSearchResult(nodeKey: nodeKey, type: .element, offset: 0)
+    }
+
     return RangeCacheSearchResult(nodeKey: nodeKey, type: .endBoundary, offset: nil)
   }
 
