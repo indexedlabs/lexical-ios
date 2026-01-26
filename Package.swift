@@ -57,6 +57,9 @@ let package = Package(
     .library(
       name: "LexicalSwiftUI",
       targets: ["LexicalSwiftUI"]),
+    .library(
+      name: "LexicalMentionsPlugin",
+      targets: ["LexicalMentionsPlugin"]),
   ],
   dependencies: [
     .package(url: "https://github.com/scinfu/SwiftSoup.git", from: "2.6.0"),
@@ -126,6 +129,7 @@ let package = Package(
         .target(name: "LexicalAppKit", condition: .when(platforms: [.macOS])),
         "LexicalLinkPlugin",
         "LexicalListPlugin",
+        "LexicalMentionsPlugin",
         "LexicalMarkdown",
         "LexicalHTML",
         "LexicalListHTMLSupport",
@@ -183,6 +187,13 @@ let package = Package(
         .target(name: "LexicalAppKit", condition: .when(platforms: [.macOS])),
       ],
       path: "./Plugins/LexicalLinkPlugin/LexicalLinkPlugin"),
+    .target(
+      name: "LexicalMentionsPlugin",
+      dependencies: [
+        "Lexical",
+        .target(name: "LexicalAppKit", condition: .when(platforms: [.macOS])),
+      ],
+      path: "./Plugins/LexicalMentionsPlugin/LexicalMentionsPlugin"),
     .testTarget(
       name: "LexicalLinkPluginTests",
       dependencies: [

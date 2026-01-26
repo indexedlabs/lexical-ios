@@ -18,8 +18,12 @@ extension NodeType {
 }
 
 @MainActor
-protocol MentionNodeVisitor {
+public protocol MentionNodeVisitor {
   func visitMentionNode(_ node: MentionNode) throws
+}
+
+public extension NodeVisitor {
+  func visitMentionNode(_: MentionNode) throws {}
 }
 
 public class MentionNode: TextNode {
@@ -36,6 +40,10 @@ public class MentionNode: TextNode {
 
   override public class func getType() -> NodeType {
     .mention
+  }
+
+  public required convenience init(from decoder: Decoder) throws {
+    try self.init(from: decoder, depth: nil, index: nil, parentIndex: nil)
   }
 
   public required init(
@@ -68,21 +76,27 @@ public class MentionNode: TextNode {
   override public func getAttributedStringAttributes(theme: Theme) -> [NSAttributedString.Key: Any]
   {
     var attributeDictionary = super.getAttributedStringAttributes(theme: theme)
+    if let linkAttributes = theme.link,
+      let linkColor = linkAttributes[.foregroundColor]
+    {
+      attributeDictionary[.foregroundColor] = linkColor
+    }
 #if canImport(UIKit)
-    attributeDictionary[.backgroundColor] = UIColor.lightGray
+    attributeDictionary[.font] = UIFont.boldSystemFont(ofSize: UIFont.systemFontSize)
 #elseif canImport(AppKit)
-    attributeDictionary[.backgroundColor] = NSColor.lightGray
+    attributeDictionary[.font] = NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)
 #endif
     return attributeDictionary
   }
 
-  override open func accept<Visitor: NodeVisitor>(visitor: Visitor) throws -> Visitor.Result {
+  override open func accept<Visitor: NodeVisitor>(visitor: Visitor) throws {
     if let visitor = visitor as? MentionNodeVisitor {
       try visitor.visitMentionNode(self)
     }
   }
 }
 
+@MainActor
 public func createMentionNode(mention: String, text: String) -> TextNode {
   let result = MentionNode(mention: mention, text: text, key: nil)
   do {
