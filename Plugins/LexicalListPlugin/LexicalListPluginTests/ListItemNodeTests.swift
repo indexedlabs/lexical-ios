@@ -498,6 +498,75 @@ class ListItemNodeTests: XCTestCase {
     }
   }
 
+  /// Regression test: node transforms that create new nodes (e.g. a markdown shortcut
+  /// converting "- " into a ListNode/ListItemNode) must have those nodes appear in the
+  /// dirty set so the reconciler processes them into the text storage.
+  func testTransformCreatedListNodesAreReconciledIntoTextStorage() throws {
+    // Set up an editor with ListPlugin and a simple markdown-style text transform
+    let listPlugin = ListPlugin()
+    let markdownPlugin = MarkdownShortcutTransformPlugin()
+    let view = Lexical.LexicalView(
+      editorConfig: EditorConfig(
+        theme: Theme(),
+        plugins: [listPlugin, markdownPlugin]
+      ),
+      featureFlags: FeatureFlags()
+    )
+    let editor = view.editor
+
+    try editor.update {
+      guard
+        let editorState = getActiveEditorState(),
+        let rootNode = editorState.getRootNode(),
+        let paragraphNode = rootNode.getFirstChild() as? ParagraphNode
+      else {
+        XCTFail("should have editor state")
+        return
+      }
+
+      let textNode = createTextNode(text: "")
+      try paragraphNode.append([textNode])
+    }
+
+    // Type "- " to trigger the markdown transform
+    try onInsertTextFromUITextView(text: "- ", editor: editor)
+
+    // Allow reconciliation
+    RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+
+    // Verify tree structure
+    try editor.read {
+      guard let rootNode = getActiveEditorState()?.getRootNode() else {
+        XCTFail("Root node not found")
+        return
+      }
+      XCTAssertEqual(rootNode.getChildrenSize(), 1)
+      XCTAssert(rootNode.getFirstChild() is ListNode)
+    }
+
+    // Verify the .listItem attribute is present in the text storage
+    let attributedText = view.textView.attributedText ?? NSAttributedString()
+    XCTAssert(attributedText.length > 0, "Text storage should not be empty")
+
+    var foundListItemAttribute: ListItemAttribute?
+    attributedText.enumerateAttribute(
+      .listItem,
+      in: NSRange(location: 0, length: attributedText.length),
+      options: []
+    ) { value, _, stop in
+      if let attr = value as? ListItemAttribute {
+        foundListItemAttribute = attr
+        stop.pointee = true
+      }
+    }
+
+    XCTAssertNotNil(
+      foundListItemAttribute,
+      "Text storage should contain a .listItem attribute after a transform creates a bullet list"
+    )
+    XCTAssertEqual(foundListItemAttribute?.listType, .bullet)
+  }
+
   func testDeleteMultipleEmptyListItemNodes() throws {
     guard let editor else {
       XCTFail("Editor unexpectedly nil")
@@ -580,4 +649,113 @@ class ListItemNodeTests: XCTestCase {
   }
   #endif
 
+  #if os(macOS) && !targetEnvironment(macCatalyst)
+  /// AppKit variant of the transform-created dirty nodes regression test.
+  func testTransformCreatedListNodesAreReconciledIntoTextStorage_AppKit() throws {
+    let listPlugin = ListPlugin()
+    let markdownPlugin = MarkdownShortcutTransformPlugin()
+    let view = LexicalAppKit.LexicalView(
+      editorConfig: EditorConfig(
+        theme: Theme(),
+        plugins: [listPlugin, markdownPlugin]
+      ),
+      featureFlags: FeatureFlags()
+    )
+    let editor = view.editor
+
+    try editor.update {
+      guard
+        let editorState = getActiveEditorState(),
+        let rootNode = editorState.getRootNode(),
+        let paragraphNode = rootNode.getFirstChild() as? ParagraphNode
+      else {
+        XCTFail("should have editor state")
+        return
+      }
+
+      let textNode = createTextNode(text: "")
+      try paragraphNode.append([textNode])
+      try textNode.select(anchorOffset: 0, focusOffset: 0)
+    }
+
+    // Use AppKit's insertText to trigger the same command path as UIKit's onInsertTextFromUITextView
+    view.textView.insertText("- ", replacementRange: NSRange(location: NSNotFound, length: 0))
+
+    // Allow reconciliation
+    RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+
+    // Verify tree structure
+    try editor.read {
+      guard let rootNode = getActiveEditorState()?.getRootNode() else {
+        XCTFail("Root node not found")
+        return
+      }
+      XCTAssertEqual(rootNode.getChildrenSize(), 1)
+      XCTAssert(rootNode.getFirstChild() is ListNode)
+    }
+
+    // Verify the .listItem attribute is present in the text storage
+    let attributedText = view.attributedText
+    XCTAssert(attributedText.length > 0, "Text storage should not be empty")
+
+    var foundListItemAttribute: ListItemAttribute?
+    attributedText.enumerateAttribute(
+      .listItem,
+      in: NSRange(location: 0, length: attributedText.length),
+      options: []
+    ) { value, _, stop in
+      if let attr = value as? ListItemAttribute {
+        foundListItemAttribute = attr
+        stop.pointee = true
+      }
+    }
+
+    XCTAssertNotNil(
+      foundListItemAttribute,
+      "Text storage should contain a .listItem attribute after a transform creates a bullet list"
+    )
+    XCTAssertEqual(foundListItemAttribute?.listType, .bullet)
+  }
+  #endif
+
+}
+
+// MARK: - Test Helpers
+
+/// Minimal markdown shortcut plugin for testing transform-created dirty node reconciliation.
+private class MarkdownShortcutTransformPlugin: Plugin {
+  weak var editor: Editor?
+
+  func setUp(editor: Editor) {
+    self.editor = editor
+    _ = editor.addNodeTransform(
+      nodeType: NodeType.text,
+      transform: { [weak self] node in
+        try self?.transformToList(node: node)
+      }
+    )
+  }
+
+  func tearDown() {}
+
+  private func transformToList(node: Node) throws {
+    guard
+      let textNode = node as? TextNode,
+      let parent = textNode.getParent() as? ParagraphNode,
+      textNode == parent.getFirstChild()
+    else { return }
+
+    let text = textNode.getTextContent()
+    guard text.hasPrefix("- ") else { return }
+
+    let listItemNode = ListItemNode()
+    let listNode = createListNode(listType: .bullet)
+    let newText = String(text.dropFirst(2))
+
+    let listItemNodeChild = createTextNode(text: newText)
+    try listItemNodeChild.select(anchorOffset: 0, focusOffset: 0)
+    try listItemNode.append([listItemNodeChild])
+    try listNode.append([listItemNode])
+    try parent.replace(replaceWith: listNode)
+  }
 }
