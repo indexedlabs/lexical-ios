@@ -1667,6 +1667,11 @@ public class Editor: NSObject {
 
     let originalDirtyNodes = dirtyNodes
 
+    // Track all nodes dirtied during transforms so they are visible to the reconciler.
+    // Without this, nodes created by transforms (e.g. ListNode/ListItemNode from a markdown
+    // shortcut) would be missing from the dirty set and never reconciled.
+    var transformDirtyNodes = DirtyNodeMap()
+
     while !dirtyNodes.isEmpty {
       if infiniteUpdateLoopCount >= Editor.maxUpdateCount {
         throw LexicalError.invariantViolation(
@@ -1725,6 +1730,11 @@ public class Editor: NSObject {
         }
       }
 
+      // Capture any nodes dirtied by this round of transforms
+      for (key, cause) in dirtyNodes {
+        transformDirtyNodes[key] = cause
+      }
+
       // As any number of changes may have been made as a result of the transforms, we need to
       // update our lookup as a result.
       nodeChildrenCounts.removeAll()
@@ -1732,7 +1742,13 @@ public class Editor: NSObject {
       infiniteUpdateLoopCount += 1
     }
 
+    // Restore original dirty nodes and merge in any nodes dirtied by transforms.
     dirtyNodes = originalDirtyNodes
+    for (key, cause) in transformDirtyNodes {
+      if dirtyNodes[key] == nil {
+        dirtyNodes[key] = cause
+      }
+    }
   }
 
   // MARK: Node Transforms

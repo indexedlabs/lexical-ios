@@ -160,6 +160,7 @@ class ViewController: UIViewController, UIToolbarDelegate {
     let hierarchyPlugin = NodeHierarchyViewPlugin()
     let hierarchyView = hierarchyPlugin.hierarchyView
     let listPlugin = ListPlugin()
+    let markdownPlugin = MarkdownShortcutsPlugin()
     let imagePlugin = InlineImagePlugin()
     let linkPlugin = LinkPlugin()
 
@@ -177,7 +178,7 @@ class ViewController: UIViewController, UIToolbarDelegate {
     })
     let editorConfig = EditorConfig(
       theme: theme,
-      plugins: [toolbarPlugin, listPlugin, hierarchyPlugin, imagePlugin, linkPlugin, editorHistoryPlugin],
+      plugins: [toolbarPlugin, listPlugin, markdownPlugin, hierarchyPlugin, imagePlugin, linkPlugin, editorHistoryPlugin],
       metricsContainer: debugMetricsContainer
     )
     let lexicalView = LexicalView(editorConfig: editorConfig, featureFlags: flags)
