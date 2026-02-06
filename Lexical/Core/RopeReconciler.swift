@@ -193,18 +193,47 @@ public enum RopeReconciler {
     // Track which keys are being inserted so we can skip children of inserted parents
     var insertedKeys = Set<NodeKey>()
 
+    @inline(__always)
+    func isAttached(key: NodeKey, in state: EditorState) -> Bool {
+      var cursor: NodeKey? = key
+      while let k = cursor {
+        if k == kRootNodeKey { return true }
+        guard let node = state.nodeMap[k] else { return false }
+        cursor = node.parent
+      }
+      return false
+    }
+
     for (key, _) in dirtyNodes {
       let prevNode = prevState?.nodeMap[key]
       let nextNode = nextState.nodeMap[key]
 
-      // Check if this is actually a remove: node exists in both states but
-      // has no parent in nextState (was detached)
-      if let prev = prevNode, let next = nextNode {
-        if next.parent == nil && !(next is RootNode) {
-          // Node was detached from tree - treat as remove
+      let prevIsAttached: Bool
+      if let prevState {
+        prevIsAttached = isAttached(key: key, in: prevState)
+      } else {
+        prevIsAttached = false
+      }
+      let nextIsAttached = isAttached(key: key, in: nextState)
+
+      // Ignore transient nodes that are detached in both snapshots.
+      if !prevIsAttached && !nextIsAttached {
+        continue
+      }
+
+      // Classify attach/detach by document attachment, not direct parent pointer.
+      if prevIsAttached && !nextIsAttached {
+        if let prev = prevNode {
           removes.append((key, prev))
-          continue
         }
+        continue
+      }
+      if !prevIsAttached && nextIsAttached {
+        if let next = nextNode {
+          inserts.append((key, next))
+          insertedKeys.insert(key)
+        }
+        continue
       }
 
       switch (prevNode, nextNode) {
@@ -231,17 +260,6 @@ public enum RopeReconciler {
     // delete only their pre/postamble bytes and rely on descendant updates for content.
     var wrapperOnlyRemoveKeys = Set<NodeKey>()
     if let prevState {
-      @inline(__always)
-      func isAttached(key: NodeKey, in state: EditorState) -> Bool {
-        var cursor: NodeKey? = key
-        while let k = cursor {
-          if k == kRootNodeKey { return true }
-          guard let node = state.nodeMap[k] else { return false }
-          cursor = node.parent
-        }
-        return false
-      }
-
       // Check if any ancestor of `key` in `nextState` is being inserted.
       // If so, the content will be rebuilt via the insert, so we shouldn't preserve it via wrapper-only.
       @inline(__always)
