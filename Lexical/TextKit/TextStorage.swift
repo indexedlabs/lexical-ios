@@ -237,6 +237,14 @@ public class TextStorage: NSTextStorage, ReconcilerTextStorage {
     return
   }
 
+  /// Attributes that affect text layout (glyph positions, line breaks, sizes).
+  /// Changes to these require full layout invalidation via edited(.editedAttributes).
+  /// All other attributes (foregroundColor, strikethrough, etc.) are display-only
+  /// and can be applied by updating the backing store + invalidateDisplay directly.
+  private static let layoutAffectingKeys: Set<NSAttributedString.Key> = [
+    .font, .paragraphStyle, .kern, .baselineOffset, .attachment,
+  ]
+
   override open func setAttributes(_ attrs: [NSAttributedString.Key: Any]?, range: NSRange) {
     if mode != .controllerMode {
       return
@@ -247,14 +255,44 @@ public class TextStorage: NSTextStorage, ReconcilerTextStorage {
     let end = max(start, min(range.location + range.length, length))
     let safe = NSRange(location: start, length: end - start)
 
+    guard safe.length > 0 else { return }
+
+    let newAttrs = attrs ?? [:]
+
+    // Check if any layout-affecting attribute actually changed.
+    // If only display attributes differ (foregroundColor, strikethrough, etc.),
+    // bypass the edited() pipeline to prevent layout invalidation which causes
+    // intrinsicContentSize recalculation and scroll drift in auto-sizing text views.
+    let existingAttrs = backingAttributedString.attributes(at: safe.location, effectiveRange: nil)
+    var layoutAttributeChanged = false
+    for key in Self.layoutAffectingKeys {
+      let newVal = newAttrs[key] as AnyObject?
+      let existVal = existingAttrs[key] as AnyObject?
+      if let n = newVal, let e = existVal {
+        if !n.isEqual(e) { layoutAttributeChanged = true; break }
+      } else if (newVal != nil) != (existVal != nil) {
+        layoutAttributeChanged = true; break
+      }
+    }
+
+    if !layoutAttributeChanged {
+      // Display-only attribute change: update backing store directly and
+      // invalidate display without going through edited() → processEditing()
+      // → layout manager invalidateLayout pipeline.
+      backingAttributedString.setAttributes(attrs, range: safe)
+      for lm in layoutManagers {
+        lm.invalidateDisplay(forCharacterRange: safe)
+      }
+      return
+    }
+
+    // Layout-affecting attribute changed: use normal pipeline
     let shouldManageEditing = editingDepth == 0
     if shouldManageEditing {
       beginEditing()
     }
-    if safe.length > 0 {
-      backingAttributedString.setAttributes(attrs, range: safe)
-      edited(.editedAttributes, range: safe, changeInLength: 0)
-    }
+    backingAttributedString.setAttributes(attrs, range: safe)
+    edited(.editedAttributes, range: safe, changeInLength: 0)
     if shouldManageEditing {
       endEditing()
     }

@@ -28,6 +28,28 @@ public class LayoutManager: NSLayoutManager, @unchecked Sendable {
     return editor?.customDrawingText ?? [:]
   }
 
+  // When only attributes changed (no character insertions/deletions), skip
+  // layout invalidation and only invalidate display. The default implementation
+  // calls invalidateLayout which triggers intrinsicContentSize recalculation,
+  // causing scroll drift in auto-sizing UITextViews embedded in SwiftUI ScrollViews.
+  // For display-only attribute changes (foregroundColor, strikethrough) during
+  // e.g. checkbox toggles, layout doesn't actually change — only rendering does.
+  override public func processEditing(
+    for textStorage: NSTextStorage,
+    edited editMask: NSTextStorage.EditActions,
+    range newCharRange: NSRange,
+    changeInLength delta: Int,
+    invalidatedRange invalidatedCharRange: NSRange
+  ) {
+    if editMask == .editedAttributes && delta == 0 {
+      invalidateDisplay(forCharacterRange: invalidatedCharRange)
+      return
+    }
+    super.processEditing(
+      for: textStorage, edited: editMask, range: newCharRange,
+      changeInLength: delta, invalidatedRange: invalidatedCharRange)
+  }
+
   override public func drawBackground(forGlyphRange drawingGlyphRange: NSRange, at origin: CGPoint)
   {
     super.drawBackground(forGlyphRange: drawingGlyphRange, at: origin)
