@@ -216,7 +216,7 @@ final class ReconcilerUsageRandomEditFuzzTests: XCTestCase {
     var rng = PRNG(seed: seed)
     var ops: [Op] = []
 
-    let testView = createTestEditorView()
+    let testView = createIntegrationTestEditorView()
     let editor = testView.editor
     let textView = testView.view.textView
     setupWindowWithView(testView)
@@ -344,7 +344,7 @@ final class ReconcilerUsageRandomEditFuzzTests: XCTestCase {
 
   /// Super minimal test: just check paragraph merge with trailing content
   func testParagraphMergeWithTrailingSpace() throws {
-    let testView = createTestEditorView()
+    let testView = createIntegrationTestEditorView()
     let editor = testView.editor
     let textView = testView.view.textView
     setupWindowWithView(testView)
@@ -394,7 +394,7 @@ final class ReconcilerUsageRandomEditFuzzTests: XCTestCase {
 
   /// Build the problematic 5-paragraph structure programmatically
   func testProgrammaticMultiParagraphMerge() throws {
-    let testView = createTestEditorView()
+    let testView = createIntegrationTestEditorView()
     let editor = testView.editor
     let textView = testView.view.textView
     setupWindowWithView(testView)
@@ -473,7 +473,7 @@ final class ReconcilerUsageRandomEditFuzzTests: XCTestCase {
 
   /// Test exact state from step 27-28 of emoji fuzz test
   func testExactStep28State() throws {
-    let testView = createTestEditorView()
+    let testView = createIntegrationTestEditorView()
     let editor = testView.editor
     let textView = testView.view.textView
     setupWindowWithView(testView)
@@ -599,7 +599,7 @@ final class ReconcilerUsageRandomEditFuzzTests: XCTestCase {
 
   /// Minimal reproduction of emoji fuzz failure - isolated operations
   func testMinimalEmojiDivergence() throws {
-    let testView = createTestEditorView()
+    let testView = createIntegrationTestEditorView()
     let editor = testView.editor
     let textView = testView.view.textView
     setupWindowWithView(testView)
@@ -720,7 +720,7 @@ final class ReconcilerUsageRandomEditFuzzTests: XCTestCase {
   /// Minimal reproduction of seed 0xdeadbeef step 63 failure
   /// The divergence is: lexical="tzm" vs native="tmz" (z and m swapped)
   func testMinimalSeed0xdeadbeef_Step63() throws {
-    let testView = createTestEditorView()
+    let testView = createIntegrationTestEditorView()
     let editor = testView.editor
     let textView = testView.view.textView
     setupWindowWithView(testView)
@@ -867,7 +867,7 @@ final class ReconcilerUsageRandomEditFuzzTests: XCTestCase {
   /// Minimal reproduction of seed 0x1 step 26 failure
   /// The divergence is: lexical="AAA\n\n\nBr\nm\ndB\n" vs native="AAA\n\n\nBr\nm\n\nd\n"
   func testMinimalSeed0x1_Step26() throws {
-    let testView = createTestEditorView()
+    let testView = createIntegrationTestEditorView()
     let editor = testView.editor
     let textView = testView.view.textView
     setupWindowWithView(testView)
@@ -978,7 +978,7 @@ final class ReconcilerUsageRandomEditFuzzTests: XCTestCase {
   /// Minimal reproduction of seed 0x12345678 step 82 failure
   /// The divergence is: lexical has "   " (3 spaces) but native has " \n " (space, newline, space)
   func testMinimalSeed0x12345678_Step82() throws {
-    let testView = createTestEditorView()
+    let testView = createIntegrationTestEditorView()
     let editor = testView.editor
     let textView = testView.view.textView
     setupWindowWithView(testView)

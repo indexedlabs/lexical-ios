@@ -19,12 +19,27 @@ import XCTest
 @MainActor
 final class NativeSelectionSyncParityTests: XCTestCase {
 
+  private func makeSelectionTestView() -> (
+    testView: TestEditorView,
+    tearDown: @MainActor () -> Void
+  ) {
+    #if os(macOS) && !targetEnvironment(macCatalyst)
+    let testView = createTestEditorView()
+    return (testView, {})
+    #else
+    let harness = ReconcilerIntegrationHarness(testCase: self)
+    let testView = harness.createTestView()
+    return (testView, { harness.tearDown() })
+    #endif
+  }
+
   private func applyNativeSelectionChange(_ testView: TestEditorView) {
     #if os(macOS) && !targetEnvironment(macCatalyst)
     testView.view.textView.handleSelectionChange()
     #else
     let textView = testView.view.textView
     textView.delegate?.textViewDidChangeSelection?(textView)
+    drainMainQueue()
     #endif
   }
 
@@ -58,8 +73,9 @@ final class NativeSelectionSyncParityTests: XCTestCase {
   /// outside of `editor.read {}`, causing the conversion to fail because
   /// `getNodeByKey` requires an active Lexical context.
   func testNativeSelectionChangeUpdatesLexicalSelection() throws {
-    // Create a test editor view
-    let testView = createTestEditorView()
+    let mounted = makeSelectionTestView()
+    defer { mounted.tearDown() }
+    let testView = mounted.testView
     let editor = testView.editor
 
     // Add some content: "Hello World"
@@ -125,7 +141,9 @@ final class NativeSelectionSyncParityTests: XCTestCase {
 
   /// Test that selecting a range in native view updates Lexical selection.
   func testNativeRangeSelectionUpdatesLexicalSelection() throws {
-    let testView = createTestEditorView()
+    let mounted = makeSelectionTestView()
+    defer { mounted.tearDown() }
+    let testView = mounted.testView
     let editor = testView.editor
 
     // Add content
@@ -170,7 +188,9 @@ final class NativeSelectionSyncParityTests: XCTestCase {
   /// This test verifies that when text is selected in the native view and backspace
   /// is pressed, the entire selection is deleted (not just a single character).
   func testBackspaceDeletesSelectedRange() throws {
-    let testView = createTestEditorView()
+    let mounted = makeSelectionTestView()
+    defer { mounted.tearDown() }
+    let testView = mounted.testView
     let editor = testView.editor
 
     // Add content: "Hello World"
@@ -221,7 +241,9 @@ final class NativeSelectionSyncParityTests: XCTestCase {
   /// This reproduces a bug where "selecting text + backspace doesn't delete consistently
   /// (works first time, then only deletes single character)".
   func testRepeatedSelectAndBackspace() throws {
-    let testView = createTestEditorView()
+    let mounted = makeSelectionTestView()
+    defer { mounted.tearDown() }
+    let testView = mounted.testView
     let editor = testView.editor
 
     // Add content: "AAABBBCCC"
@@ -269,7 +291,9 @@ final class NativeSelectionSyncParityTests: XCTestCase {
   /// that are separate from the main selection sync bug. This test uses separate
   /// paragraphs to avoid that complexity.
   func testNativeSelectionWithMultipleParagraphs() throws {
-    let testView = createTestEditorView()
+    let mounted = makeSelectionTestView()
+    defer { mounted.tearDown() }
+    let testView = mounted.testView
     let editor = testView.editor
 
     // Add content with two paragraphs: "Hello" and "World"
@@ -317,7 +341,9 @@ final class NativeSelectionSyncParityTests: XCTestCase {
   }
 
   func testTypingInsertsTextAndKeepsSelectionInSync() throws {
-    let testView = createTestEditorView()
+    let mounted = makeSelectionTestView()
+    defer { mounted.tearDown() }
+    let testView = mounted.testView
     let editor = testView.editor
 
     var textNodeKey: NodeKey = ""
@@ -376,7 +402,9 @@ final class NativeSelectionSyncParityTests: XCTestCase {
   }
 
   func testInsertNewlineThenMoveCaretAndTypeKeepsSelectionInSync() throws {
-    let testView = createTestEditorView()
+    let mounted = makeSelectionTestView()
+    defer { mounted.tearDown() }
+    let testView = mounted.testView
     let editor = testView.editor
 
     try editor.update {

@@ -279,7 +279,15 @@ public class TextStorage: NSTextStorage, ReconcilerTextStorage {
       // Display-only attribute change: update backing store directly and
       // invalidate display without going through edited() → processEditing()
       // → layout manager invalidateLayout pipeline.
+      //
+      // During an active character replacement, `NSMutableAttributedString`
+      // calls back into `setAttributes` while the layout manager still reflects
+      // the pre-edit glyph tree. Invalidating display in that window can force
+      // layout against stale glyph indexes and crash on cross-node deletes.
       backingAttributedString.setAttributes(attrs, range: safe)
+      if editingDepth > 0 {
+        return
+      }
       for lm in layoutManagers {
         lm.invalidateDisplay(forCharacterRange: safe)
       }

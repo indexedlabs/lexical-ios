@@ -8,115 +8,62 @@ import UniformTypeIdentifiers
 @MainActor
 final class ReconcilerUsageSmokeTests: XCTestCase {
 
-  private var window: UIWindow?
-
-  override func tearDown() {
-    window?.isHidden = true
-    window?.rootViewController = nil
-    window = nil
-    super.tearDown()
-  }
-
-  private func drainMainQueue(timeout: TimeInterval = 2) {
-    let exp = expectation(description: "drain main queue")
-    DispatchQueue.main.async { exp.fulfill() }
-    wait(for: [exp], timeout: timeout)
-  }
-
-  private func setupWindowWithView(_ view: TestEditorView) {
-    window?.isHidden = true
-    window?.rootViewController = nil
-
-    let newWindow = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
-    let root = UIViewController()
-    newWindow.rootViewController = root
-    newWindow.makeKeyAndVisible()
-
-    root.view.addSubview(view.view)
-    view.view.frame = newWindow.bounds
-    view.view.layoutIfNeeded()
-
-    window = newWindow
-  }
-
-  private func syncSelection(_ textView: UITextView) {
-    textView.delegate?.textViewDidChangeSelection?(textView)
-  }
-
-  private func assertTextParity(_ editor: Editor, _ textView: UITextView, file: StaticString = #file, line: UInt = #line) throws {
-    var lexical = ""
-    try editor.read { lexical = getRoot()?.getTextContent() ?? "" }
-    XCTAssertEqual(lexical, textView.text ?? "", "Native text diverged from Lexical", file: file, line: line)
-
-    let selected = textView.selectedRange
-    let length = (textView.text ?? "").lengthAsNSString()
-    XCTAssertGreaterThanOrEqual(selected.location, 0, file: file, line: line)
-    XCTAssertGreaterThanOrEqual(selected.length, 0, file: file, line: line)
-    XCTAssertLessThanOrEqual(selected.location, length, file: file, line: line)
-    XCTAssertLessThanOrEqual(selected.location + selected.length, length, file: file, line: line)
-  }
-
-  private func makeUniquePasteboard() -> (pasteboard: UIPasteboard, name: UIPasteboard.Name)? {
-    let name = UIPasteboard.Name("lexical-tests-\(UUID().uuidString)")
-    guard let pasteboard = UIPasteboard(name: name, create: true) else { return nil }
-    pasteboard.items = []
-    return (pasteboard, name)
-  }
-
   func testDeterministicEditingScenario_MaintainsTextParityAndSelectionBounds() throws {
-    let testView = createTestEditorView()
+    let harness = ReconcilerIntegrationHarness(testCase: self)
+    defer { harness.tearDown() }
+
+    let testView = harness.createTestView()
     let editor = testView.editor
     let textView = testView.view.textView
-    setupWindowWithView(testView)
-    textView.becomeFirstResponder()
 
     textView.insertText("Hello")
-    drainMainQueue()
-    try assertTextParity(editor, textView)
+    harness.drainMainQueue()
+    try harness.assertTextParity(editor, textView)
 
     // Move caret into the middle and insert.
     textView.selectedRange = NSRange(location: 2, length: 0)
-    syncSelection(textView)
+    harness.syncSelection(textView)
     textView.insertText("X")
-    drainMainQueue()
+    harness.drainMainQueue()
     XCTAssertEqual(textView.text, "HeXllo")
-    try assertTextParity(editor, textView)
+    try harness.assertTextParity(editor, textView)
 
     // Insert paragraph break (Return) and keep typing.
     textView.insertText("\n")
-    drainMainQueue()
+    harness.drainMainQueue()
     textView.insertText("Y")
-    drainMainQueue()
+    harness.drainMainQueue()
     XCTAssertEqual(textView.text, "HeX\nYllo")
-    try assertTextParity(editor, textView)
+    try harness.assertTextParity(editor, textView)
 
     // Select across the newline and delete (exercise range delete across paragraph boundary).
     let newlineLoc = (textView.text as NSString?)?.range(of: "\n").location ?? NSNotFound
     XCTAssertNotEqual(newlineLoc, NSNotFound)
     textView.selectedRange = NSRange(location: newlineLoc, length: 2) // "\nY"
-    syncSelection(textView)
+    harness.syncSelection(textView)
     textView.deleteBackward()
-    drainMainQueue()
+    harness.drainMainQueue()
     XCTAssertEqual(textView.text, "HeXllo")
-    try assertTextParity(editor, textView)
+    try harness.assertTextParity(editor, textView)
 
     // Move caret to end and backspace once.
     textView.selectedRange = NSRange(location: (textView.text as NSString?)?.length ?? 0, length: 0)
-    syncSelection(textView)
+    harness.syncSelection(textView)
     textView.deleteBackward()
-    drainMainQueue()
+    harness.drainMainQueue()
     XCTAssertEqual(textView.text, "HeXll")
-    try assertTextParity(editor, textView)
+    try harness.assertTextParity(editor, textView)
   }
 
   func testStartOfDocPasteThenNewlineThenBackspace_JoinsParagraphsAndKeepsParity() throws {
-    let testView = createTestEditorView()
+    let harness = ReconcilerIntegrationHarness(testCase: self)
+    defer { harness.tearDown() }
+
+    let testView = harness.createTestView()
     let editor = testView.editor
     let textView = testView.view.textView
-    setupWindowWithView(testView)
-    textView.becomeFirstResponder()
 
-    guard let (pasteboard, pasteboardName) = makeUniquePasteboard() else {
+    guard let (pasteboard, pasteboardName) = harness.makeUniquePasteboard() else {
       XCTFail("Could not create a unique pasteboard")
       return
     }
@@ -124,71 +71,73 @@ final class ReconcilerUsageSmokeTests: XCTestCase {
     textView.pasteboard = pasteboard
 
     textView.insertText("World")
-    drainMainQueue()
-    try assertTextParity(editor, textView)
+    harness.drainMainQueue()
+    try harness.assertTextParity(editor, textView)
 
     // Go to start of document and paste.
     textView.selectedRange = NSRange(location: 0, length: 0)
-    syncSelection(textView)
+    harness.syncSelection(textView)
     pasteboard.string = "Hello "
     textView.paste(nil)
-    drainMainQueue()
+    harness.drainMainQueue()
     XCTAssertEqual(textView.text, "Hello World")
-    try assertTextParity(editor, textView)
+    try harness.assertTextParity(editor, textView)
 
     // Insert a newline after "Hello".
     let helloLen = ("Hello" as NSString).length
     textView.selectedRange = NSRange(location: helloLen, length: 0)
-    syncSelection(textView)
+    harness.syncSelection(textView)
     textView.insertText("\n")
-    drainMainQueue()
+    harness.drainMainQueue()
     XCTAssertEqual(textView.text, "Hello\n World")
-    try assertTextParity(editor, textView)
+    try harness.assertTextParity(editor, textView)
 
     // Move to the start of the second paragraph and backspace to join.
     let newlineLoc = (textView.text as NSString?)?.range(of: "\n").location ?? NSNotFound
     XCTAssertNotEqual(newlineLoc, NSNotFound)
     textView.selectedRange = NSRange(location: newlineLoc + 1, length: 0)
-    syncSelection(textView)
+    harness.syncSelection(textView)
     textView.deleteBackward()
-    drainMainQueue()
+    harness.drainMainQueue()
     XCTAssertEqual(textView.text, "Hello World")
-    try assertTextParity(editor, textView)
+    try harness.assertTextParity(editor, textView)
   }
 
   func testReplaceSelectionByTyping_ReplacesRangeAndKeepsParity() throws {
-    let testView = createTestEditorView()
+    let harness = ReconcilerIntegrationHarness(testCase: self)
+    defer { harness.tearDown() }
+
+    let testView = harness.createTestView()
     let editor = testView.editor
     let textView = testView.view.textView
-    setupWindowWithView(testView)
-    textView.becomeFirstResponder()
 
     textView.insertText("HelloWorld")
-    drainMainQueue()
-    try assertTextParity(editor, textView)
+    harness.drainMainQueue()
+    try harness.assertTextParity(editor, textView)
 
     // Select "World" and replace it by typing.
     let native = (textView.text ?? "") as NSString
     let worldRange = native.range(of: "World")
     XCTAssertNotEqual(worldRange.location, NSNotFound)
     textView.selectedRange = worldRange
-    syncSelection(textView)
+    harness.syncSelection(textView)
 
     textView.insertText("X")
-    drainMainQueue()
+    harness.drainMainQueue()
 
     XCTAssertEqual(textView.text, "HelloX")
-    try assertTextParity(editor, textView)
+    try harness.assertTextParity(editor, textView)
   }
 
   func testReplaceSelectionSpanningNewlineByPaste_ReplacesRangeAndKeepsParity() throws {
-    let testView = createTestEditorView()
+    let harness = ReconcilerIntegrationHarness(testCase: self)
+    defer { harness.tearDown() }
+
+    let testView = harness.createTestView()
     let editor = testView.editor
     let textView = testView.view.textView
-    setupWindowWithView(testView)
-    textView.becomeFirstResponder()
 
-    guard let (pasteboard, pasteboardName) = makeUniquePasteboard() else {
+    guard let (pasteboard, pasteboardName) = harness.makeUniquePasteboard() else {
       XCTFail("Could not create a unique pasteboard")
       return
     }
@@ -196,8 +145,8 @@ final class ReconcilerUsageSmokeTests: XCTestCase {
     textView.pasteboard = pasteboard
 
     textView.insertText("AA\nBB")
-    drainMainQueue()
-    try assertTextParity(editor, textView)
+    harness.drainMainQueue()
+    try harness.assertTextParity(editor, textView)
 
     // Select across the newline: "A\nB"
     let native = (textView.text ?? "") as NSString
@@ -208,66 +157,68 @@ final class ReconcilerUsageSmokeTests: XCTestCase {
     let start = aLoc + 1
     let end = newlineLoc + 2
     textView.selectedRange = NSRange(location: start, length: max(0, end - start))
-    syncSelection(textView)
+    harness.syncSelection(textView)
 
     pasteboard.string = "X"
     textView.paste(nil)
-    drainMainQueue()
+    harness.drainMainQueue()
 
     XCTAssertEqual(textView.text, "AXB")
-    try assertTextParity(editor, textView)
+    try harness.assertTextParity(editor, textView)
   }
 
   func testEmojiGraphemeRangeDelete_DoesNotCrashAndKeepsParity() throws {
-    let testView = createTestEditorView()
+    let harness = ReconcilerIntegrationHarness(testCase: self)
+    defer { harness.tearDown() }
+
+    let testView = harness.createTestView()
     let editor = testView.editor
     let textView = testView.view.textView
-    setupWindowWithView(testView)
-    textView.becomeFirstResponder()
 
     let emoji = "👨‍👩‍👧‍👦"
     textView.insertText("a\(emoji)b")
-    drainMainQueue()
-    try assertTextParity(editor, textView)
+    harness.drainMainQueue()
+    try harness.assertTextParity(editor, textView)
 
     let prefixLen = ("a" as NSString).length
     let emojiLen = (emoji as NSString).length
 
     // Delete the emoji by selecting its full UTF-16 range.
     textView.selectedRange = NSRange(location: prefixLen, length: emojiLen)
-    syncSelection(textView)
+    harness.syncSelection(textView)
     textView.deleteBackward()
-    drainMainQueue()
+    harness.drainMainQueue()
 
     XCTAssertEqual(textView.text, "ab")
-    try assertTextParity(editor, textView)
+    try harness.assertTextParity(editor, textView)
 
     // Reinsert and delete with a boundary backspace.
     textView.selectedRange = NSRange(location: 1, length: 0)
-    syncSelection(textView)
+    harness.syncSelection(textView)
     textView.insertText(emoji)
-    drainMainQueue()
+    harness.drainMainQueue()
     XCTAssertEqual(textView.text, "a\(emoji)b")
-    try assertTextParity(editor, textView)
+    try harness.assertTextParity(editor, textView)
 
     textView.selectedRange = NSRange(location: prefixLen + emojiLen, length: 0)
-    syncSelection(textView)
+    harness.syncSelection(textView)
     textView.deleteBackward()
-    drainMainQueue()
+    harness.drainMainQueue()
 
     XCTAssertEqual(textView.text, "ab")
-    try assertTextParity(editor, textView)
+    try harness.assertTextParity(editor, textView)
   }
 
   func testCopyPasteRoundTrip_PreservesTextAndFormattingAndDoesNotCrash() throws {
+    let harness = ReconcilerIntegrationHarness(testCase: self)
+    defer { harness.tearDown() }
+
     // Source editor/view
-    let source = createTestEditorView()
+    let source = harness.createTestView()
     let sourceEditor = source.editor
     let sourceTextView = source.view.textView
-    setupWindowWithView(source)
-    sourceTextView.becomeFirstResponder()
 
-    guard let (pasteboard, pasteboardName) = makeUniquePasteboard() else {
+    guard let (pasteboard, pasteboardName) = harness.makeUniquePasteboard() else {
       XCTFail("Could not create a unique pasteboard")
       return
     }
@@ -276,41 +227,39 @@ final class ReconcilerUsageSmokeTests: XCTestCase {
 
     // Insert some content through the native input path.
     sourceTextView.insertText("Hello\nWorld")
-    drainMainQueue()
-    try assertTextParity(sourceEditor, sourceTextView)
+    harness.drainMainQueue()
+    try harness.assertTextParity(sourceEditor, sourceTextView)
 
     // Select "World" and toggle bold via the command path (exercises formatting + reconciliation).
     let native = (sourceTextView.text ?? "") as NSString
     let worldRange = native.range(of: "World")
     XCTAssertNotEqual(worldRange.location, NSNotFound)
     sourceTextView.selectedRange = worldRange
-    syncSelection(sourceTextView)
+    harness.syncSelection(sourceTextView)
 
     _ = sourceEditor.dispatchCommand(type: .formatText, payload: TextFormatType.bold)
-    drainMainQueue()
+    harness.drainMainQueue()
 
     // Append a character to create a mixed-format run that must reconcile correctly.
     let endLoc = (sourceTextView.text as NSString?)?.length ?? 0
     sourceTextView.selectedRange = NSRange(location: endLoc, length: 0)
-    syncSelection(sourceTextView)
+    harness.syncSelection(sourceTextView)
     sourceTextView.insertText("!")
-    drainMainQueue()
+    harness.drainMainQueue()
 
-    try assertTextParity(sourceEditor, sourceTextView)
+    try harness.assertTextParity(sourceEditor, sourceTextView)
     let expectedText = sourceTextView.text ?? ""
 
     // Copy everything to the pasteboard (exercises Lexical node serialization path).
     sourceTextView.selectedRange = NSRange(location: 0, length: (expectedText as NSString).length)
-    syncSelection(sourceTextView)
+    harness.syncSelection(sourceTextView)
     sourceTextView.copy(nil)
-    drainMainQueue()
+    harness.drainMainQueue()
 
     // Destination editor/view
-    let dest = createTestEditorView()
+    let dest = harness.createTestView()
     let destEditor = dest.editor
     let destTextView = dest.view.textView
-    setupWindowWithView(dest)
-    destTextView.becomeFirstResponder()
     destTextView.pasteboard = pasteboard
 
     // Ensure a deterministic initial selection for paste paths that require a RangeSelection.
@@ -323,15 +272,15 @@ final class ReconcilerUsageSmokeTests: XCTestCase {
       try root.append([paragraph])
       _ = try textNode.select(anchorOffset: 0, focusOffset: 0)
     }
-    drainMainQueue()
+    harness.drainMainQueue()
 
     destTextView.selectedRange = NSRange(location: 0, length: 0)
-    syncSelection(destTextView)
+    harness.syncSelection(destTextView)
     destTextView.paste(nil)
-    drainMainQueue(timeout: 5)
+    harness.drainMainQueue(timeout: 5)
 
     XCTAssertEqual(destTextView.text, expectedText)
-    try assertTextParity(destEditor, destTextView)
+    try harness.assertTextParity(destEditor, destTextView)
 
     // Assert we preserved at least some bold formatting in the model.
     var hasBold = false
@@ -347,11 +296,12 @@ final class ReconcilerUsageSmokeTests: XCTestCase {
   }
 
   func testDecoratorInsertionThenDeletion_DoesNotCrashAndRemovesNode() throws {
-    let testView = createTestEditorView()
+    let harness = ReconcilerIntegrationHarness(testCase: self)
+    defer { harness.tearDown() }
+
+    let testView = harness.createTestView()
     let editor = testView.editor
     let textView = testView.view.textView
-    setupWindowWithView(testView)
-    textView.becomeFirstResponder()
 
     var decoratorKey: NodeKey = ""
     try editor.update {
@@ -368,7 +318,7 @@ final class ReconcilerUsageSmokeTests: XCTestCase {
       try paragraph.append([a, decorator, b])
       try root.append([paragraph])
     }
-    drainMainQueue()
+    harness.drainMainQueue()
 
     // Select the decorator attachment range and delete it.
     var decoratorRange: NSRange?
@@ -381,11 +331,11 @@ final class ReconcilerUsageSmokeTests: XCTestCase {
     }
 
     textView.selectedRange = decoratorRange
-    syncSelection(textView)
+    harness.syncSelection(textView)
     textView.deleteBackward()
-    drainMainQueue(timeout: 5)
+    harness.drainMainQueue(timeout: 5)
 
-    try assertTextParity(editor, textView)
+    try harness.assertTextParity(editor, textView)
     XCTAssertEqual(textView.text, "AB")
 
     var decoratorStillExists = false

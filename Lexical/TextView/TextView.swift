@@ -171,15 +171,23 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
       self.interceptNextTypingAttributes = nil
     }
 
-    let originalRect = super.caretRect(for: position)
-    return CaretAndSelectionRectsAdjuster.adjustCaretRect(originalRect, for: position, in: self)
+    guard let safePosition = clampedTextPosition(position) else {
+      return .zero
+    }
+
+    let originalRect = super.caretRect(for: safePosition)
+    return CaretAndSelectionRectsAdjuster.adjustCaretRect(originalRect, for: safePosition, in: self)
   }
 
   override public func selectionRects(for range: UITextRange) -> [UITextSelectionRect] {
     let largeSelectionCharacterThreshold = 10_000
 
-    let startOffset = offset(from: beginningOfDocument, to: range.start)
-    let endOffset = offset(from: beginningOfDocument, to: range.end)
+    guard let safeSelection = clampedSelectionRange(range) else {
+      return []
+    }
+
+    let startOffset = safeSelection.originalStartOffset
+    let endOffset = safeSelection.originalEndOffset
     let selectionLength = abs(endOffset - startOffset)
 
     // For very large selections (e.g. Select All on a large document), avoid asking TextKit to compute
@@ -221,8 +229,22 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
       )
     }
 
-    let originalRects = super.selectionRects(for: range)
-    return CaretAndSelectionRectsAdjuster.adjustSelectionRects(originalRects, for: range, in: self)
+    let safeRange = safeSelection.range
+    let safeStart = safeSelection.safeStartOffset
+    let safeEnd = safeSelection.safeEndOffset
+    let originalRects = super.selectionRects(for: safeRange)
+    if safeSelection.wasClamped {
+      return CaretAndSelectionRectsAdjuster.adjustSelectionRects(
+        originalRects,
+        for: safeRange,
+        in: self,
+        originalSelectionStartOffset: startOffset,
+        originalSelectionEndOffset: endOffset,
+        clampedSelectionStartOffset: safeStart,
+        clampedSelectionEndOffset: safeEnd
+      )
+    }
+    return CaretAndSelectionRectsAdjuster.adjustSelectionRects(originalRects, for: safeRange, in: self)
   }
 
   // MARK: - Incoming events
@@ -580,11 +602,12 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
     let previousSelectedRange = selectedRange
 
     if let range = nativeSelection.range {
-      selectedRange = range
-      if range.location != previousSelectedRange.location || range.length != previousSelectedRange.length {
+      let safeRange = clampedRangeToDocument(range)
+      selectedRange = safeRange
+      if safeRange.location != previousSelectedRange.location || safeRange.length != previousSelectedRange.length {
         let delta =
-          abs(range.location - previousSelectedRange.location)
-          + abs(range.length - previousSelectedRange.length)
+          abs(safeRange.location - previousSelectedRange.location)
+          + abs(safeRange.length - previousSelectedRange.length)
         if delta <= 2048 {
           requestScrollSelectionToVisible()
         }
@@ -617,7 +640,7 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
     pendingScrollSelectionWorkItem?.cancel()
     let work = DispatchWorkItem { [weak self] in
       guard let self, self.window != nil, self.isScrollEnabled else { return }
-      let rangeToScroll = self.selectedRange
+      let rangeToScroll = self.clampedRangeToDocument(self.selectedRange)
       let len = self.textStorage.length
 
       // Ensure the caret range is laid out (especially with non-contiguous layout) so that
@@ -661,6 +684,49 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
     }
     pendingScrollSelectionWorkItem = work
     DispatchQueue.main.async(execute: work)
+  }
+
+  private func clampedRangeToDocument(_ range: NSRange) -> NSRange {
+    let length = textStorage.length
+    let start = max(0, min(range.location, length))
+    let end = max(start, min(range.location + range.length, length))
+    return NSRange(location: start, length: end - start)
+  }
+
+  private func clampedTextPosition(_ position: UITextPosition) -> UITextPosition? {
+    let rawOffset = offset(from: beginningOfDocument, to: position)
+    guard rawOffset != NSNotFound else { return nil }
+    let clampedOffset = clampedRangeToDocument(NSRange(location: rawOffset, length: 0)).location
+    return self.position(from: beginningOfDocument, offset: clampedOffset)
+  }
+
+  private func clampedSelectionRange(_ range: UITextRange) -> (
+    range: UITextRange,
+    originalStartOffset: Int,
+    originalEndOffset: Int,
+    safeStartOffset: Int,
+    safeEndOffset: Int,
+    wasClamped: Bool
+  )? {
+    let originalStartOffset = offset(from: beginningOfDocument, to: range.start)
+    let originalEndOffset = offset(from: beginningOfDocument, to: range.end)
+    guard originalStartOffset != NSNotFound, originalEndOffset != NSNotFound else {
+      return nil
+    }
+
+    let safeStartOffset = clampedRangeToDocument(NSRange(location: originalStartOffset, length: 0)).location
+    let safeEndOffset = clampedRangeToDocument(NSRange(location: originalEndOffset, length: 0)).location
+    let wasClamped = safeStartOffset != originalStartOffset || safeEndOffset != originalEndOffset
+
+    guard
+      let safeStart = position(from: beginningOfDocument, offset: safeStartOffset),
+      let safeEnd = position(from: beginningOfDocument, offset: safeEndOffset),
+      let safeRange = textRange(from: safeStart, to: safeEnd)
+    else {
+      return nil
+    }
+
+    return (safeRange, originalStartOffset, originalEndOffset, safeStartOffset, safeEndOffset, wasClamped)
   }
 
   func defaultClearEditor() throws {

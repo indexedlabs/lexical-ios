@@ -759,8 +759,10 @@ class SelectionTests: XCTestCase {
   // This test relies on insertText behavior after newline which differs on AppKit
   // TODO: Investigate AppKit insertText behavior after inserting newline
   func testDeleteTextAcrossTwoNodes() throws {
-    let view = makeLexicalView()
-    let textView = view.textView
+    let harness = ReconcilerIntegrationHarness(testCase: self)
+    defer { harness.tearDown() }
+    let testView = harness.createTestView()
+    let textView = testView.view.textView
 
     textView.insertText("Hello world")
     XCTAssertEqual(textView.text, "Hello world", "Expected hello world")
@@ -769,10 +771,11 @@ class SelectionTests: XCTestCase {
     textView.insertText("here's para 2")
     XCTAssertEqual(textView.text, "Hello world\nhere's para 2", "Expected hello world")
     textView.selectedRange = NSRange(location: 5, length: 9)
+    harness.syncSelection(textView)
     textView.deleteBackward()
     XCTAssertEqual(textView.text, "Hellore's para 2", "Reading via UIKit should work")
 
-    try textView.editor.getEditorState().read {
+    try testView.editor.getEditorState().read {
       guard let node = getActiveEditorState()?.getRootNode()?.getFirstDescendant() as? TextNode else {
         XCTFail()
         return

@@ -23,10 +23,12 @@ class TestEditorView {
   private let lexicalView: LexicalAppKit.LexicalView
 
   init(editorConfig: EditorConfig = EditorConfig(theme: Theme(), plugins: []),
-       featureFlags: FeatureFlags = FeatureFlags()) {
+       featureFlags: FeatureFlags = FeatureFlags(),
+       placeholderText: LexicalPlaceholderText? = nil) {
     self.lexicalView = LexicalAppKit.LexicalView(
       editorConfig: editorConfig,
-      featureFlags: featureFlags
+      featureFlags: featureFlags,
+      placeholderText: placeholderText
     )
   }
 
@@ -41,10 +43,12 @@ class TestEditorView {
   private let lexicalView: Lexical.LexicalView
 
   init(editorConfig: EditorConfig = EditorConfig(theme: Theme(), plugins: []),
-       featureFlags: FeatureFlags = FeatureFlags()) {
+       featureFlags: FeatureFlags = FeatureFlags(),
+       placeholderText: LexicalPlaceholderText? = nil) {
     self.lexicalView = Lexical.LexicalView(
       editorConfig: editorConfig,
-      featureFlags: featureFlags
+      featureFlags: featureFlags,
+      placeholderText: placeholderText
     )
   }
 
@@ -195,11 +199,13 @@ class TestEditorView {
 func createTestEditorView(
   theme: Theme = Theme(),
   plugins: [Plugin] = [],
-  featureFlags: FeatureFlags = FeatureFlags()
+  featureFlags: FeatureFlags = FeatureFlags(),
+  placeholderText: LexicalPlaceholderText? = nil
 ) -> TestEditorView {
   return TestEditorView(
     editorConfig: EditorConfig(theme: theme, plugins: plugins),
-    featureFlags: featureFlags
+    featureFlags: featureFlags,
+    placeholderText: placeholderText
   )
 }
 
@@ -207,10 +213,12 @@ func createTestEditorView(
 @MainActor
 func createOptimizedTestEditorView(
   theme: Theme = Theme(),
-  plugins: [Plugin] = []
+  plugins: [Plugin] = [],
+  placeholderText: LexicalPlaceholderText? = nil
 ) -> TestEditorView {
   return TestEditorView(
     editorConfig: EditorConfig(theme: theme, plugins: plugins),
-    featureFlags: FeatureFlags()
+    featureFlags: FeatureFlags(),
+    placeholderText: placeholderText
   )
 }

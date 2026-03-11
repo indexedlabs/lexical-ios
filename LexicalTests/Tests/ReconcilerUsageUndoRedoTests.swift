@@ -4,98 +4,160 @@
 import XCTest
 @testable import Lexical
 import EditorHistoryPlugin
+import LexicalLinkPlugin
+import LexicalListPlugin
 
 @MainActor
 final class ReconcilerUsageUndoRedoTests: XCTestCase {
 
-  private var window: UIWindow?
-
-  override func tearDown() {
-    window?.isHidden = true
-    window?.rootViewController = nil
-    window = nil
-    super.tearDown()
-  }
-
-  private func drainMainQueue(timeout: TimeInterval = 2) {
-    let exp = expectation(description: "drain main queue")
-    DispatchQueue.main.async { exp.fulfill() }
-    wait(for: [exp], timeout: timeout)
-  }
-
-  private func setupWindowWithView(_ view: TestEditorView) {
-    window?.isHidden = true
-    window?.rootViewController = nil
-
-    let newWindow = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
-    let root = UIViewController()
-    newWindow.rootViewController = root
-    newWindow.makeKeyAndVisible()
-
-    root.view.addSubview(view.view)
-    view.view.frame = newWindow.bounds
-    view.view.layoutIfNeeded()
-
-    window = newWindow
-  }
-
-  private func syncSelection(_ textView: UITextView) {
-    textView.delegate?.textViewDidChangeSelection?(textView)
-  }
-
-  private func assertTextParity(_ editor: Editor, _ textView: UITextView, file: StaticString = #file, line: UInt = #line) throws {
-    var lexical = ""
-    try editor.read { lexical = getRoot()?.getTextContent() ?? "" }
-    XCTAssertEqual(lexical, textView.text ?? "", "Native text diverged from Lexical", file: file, line: line)
-
-    let selected = textView.selectedRange
-    let length = (textView.text ?? "").lengthAsNSString()
-    XCTAssertGreaterThanOrEqual(selected.location, 0, file: file, line: line)
-    XCTAssertGreaterThanOrEqual(selected.length, 0, file: file, line: line)
-    XCTAssertLessThanOrEqual(selected.location, length, file: file, line: line)
-    XCTAssertLessThanOrEqual(selected.location + selected.length, length, file: file, line: line)
-  }
-
   func testUndoRedoAfterNativeTyping_KeepsParity() throws {
+    let harness = ReconcilerIntegrationHarness(testCase: self)
+    defer { harness.tearDown() }
+
     let history = EditorHistoryPlugin()
-    let testView = createTestEditorView(plugins: [history])
+    let testView = harness.createTestView(plugins: [history])
     let editor = testView.editor
     let textView = testView.view.textView
-    setupWindowWithView(testView)
-    textView.becomeFirstResponder()
 
     textView.insertText("Hello")
-    drainMainQueue()
-    try assertTextParity(editor, textView)
+    harness.drainMainQueue()
+    try harness.assertTextParity(editor, textView)
     XCTAssertTrue(history.canUndo)
     XCTAssertFalse(history.canRedo)
 
     textView.insertText("!")
-    drainMainQueue()
-    try assertTextParity(editor, textView)
+    harness.drainMainQueue()
+    try harness.assertTextParity(editor, textView)
     XCTAssertEqual(textView.text, "Hello!")
     XCTAssertTrue(history.canUndo)
     XCTAssertFalse(history.canRedo)
 
     _ = editor.dispatchCommand(type: .undo)
-    drainMainQueue()
-    try assertTextParity(editor, textView)
+    harness.drainMainQueue()
+    try harness.assertTextParity(editor, textView)
     XCTAssertEqual(textView.text, "Hello")
     XCTAssertTrue(history.canUndo)
     XCTAssertTrue(history.canRedo)
 
     _ = editor.dispatchCommand(type: .redo)
-    drainMainQueue()
-    try assertTextParity(editor, textView)
+    harness.drainMainQueue()
+    try harness.assertTextParity(editor, textView)
     XCTAssertEqual(textView.text, "Hello!")
     XCTAssertTrue(history.canUndo)
     XCTAssertFalse(history.canRedo)
 
     // Ensure selection remains valid after history operations.
     textView.selectedRange = NSRange(location: (textView.text as NSString?)?.length ?? 0, length: 0)
-    syncSelection(textView)
-    drainMainQueue()
-    try assertTextParity(editor, textView)
+    harness.syncSelection(textView)
+    harness.drainMainQueue()
+    try harness.assertTextParity(editor, textView)
+  }
+
+  func testUndoRedoAfterListTransform_KeepsParity() throws {
+    let harness = ReconcilerIntegrationHarness(testCase: self)
+    defer { harness.tearDown() }
+
+    let history = EditorHistoryPlugin()
+    let list = ListPlugin()
+    let testView = harness.createTestView(plugins: [history, list])
+    let editor = testView.editor
+    let textView = testView.view.textView
+
+    textView.insertText("One\nTwo")
+    harness.drainMainQueue()
+    try harness.assertTextParity(editor, textView)
+
+    textView.selectedRange = NSRange(location: 0, length: (textView.text as NSString?)?.length ?? 0)
+    harness.syncSelection(textView)
+    XCTAssertTrue(editor.dispatchCommand(type: .insertUnorderedList))
+    harness.drainMainQueue()
+    try harness.assertTextParity(editor, textView)
+    XCTAssertTrue(history.canUndo)
+
+    var listCountAfterTransform = 0
+    try editor.read {
+      for node in editor.getEditorState().nodeMap.values where node is ListNode {
+        listCountAfterTransform += 1
+      }
+    }
+    XCTAssertGreaterThan(listCountAfterTransform, 0)
+
+    _ = editor.dispatchCommand(type: .undo)
+    harness.drainMainQueue()
+    try harness.assertTextParity(editor, textView)
+    XCTAssertEqual(textView.text, "One\nTwo")
+
+    var listCountAfterUndo = 0
+    try editor.read {
+      for node in editor.getEditorState().nodeMap.values where node is ListNode {
+        listCountAfterUndo += 1
+      }
+    }
+    XCTAssertEqual(listCountAfterUndo, 0)
+
+    _ = editor.dispatchCommand(type: .redo)
+    harness.drainMainQueue()
+    try harness.assertTextParity(editor, textView)
+
+    var listCountAfterRedo = 0
+    try editor.read {
+      for node in editor.getEditorState().nodeMap.values where node is ListNode {
+        listCountAfterRedo += 1
+      }
+    }
+    XCTAssertGreaterThan(listCountAfterRedo, 0)
+  }
+
+  func testUndoRedoAfterLinkToggle_KeepsParity() throws {
+    let harness = ReconcilerIntegrationHarness(testCase: self)
+    defer { harness.tearDown() }
+
+    let history = EditorHistoryPlugin()
+    let link = LinkPlugin()
+    let testView = harness.createTestView(plugins: [history, link])
+    let editor = testView.editor
+    let textView = testView.view.textView
+
+    textView.insertText("Hello World")
+    harness.drainMainQueue()
+    try harness.assertTextParity(editor, textView)
+
+    let worldRange = ((textView.text ?? "") as NSString).range(of: "World")
+    XCTAssertNotEqual(worldRange.location, NSNotFound)
+    textView.selectedRange = worldRange
+    harness.syncSelection(textView)
+
+    var selectionCopy: RangeSelection?
+    try editor.update {
+      selectionCopy = try getSelection() as? RangeSelection
+    }
+
+    XCTAssertTrue(editor.dispatchCommand(
+      type: .link,
+      payload: LinkPayload(urlString: "https://example.com", originalSelection: selectionCopy)
+    ))
+    harness.drainMainQueue()
+    try harness.assertTextParity(editor, textView)
+    XCTAssertTrue(history.canUndo)
+
+    var effectiveRange = NSRange(location: 0, length: 0)
+    let linkValue = textView.textStorage.attribute(.link, at: worldRange.location, effectiveRange: &effectiveRange) as? String
+    XCTAssertEqual(linkValue, "https://example.com")
+    XCTAssertEqual(effectiveRange.location, worldRange.location)
+    XCTAssertGreaterThanOrEqual(effectiveRange.length, worldRange.length)
+
+    _ = editor.dispatchCommand(type: .undo)
+    harness.drainMainQueue()
+    try harness.assertTextParity(editor, textView)
+    XCTAssertNil(textView.textStorage.attribute(.link, at: worldRange.location, effectiveRange: nil))
+
+    _ = editor.dispatchCommand(type: .redo)
+    harness.drainMainQueue()
+    try harness.assertTextParity(editor, textView)
+    XCTAssertEqual(
+      textView.textStorage.attribute(.link, at: worldRange.location, effectiveRange: nil) as? String,
+      "https://example.com"
+    )
   }
 }
 

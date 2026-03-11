@@ -213,7 +213,7 @@ final class ReconcilerUsageDeleteBoundaryTests: XCTestCase {
   }
 
   func testBackspaceAtStartOfParagraph_DoesNotDeleteForwardText() throws {
-    let testView = createTestEditorView()
+    let testView = createIntegrationTestEditorView()
     let editor = testView.editor
     let textView = testView.view.textView
     setupWindowWithView(testView)
@@ -258,7 +258,7 @@ final class ReconcilerUsageDeleteBoundaryTests: XCTestCase {
   }
 
   func testBackspaceAtStartOfDocument_DoesNotDeleteFirstCharacter() throws {
-    let testView = createTestEditorView()
+    let testView = createIntegrationTestEditorView()
     let editor = testView.editor
     let textView = testView.view.textView
     setupWindowWithView(testView)
@@ -282,7 +282,7 @@ final class ReconcilerUsageDeleteBoundaryTests: XCTestCase {
   }
 
   func testRepeatedBackspaceAtStartOfParagraph_DoesNotDeleteForwardText() throws {
-    let testView = createTestEditorView()
+    let testView = createIntegrationTestEditorView()
     let editor = testView.editor
     let textView = testView.view.textView
     setupWindowWithView(testView)
@@ -328,7 +328,7 @@ final class ReconcilerUsageDeleteBoundaryTests: XCTestCase {
   }
 
   func testBackspaceInEmptyParagraph_DoesNotDeleteNextParagraphText() throws {
-    let testView = createTestEditorView()
+    let testView = createIntegrationTestEditorView()
     let editor = testView.editor
     let textView = testView.view.textView
     setupWindowWithView(testView)
@@ -381,7 +381,7 @@ final class ReconcilerUsageDeleteBoundaryTests: XCTestCase {
   }
 
   func testBackspaceInEmptyParagraph_PlacesCaretBeforeNextParagraph() throws {
-    let testView = createTestEditorView()
+    let testView = createIntegrationTestEditorView()
     let editor = testView.editor
     let textView = testView.view.textView
     setupWindowWithView(testView)
@@ -426,7 +426,7 @@ final class ReconcilerUsageDeleteBoundaryTests: XCTestCase {
   }
 
   func testInsertTextInEmptyParagraph_PrefersEmptyLineOverNextParagraph() throws {
-    let testView = createTestEditorView()
+    let testView = createIntegrationTestEditorView()
     let editor = testView.editor
     let textView = testView.view.textView
     setupWindowWithView(testView)
@@ -480,7 +480,7 @@ final class ReconcilerUsageDeleteBoundaryTests: XCTestCase {
   }
 
   func testBackspaceAtStartOfTextAfterEmptyParagraph_DoesNotDeleteFirstCharacter() throws {
-    let testView = createTestEditorView()
+    let testView = createIntegrationTestEditorView()
     let editor = testView.editor
     let textView = testView.view.textView
     setupWindowWithView(testView)
@@ -522,7 +522,7 @@ final class ReconcilerUsageDeleteBoundaryTests: XCTestCase {
   }
 
   func testBackspaceAtStartOfText_AcrossMultipleEmptyParagraphs() throws {
-    let testView = createTestEditorView()
+    let testView = createIntegrationTestEditorView()
     let editor = testView.editor
     let textView = testView.view.textView
     setupWindowWithView(testView)
@@ -560,7 +560,7 @@ final class ReconcilerUsageDeleteBoundaryTests: XCTestCase {
   }
 
   func testInsertTextAtStartOfTextAfterEmptyParagraph_InsertsBeforeText() throws {
-    let testView = createTestEditorView()
+    let testView = createIntegrationTestEditorView()
     let editor = testView.editor
     let textView = testView.view.textView
     setupWindowWithView(testView)
@@ -591,7 +591,7 @@ final class ReconcilerUsageDeleteBoundaryTests: XCTestCase {
   }
 
   func testEnterThenBackspaceInMiddleOfParagraph_DoesNotDropTrailingParagraphs() throws {
-    let testView = createTestEditorView()
+    let testView = createIntegrationTestEditorView()
     let editor = testView.editor
     let textView = testView.view.textView
     setupWindowWithView(testView)
@@ -628,7 +628,7 @@ final class ReconcilerUsageDeleteBoundaryTests: XCTestCase {
   }
 
   func testBackspaceAtStartOfParagraph_AfterFenwickDeltas_DoesNotDeleteForwardText() throws {
-    let testView = createTestEditorView()
+    let testView = createIntegrationTestEditorView()
     let editor = testView.editor
     let textView = testView.view.textView
     setupWindowWithView(testView)
@@ -696,7 +696,7 @@ final class ReconcilerUsageDeleteBoundaryTests: XCTestCase {
   }
 
   func testBackspaceAtStartOfParagraph_AfterFenwickDeltasAndDFSRebuild_DoesNotDeleteForwardText() throws {
-    let testView = createTestEditorView()
+    let testView = createIntegrationTestEditorView()
     let editor = testView.editor
     let textView = testView.view.textView
     setupWindowWithView(testView)
@@ -765,7 +765,7 @@ final class ReconcilerUsageDeleteBoundaryTests: XCTestCase {
   }
 
   func testBackspaceAtStartOfParagraph_WithoutSelectionSync_DoesNotDeleteForwardText() throws {
-    let testView = createTestEditorView()
+    let testView = createIntegrationTestEditorView()
     let editor = testView.editor
     let textView = testView.view.textView
     setupWindowWithView(testView)
@@ -805,7 +805,7 @@ final class ReconcilerUsageDeleteBoundaryTests: XCTestCase {
   }
 
   func testBackspaceAtStartOfParagraph_WithLexicalElementSelection_DoesNotDeleteForwardText() throws {
-    let testView = createTestEditorView()
+    let testView = createIntegrationTestEditorView()
     let editor = testView.editor
     let textView = testView.view.textView
     setupWindowWithView(testView)
@@ -874,7 +874,7 @@ final class ReconcilerUsageDeleteBoundaryTests: XCTestCase {
   }
 
   func testEnterBackspaceChurnBeforeTrailingText_DoesNotLoseTrailingText() throws {
-    let testView = createTestEditorView()
+    let testView = createIntegrationTestEditorView()
     let editor = testView.editor
     let textView = testView.view.textView
     setupWindowWithView(testView)
@@ -936,7 +936,7 @@ final class ReconcilerUsageDeleteBoundaryTests: XCTestCase {
   }
 
   func testChurnInMiddle_DoesNotSwallowTrailingMarkerParagraph() throws {
-    let testView = createTestEditorView()
+    let testView = createIntegrationTestEditorView()
     let editor = testView.editor
     let textView = testView.view.textView
     setupWindowWithView(testView)
@@ -1005,7 +1005,7 @@ final class ReconcilerUsageDeleteBoundaryTests: XCTestCase {
   }
 
   func testSelectionRoundTripAfterFenwickDeltasDuringRapidCaretMoves() throws {
-    let testView = createTestEditorView()
+    let testView = createIntegrationTestEditorView()
     let editor = testView.editor
     let textView = testView.view.textView
     setupWindowWithView(testView)
@@ -1077,7 +1077,7 @@ final class ReconcilerUsageDeleteBoundaryTests: XCTestCase {
   }
 
   func testBackspaceAtTextNodeBoundary_DoesNotDeleteNextTextNodeFirstCharacter() throws {
-    let testView = createTestEditorView()
+    let testView = createIntegrationTestEditorView()
     let editor = testView.editor
     let textView = testView.view.textView
     setupWindowWithView(testView)
@@ -1145,7 +1145,7 @@ final class ReconcilerUsageDeleteBoundaryTests: XCTestCase {
   }
 
   func testBackspaceAtTextNodeBoundary_FromNativeSelection_DoesNotDeleteForwardText() throws {
-    let testView = createTestEditorView()
+    let testView = createIntegrationTestEditorView()
     let editor = testView.editor
     let textView = testView.view.textView
     setupWindowWithView(testView)
@@ -1196,7 +1196,7 @@ final class ReconcilerUsageDeleteBoundaryTests: XCTestCase {
   }
 
   func testInsertCharacterThenEnterThenBackspace_DoesNotDeleteForwardText() throws {
-    let testView = createTestEditorView()
+    let testView = createIntegrationTestEditorView()
     let editor = testView.editor
     let textView = testView.view.textView
     setupWindowWithView(testView)
@@ -1236,7 +1236,7 @@ final class ReconcilerUsageDeleteBoundaryTests: XCTestCase {
   }
 
   func testBackspaceAtStartOfParagraph_KeepsCaretBeforeSameText() throws {
-    let testView = createTestEditorView()
+    let testView = createIntegrationTestEditorView()
     let editor = testView.editor
     let textView = testView.view.textView
     setupWindowWithView(testView)

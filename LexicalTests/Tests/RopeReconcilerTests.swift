@@ -232,22 +232,24 @@ final class RopeReconcilerTests: XCTestCase {
 
   // MARK: 4.5 - Selection reconciliation
 
+  @MainActor
   func testSelectionState() throws {
+    #if os(macOS) && !targetEnvironment(macCatalyst)
     let view = createTestEditorView()
+    #else
+    let harness = ReconcilerIntegrationHarness(testCase: self)
+    defer { harness.tearDown() }
+    let view = harness.createTestView()
+    #endif
     let editor = view.editor
 
     try editor.update {
       guard let root = getRoot() else { return }
-      let paragraph = ParagraphNode()
-      let text = TextNode(text: "hello")
+      let paragraph = createParagraphNode()
+      let text = createTextNode(text: "hello")
       try paragraph.append([text])
       try root.append([paragraph])
-
-      // Set selection at end using the proper API
-      let anchor = Point(key: text.key, offset: 5, type: .text)
-      let focus = Point(key: text.key, offset: 5, type: .text)
-      let selection = RangeSelection(anchor: anchor, focus: focus, format: TextFormat())
-      try setSelection(selection)
+      _ = try text.select(anchorOffset: 5, focusOffset: 5)
     }
 
     try editor.read {
