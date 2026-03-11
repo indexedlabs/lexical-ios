@@ -11,3 +11,7 @@ TestResults.xcresult/
 Playground/Build
 .benchmarks/
 history
+
+.mighty/auth.json
+.mighty/exports
+.mighty/cache.db
