@@ -253,7 +253,6 @@ private func evaluateNode(
           {
             // Tie break: when the caret is between two siblings, `.forward` prefers the
             // END of the left node, `.backward` prefers the START of the right node.
-            // This matches the original linear iteration behavior.
             if searchDirection == .forward {
               firstIndex = leftIndex
               secondIndex = rightCandidate

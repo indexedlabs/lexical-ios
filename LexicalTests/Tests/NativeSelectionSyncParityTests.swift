@@ -340,6 +340,185 @@ final class NativeSelectionSyncParityTests: XCTestCase {
     XCTAssertEqual(anchorOffset, 2, "Offset should be 2 within 'World' node")
   }
 
+  func testCollapsedNativeSelectionAtSiblingBoundaryCanonicalizesToFollowingTextNode() throws {
+    let mounted = makeSelectionTestView()
+    defer { mounted.tearDown() }
+    let testView = mounted.testView
+    let editor = testView.editor
+
+    var rightTextKey: NodeKey = ""
+    try editor.update {
+      guard let root = getRoot() else { return }
+      try root.clear()
+      let paragraph = createParagraphNode()
+      let left = createTextNode(text: "AAA")
+      try left.setBold(true)
+      let right = createTextNode(text: "BBB")
+      rightTextKey = right.getKey()
+      try paragraph.append([left, right])
+      try root.append([paragraph])
+    }
+
+    testView.setSelectedRange(NSRange(location: 3, length: 0))
+    applyNativeSelectionChange(testView)
+
+    var anchorKey: NodeKey = ""
+    var focusKey: NodeKey = ""
+    var anchorOffset = -1
+    var focusOffset = -1
+    var anchorType: SelectionType = .element
+    var focusType: SelectionType = .element
+    try editor.read {
+      guard let selection = try getSelection() as? RangeSelection else {
+        XCTFail("Expected RangeSelection after boundary selection sync")
+        return
+      }
+      anchorKey = selection.anchor.key
+      focusKey = selection.focus.key
+      anchorOffset = selection.anchor.offset
+      focusOffset = selection.focus.offset
+      anchorType = selection.anchor.type
+      focusType = selection.focus.type
+    }
+
+    XCTAssertEqual(anchorKey, rightTextKey, "Collapsed boundary caret should canonicalize to the following text node")
+    XCTAssertEqual(focusKey, rightTextKey, "Collapsed boundary caret should stay collapsed on the following text node")
+    XCTAssertEqual(anchorOffset, 0)
+    XCTAssertEqual(focusOffset, 0)
+    XCTAssertEqual(anchorType, .text)
+    XCTAssertEqual(focusType, .text)
+
+    #if canImport(UIKit)
+    try assertNativeSelectionRoundTrips(editor, testView)
+    #endif
+  }
+
+  func testApplySelectionRangeAtSiblingBoundaryCanonicalizesToFollowingTextNode() throws {
+    let mounted = makeSelectionTestView()
+    defer { mounted.tearDown() }
+    let testView = mounted.testView
+    let editor = testView.editor
+
+    var rightTextKey: NodeKey = ""
+    try editor.update {
+      guard let root = getRoot() else { return }
+      try root.clear()
+      let paragraph = createParagraphNode()
+      let left = createTextNode(text: "AAA")
+      try left.setBold(true)
+      let right = createTextNode(text: "BBB")
+      rightTextKey = right.getKey()
+      try paragraph.append([left, right])
+      try root.append([paragraph])
+    }
+
+    try editor.update {
+      guard let selection = try getSelection() as? RangeSelection else {
+        XCTFail("Expected RangeSelection before applying native range")
+        return
+      }
+
+      let backwardPoint = try pointAtStringLocation(
+        3,
+        searchDirection: .backward,
+        rangeCache: editor.rangeCache
+      )
+      let forwardPoint = try pointAtStringLocation(
+        3,
+        searchDirection: .forward,
+        rangeCache: editor.rangeCache
+      )
+
+      XCTAssertNotNil(backwardPoint)
+      XCTAssertNotNil(forwardPoint)
+
+      if let backwardPoint {
+        XCTAssertEqual(
+          try stringLocationForPoint(backwardPoint, editor: editor),
+          3,
+          "Backward boundary candidate should round-trip to the native location"
+        )
+      }
+
+      if let forwardPoint {
+        XCTAssertEqual(
+          try stringLocationForPoint(forwardPoint, editor: editor),
+          3,
+          "Forward boundary candidate should round-trip to the native location"
+        )
+      }
+
+      let rightStartPoint = Point(key: rightTextKey, offset: 0, type: .text)
+      XCTAssertEqual(
+        try stringLocationForPoint(rightStartPoint, editor: editor),
+        3,
+        "Following text node should begin at the collapsed boundary location"
+      )
+
+      try selection.applySelectionRange(NSRange(location: 3, length: 0), affinity: .forward)
+
+      XCTAssertEqual(selection.anchor.key, rightTextKey)
+      XCTAssertEqual(selection.focus.key, rightTextKey)
+      XCTAssertEqual(selection.anchor.offset, 0)
+      XCTAssertEqual(selection.focus.offset, 0)
+      XCTAssertEqual(selection.anchor.type, .text)
+      XCTAssertEqual(selection.focus.type, .text)
+    }
+  }
+
+  func testNoOpUpdateRepairsNativeSelectionDrift() throws {
+    let mounted = makeSelectionTestView()
+    defer { mounted.tearDown() }
+    let testView = mounted.testView
+    let editor = testView.editor
+
+    try editor.update {
+      guard let root = getRoot() else { return }
+      try root.clear()
+      let paragraph = createParagraphNode()
+      let textNode = createTextNode(text: "Hello World")
+      try paragraph.append([textNode])
+      try root.append([paragraph])
+      _ = try textNode.select(anchorOffset: 11, focusOffset: 11)
+    }
+
+    let nativeString = testView.attributedTextString as NSString
+    let helloRange = nativeString.range(of: "Hello")
+    XCTAssertNotEqual(helloRange.location, NSNotFound)
+
+    // Simulate UIKit/native drift without informing Lexical.
+    #if canImport(UIKit)
+    let textView = testView.view.textView
+    textView.isUpdatingNativeSelection = true
+    #endif
+    testView.setSelectedRange(NSRange(location: helloRange.location + helloRange.length, length: 0))
+    #if canImport(UIKit)
+    textView.isUpdatingNativeSelection = false
+    #endif
+    XCTAssertEqual(testView.selectedRange.location, helloRange.location + helloRange.length)
+
+    try editor.read {
+      guard let selection = try getSelection() as? RangeSelection else {
+        XCTFail("Expected RangeSelection before repair")
+        return
+      }
+      XCTAssertEqual(selection.anchor.offset, 11, "Lexical selection should remain authoritative before repair")
+      XCTAssertEqual(selection.focus.offset, 11, "Lexical selection should remain authoritative before repair")
+    }
+
+    try editor.update {}
+
+    XCTAssertEqual(
+      testView.selectedRange,
+      NSRange(location: nativeString.length, length: 0),
+      "A no-op update should restore native selection to the authoritative Lexical caret"
+    )
+
+    #if canImport(UIKit)
+    try assertNativeSelectionRoundTrips(editor, testView)
+    #endif
+  }
+
   func testTypingInsertsTextAndKeepsSelectionInSync() throws {
     let mounted = makeSelectionTestView()
     defer { mounted.tearDown() }

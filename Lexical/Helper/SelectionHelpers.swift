@@ -11,7 +11,9 @@ import LexicalCore
 // Leaving commented code for later when these properties/nodes are implemented
 @MainActor
 public func cloneWithProperties<T: Node>(node: T) throws -> Node {
-  let latest = node.getLatest()
+  guard let latest: T = getNodeByKey(key: node.key) else {
+    throw LexicalError.invariantViolation("cloneWithProperties: stale node key \(node.key)")
+  }
   let clone = latest.clone()
   clone.parent = latest.parent
   if let latestTextNode = latest as? TextNode,

@@ -1275,6 +1275,84 @@ final class ReconcilerUsageDeleteBoundaryTests: XCTestCase {
     try assertSelectionRoundTrips(editor, textView)
   }
 
+  func testBackspaceAtStartOfParagraph_CanonicalizesLexicalSelectionToFollowingTextNode() throws {
+    let testView = createIntegrationTestEditorView()
+    let editor = testView.editor
+    let textView = testView.view.textView
+    setupWindowWithView(testView)
+    textView.becomeFirstResponder()
+
+    var bbbTextKey: NodeKey = ""
+    try editor.update {
+      guard let root = getRoot() else { return }
+      _ = try root.clear()
+
+      let p1 = createParagraphNode()
+      let t1 = createTextNode(text: "AAA")
+      try p1.append([t1])
+
+      let p2 = createParagraphNode()
+      let p3 = createParagraphNode()
+
+      let p4 = createParagraphNode()
+      let t4 = createTextNode(text: "BBB")
+      bbbTextKey = t4.getKey()
+      try p4.append([t4])
+
+      try root.append([p1, p2, p3, p4])
+    }
+    drainMainQueue()
+    guard try assertTextParity(editor, textView) else { return }
+
+    let before = (textView.text ?? "") as NSString
+    let bbbRange = before.range(of: "BBB", options: .backwards)
+    XCTAssertNotEqual(bbbRange.location, NSNotFound)
+
+    textView.selectedRange = NSRange(location: bbbRange.location, length: 0)
+    syncSelection(textView)
+    drainMainQueue()
+
+    textView.deleteBackward()
+    drainMainQueue()
+
+    var anchorKey: NodeKey = ""
+    var focusKey: NodeKey = ""
+    var anchorOffset = -1
+    var focusOffset = -1
+    var anchorType: SelectionType = .element
+    var focusType: SelectionType = .element
+    try editor.read {
+      guard let selection = try getSelection() as? RangeSelection else {
+        XCTFail("Expected RangeSelection")
+        return
+      }
+      anchorKey = selection.anchor.key
+      focusKey = selection.focus.key
+      anchorOffset = selection.anchor.offset
+      focusOffset = selection.focus.offset
+      anchorType = selection.anchor.type
+      focusType = selection.focus.type
+    }
+
+    XCTAssertEqual(anchorKey, bbbTextKey, "Backspace should leave Lexical selection on the following text node")
+    XCTAssertEqual(focusKey, bbbTextKey, "Backspace should leave Lexical selection collapsed on the following text node")
+    XCTAssertEqual(anchorOffset, 0)
+    XCTAssertEqual(focusOffset, 0)
+    XCTAssertEqual(anchorType, .text)
+    XCTAssertEqual(focusType, .text)
+
+    // Selection should remain stable through a selection-only reconcile cycle.
+    try editor.update {}
+    drainMainQueue()
+
+    let after = (textView.text ?? "") as NSString
+    let shiftedBBBRange = after.range(of: "BBB", options: .backwards)
+    XCTAssertNotEqual(shiftedBBBRange.location, NSNotFound)
+    XCTAssertEqual(textView.selectedRange, NSRange(location: shiftedBBBRange.location, length: 0))
+    guard try assertTextParity(editor, textView) else { return }
+    try assertSelectionRoundTrips(editor, textView)
+  }
+
   // Note: UIKit's `selectionAffinity` is read-only (no public setter), so tests should not
   // attempt to force affinity directly. We cover affinity-driven behavior via fuzz/usage tests.
 }

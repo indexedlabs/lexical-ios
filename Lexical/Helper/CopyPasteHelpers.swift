@@ -17,9 +17,9 @@ internal func setPasteboard(selection: BaseSelection, pasteboard: UIPasteboard) 
   guard let editor = getActiveEditor() else {
     throw LexicalError.invariantViolation("Could not get editor")
   }
-  let nodes = try generateArrayFromSelectedNodes(editor: editor, selection: selection).nodes
+  let transfer = try encodeSelectedNodesForTransfer(editor: editor, selection: selection)
   let text = try selection.getTextContent()
-  let encodedData = try JSONEncoder().encode(nodes)
+  let encodedData = transfer.encodedData
   guard let jsonString = String(data: encodedData, encoding: .utf8) else { return }
 
   let itemProvider = NSItemProvider()

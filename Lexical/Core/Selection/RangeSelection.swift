@@ -2406,6 +2406,117 @@ public class RangeSelection: BaseSelection {
     return nil
   }
 
+  /// Convert ambiguous element boundary points into concrete text points when possible.
+  @MainActor
+  private func normalizeCollapsedCaretPoint(_ point: Point) -> Point {
+    guard point.type == .element,
+          let element = (try? point.getNode()) as? ElementNode
+    else { return point }
+
+    if point.offset == 0, let firstText = findFirstTextNodeInElement(element) {
+      return Point(key: firstText.getKey(), offset: 0, type: .text)
+    }
+    if point.offset == element.getChildrenSize(),
+       let lastText = findLastTextNodeInElement(element) {
+      return Point(key: lastText.getKey(), offset: lastText.getTextContentSize(), type: .text)
+    }
+
+    return point
+  }
+
+  /// Convert a collapsed caret at the end of one text node into the start of the next text node
+  /// when both positions map to the same native string location.
+  @MainActor
+  private func canonicalizeCollapsedTextBoundaryPoint(
+    _ point: Point,
+    at location: Int,
+    editor: Editor
+  ) -> Point {
+    guard point.type == .text,
+          let textNode = (try? point.getNode()) as? TextNode,
+          point.offset == textNode.getTextContentSize()
+    else { return point }
+
+    func firstTextPoint(in node: Node?) -> Point? {
+      if let textNode = node as? TextNode {
+        return Point(key: textNode.getKey(), offset: 0, type: .text)
+      }
+      if let element = node as? ElementNode,
+         let firstText = findFirstTextNodeInElement(element) {
+        return Point(key: firstText.getKey(), offset: 0, type: .text)
+      }
+      return nil
+    }
+
+    var current: Node? = textNode
+    while let currentNode = current {
+      var sibling = currentNode.getNextSibling()
+      while let siblingNode = sibling {
+        if let nextPoint = firstTextPoint(in: siblingNode),
+           (try? stringLocationForPoint(nextPoint, editor: editor)) == location {
+          return nextPoint
+        }
+        sibling = siblingNode.getNextSibling()
+      }
+      current = currentNode.getParent()
+    }
+
+    return point
+  }
+
+  /// Resolve a collapsed native caret to a canonical Lexical point.
+  ///
+  /// When multiple points share the same native offset, prefer a concrete text point at the
+  /// start of the following node. That makes boundary carets deterministic for subsequent
+  /// insert/delete operations.
+  @MainActor
+  private func canonicalCollapsedCaretPoint(
+    at location: Int,
+    editor: Editor,
+    fenwickTree: FenwickTree?
+  ) -> Point? {
+    var candidates: [Point] = []
+
+    for direction in [LexicalTextStorageDirection.backward, .forward] {
+      guard let point = try? pointAtStringLocation(
+        location,
+        searchDirection: direction,
+        rangeCache: editor.rangeCache,
+        fenwickTree: fenwickTree
+      ) else {
+        continue
+      }
+
+      let normalized = normalizeCollapsedCaretPoint(point)
+      let canonical = canonicalizeCollapsedTextBoundaryPoint(
+        normalized,
+        at: location,
+        editor: editor
+      )
+      for candidate in [normalized, canonical] where !candidates.contains(candidate) {
+        candidates.append(candidate)
+      }
+    }
+
+    func matchesLocation(_ point: Point) -> Bool {
+      (try? stringLocationForPoint(point, editor: editor)) == location
+    }
+
+    if let startText = candidates.first(where: {
+      $0.type == .text && $0.offset == 0 && matchesLocation($0)
+    }) {
+      return startText
+    }
+
+    if let textPoint = candidates.first(where: {
+      $0.type == .text && matchesLocation($0)
+    }) {
+      return textPoint
+    }
+
+    return candidates.first(where: matchesLocation) ?? candidates.first
+  }
+
   @MainActor
   internal func removeText() throws {
     try insertText("")
@@ -2514,6 +2625,22 @@ public class RangeSelection: BaseSelection {
     let fallbackDir: LexicalTextStorageDirection =
       isCollapsed ? .backward : ((affinity == .forward) ? .backward : .forward)
 
+    if isCollapsed,
+       let caret = canonicalCollapsedCaretPoint(
+         at: anchorOffset,
+         editor: editor,
+         fenwickTree: fenwickTree
+       ) {
+      editor.log(.editor, .verbose, "[applySelectionRange] collapsed -> canonical=(\(caret.key),\(caret.offset),\(caret.type))")
+      let anchorPoint = Point(key: caret.key, offset: caret.offset, type: caret.type)
+      let focusPoint = Point(key: caret.key, offset: caret.offset, type: caret.type)
+      anchorPoint.selection = self
+      focusPoint.selection = self
+      self.anchor = anchorPoint
+      self.focus = focusPoint
+      return
+    }
+
     guard let rawAnchor = pointAt(anchorOffset, prefer: primaryDir, fallback: fallbackDir),
           let rawFocus = pointAt(focusOffset, prefer: primaryDir, fallback: fallbackDir)
     else {
@@ -2523,28 +2650,8 @@ public class RangeSelection: BaseSelection {
 
     editor.log(.editor, .verbose, "[applySelectionRange] rawAnchor=(\(rawAnchor.key),\(rawAnchor.offset),\(rawAnchor.type)) rawFocus=(\(rawFocus.key),\(rawFocus.offset),\(rawFocus.type))")
 
-    @inline(__always)
-    func normalizedCaretPoint(_ point: Point) -> Point {
-      guard isCollapsed, point.type == .element,
-            let element = (try? point.getNode()) as? ElementNode
-      else { return point }
-
-      // Prefer mapping a collapsed caret to a concrete TextNode when possible.
-      // When the caret is exactly at an element boundary, `pointAtStringLocation` often
-      // returns an element Point (offset 0 or childrenSize). That is ambiguous and can
-      // cause delete/insert operations to act on the wrong side of the boundary.
-      if point.offset == 0, let firstText = findFirstTextNodeInElement(element) {
-        return Point(key: firstText.getKey(), offset: 0, type: .text)
-      }
-      if point.offset == element.getChildrenSize(),
-         let lastText = findLastTextNodeInElement(element) {
-        return Point(key: lastText.getKey(), offset: lastText.getTextContentSize(), type: .text)
-      }
-      return point
-    }
-
     if isCollapsed {
-      let caret = normalizedCaretPoint(rawAnchor)
+      let caret = normalizeCollapsedCaretPoint(rawAnchor)
       editor.log(.editor, .verbose, "[applySelectionRange] collapsed -> normalized=(\(caret.key),\(caret.offset),\(caret.type))")
       let anchorPoint = Point(key: caret.key, offset: caret.offset, type: caret.type)
       let focusPoint = Point(key: caret.key, offset: caret.offset, type: caret.type)
@@ -2555,8 +2662,8 @@ public class RangeSelection: BaseSelection {
       return
     }
 
-    let normalizedAnchor = normalizedCaretPoint(rawAnchor)
-    let normalizedFocus = normalizedCaretPoint(rawFocus)
+    let normalizedAnchor = normalizeCollapsedCaretPoint(rawAnchor)
+    let normalizedFocus = normalizeCollapsedCaretPoint(rawFocus)
 
     // Guard against mismapped wide ranges (observed at line breaks) when the original
     // native range length is 1. If the mapped points land on the same TextNode and span
@@ -2667,28 +2774,51 @@ public class RangeSelection: BaseSelection {
       return editor.locationFenwickTree
     }()
 
-    guard
-      let anchor = try? pointAtStringLocation(
-        anchorOffset,
-        searchDirection: affinity,
-        rangeCache: editor.rangeCache,
-        fenwickTree: fenwickTree),
-      let focus = try? pointAtStringLocation(
-        focusOffset,
-        searchDirection: affinity,
-        rangeCache: editor.rangeCache,
-        fenwickTree: fenwickTree)
-    else {
-      return nil
-    }
-
-    let anchorPoint = Point(key: anchor.key, offset: anchor.offset, type: anchor.type)
-    let focusPoint = Point(key: focus.key, offset: focus.offset, type: focus.type)
-    self.anchor = anchorPoint
-    self.focus = focusPoint
+    let placeholderAnchor = Point(key: kRootNodeKey, offset: 0, type: .element)
+    let placeholderFocus = Point(key: kRootNodeKey, offset: 0, type: .element)
+    self.anchor = placeholderAnchor
+    self.focus = placeholderFocus
     self.dirty = false
     self.format = TextFormat()
     self.style = ""
+    self.anchor.selection = self
+    self.focus.selection = self
+
+    let anchorPoint: Point
+    let focusPoint: Point
+
+    if range.length == 0 {
+      guard let caret = canonicalCollapsedCaretPoint(
+        at: anchorOffset,
+        editor: editor,
+        fenwickTree: fenwickTree
+      ) else {
+        return nil
+      }
+      anchorPoint = Point(key: caret.key, offset: caret.offset, type: caret.type)
+      focusPoint = Point(key: caret.key, offset: caret.offset, type: caret.type)
+    } else {
+      guard
+        let anchor = try? pointAtStringLocation(
+          anchorOffset,
+          searchDirection: affinity,
+          rangeCache: editor.rangeCache,
+          fenwickTree: fenwickTree),
+        let focus = try? pointAtStringLocation(
+          focusOffset,
+          searchDirection: affinity,
+          rangeCache: editor.rangeCache,
+          fenwickTree: fenwickTree)
+      else {
+        return nil
+      }
+
+      anchorPoint = Point(key: anchor.key, offset: anchor.offset, type: anchor.type)
+      focusPoint = Point(key: focus.key, offset: focus.offset, type: focus.type)
+    }
+
+    self.anchor = anchorPoint
+    self.focus = focusPoint
     self.anchor.selection = self
     self.focus.selection = self
   }

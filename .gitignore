@@ -15,3 +15,4 @@ history
 .mighty/auth.json
 .mighty/exports
 .mighty/cache.db
+.mighty/.cache

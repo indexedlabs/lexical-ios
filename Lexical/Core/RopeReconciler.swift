@@ -175,7 +175,11 @@ public enum RopeReconciler {
         if let nextSelection, let prevSelection {
           selectionsAreDifferent = !nextSelection.isSelection(prevSelection)
         }
-        if nextSelection == nil || selectionsAreDifferent {
+        let nativeSelectionNeedsRepair = selectionNeedsNativeRepair(
+          nextSelection: nextSelection,
+          editor: editor
+        )
+        if nextSelection == nil || selectionsAreDifferent || nativeSelectionNeedsRepair {
           try reconcileSelection(prevSelection: prevSelection, nextSelection: nextSelection, editor: editor)
         }
       }
@@ -2025,6 +2029,51 @@ public enum RopeReconciler {
     try editor.frontend?.updateNativeSelection(from: selection)
     #elseif os(macOS) && !targetEnvironment(macCatalyst)
     try editor.frontendAppKit?.updateNativeSelection(from: selection)
+    #endif
+  }
+
+  /// Detect native-selection drift when the model selection has not changed.
+  ///
+  /// A selection-only update should still restore the platform selection when UIKit/AppKit has
+  /// drifted to a different caret location after a previous structural edit or geometry clamp.
+  private static func selectionNeedsNativeRepair(
+    nextSelection: BaseSelection?,
+    editor: Editor
+  ) -> Bool {
+    guard let rangeSelection = nextSelection as? RangeSelection else {
+      return false
+    }
+
+    #if canImport(UIKit)
+    let currentNativeSelection = editor.getNativeSelection()
+    if currentNativeSelection.selectionIsNodeOrObject {
+      return true
+    }
+
+    guard let expectedNativeSelection = try? createNativeSelection(from: rangeSelection, editor: editor),
+          let expectedRange = expectedNativeSelection.range
+    else {
+      return true
+    }
+
+    return currentNativeSelection.range != expectedRange
+    #elseif os(macOS) && !targetEnvironment(macCatalyst)
+    guard let frontend = editor.frontendAppKit else {
+      return false
+    }
+
+    guard let anchorLocation = try? stringLocationForPoint(rangeSelection.anchor, editor: editor),
+          let focusLocation = try? stringLocationForPoint(rangeSelection.focus, editor: editor)
+    else {
+      return true
+    }
+
+    let isBefore = (try? rangeSelection.anchor.isBefore(point: rangeSelection.focus)) ?? true
+    let location = isBefore ? anchorLocation : focusLocation
+    let expectedRange = NSRange(location: location, length: abs(anchorLocation - focusLocation))
+    return frontend.nativeSelectionRange != expectedRange
+    #else
+    return false
     #endif
   }
 

@@ -133,6 +133,14 @@ final class ReconcilerUsageHistoryReplayTests: XCTestCase {
     )
   }
 
+  private func nodeMapCount(editor: Editor) throws -> Int {
+    var count = 0
+    try editor.read {
+      count = getActiveEditorState()?.getNodeMap().count ?? 0
+    }
+    return count
+  }
+
   private func settleAndAssert(
     harness: ReconcilerIntegrationHarness,
     editor: Editor,
@@ -225,16 +233,28 @@ final class ReconcilerUsageHistoryReplayTests: XCTestCase {
       return ""
     }
 
-    var copiedText = ""
-    try editor.read {
-      let json = try JSONDecoder().decode(SerializedNodeArray.self, from: data)
-      copiedText = normalizeVisibleText(
-        json.nodeArray
-          .map { $0.getTextContent() }
-          .joined()
-      )
+    let json = try JSONSerialization.jsonObject(with: data)
+    return normalizeVisibleText(detachedCopiedText(from: json))
+  }
+
+  private func detachedCopiedText(from json: Any) -> String {
+    if let array = json as? [Any] {
+      return array.map(detachedCopiedText).joined()
     }
-    return copiedText
+
+    guard let object = json as? [String: Any] else {
+      return ""
+    }
+
+    let type = object["type"] as? String
+    var text = type == "linebreak" ? "\n" : ""
+    if let nodeText = object["text"] as? String {
+      text += nodeText
+    }
+    if let children = object["children"] as? [Any] {
+      text += children.map(detachedCopiedText).joined()
+    }
+    return text
   }
 
   private func assertUniqueVisibleContent(
@@ -294,6 +314,7 @@ final class ReconcilerUsageHistoryReplayTests: XCTestCase {
     try settleAndAssert(harness: harness, editor: editor, textView: textView)
 
     let before = try visibleSnapshot(editor: editor)
+    let nodeMapCountBeforeCopy = try nodeMapCount(editor: editor)
     XCTAssertTrue(history.canUndo)
     XCTAssertFalse(history.canRedo)
     assertPlaceholderHidden(textView)
@@ -304,6 +325,7 @@ final class ReconcilerUsageHistoryReplayTests: XCTestCase {
 
     XCTAssertEqual(try copiedLexicalText(from: pasteboard, editor: editor), paragraphTexts[1])
     XCTAssertEqual(try visibleSnapshot(editor: editor), before)
+    XCTAssertEqual(try nodeMapCount(editor: editor), nodeMapCountBeforeCopy)
     XCTAssertTrue(history.canUndo)
     XCTAssertFalse(history.canRedo)
     assertPlaceholderHidden(textView)

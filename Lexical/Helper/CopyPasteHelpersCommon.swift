@@ -66,12 +66,13 @@ func basicInsertStrategy(nodes: [Node], selection: RangeSelection) throws {
 
 @MainActor
 func appendNodesToArray(
-  editor: Editor,
   selection: BaseSelection?,
   currentNode: Node,
-  targetArray: [Node] = []
-) throws -> (shouldInclude: Bool, outArray: [Node]) {
+  targetArray: [Node] = [],
+  clonedNodeMap: [NodeKey: Node] = [:]
+) throws -> (shouldInclude: Bool, outArray: [Node], clonedNodeMap: [NodeKey: Node]) {
   var array = targetArray
+  var nodeMap = clonedNodeMap
   var shouldInclude = selection != nil ? try currentNode.isSelected() : true
   let shouldExclude = (currentNode as? ElementNode)?.excludeFromCopy() ?? false
   var clone = try cloneWithProperties(node: currentNode)
@@ -80,12 +81,7 @@ func appendNodesToArray(
   if let textClone = clone as? TextNode, let selection {
     clone = try sliceSelectedTextNodeContent(selection: selection, textNode: textClone)
   }
-
-  guard let key = try generateKey(node: clone) else {
-    throw LexicalError.invariantViolation("Could not generate key")
-  }
-  clone.key = key
-  editor.getEditorState().nodeMap[key] = clone
+  nodeMap[clone.key] = clone
 
   let children = (currentNode as? ElementNode)?.getChildren() ?? []
   var cloneChildren: [Node] = []
@@ -93,11 +89,12 @@ func appendNodesToArray(
   for childNode in children {
     let internalCloneChildren: [Node] = []
     let shouldIncludeChild = try appendNodesToArray(
-      editor: editor,
       selection: selection,
       currentNode: childNode,
-      targetArray: internalCloneChildren
+      targetArray: internalCloneChildren,
+      clonedNodeMap: nodeMap
     )
+    nodeMap = shouldIncludeChild.clonedNodeMap
 
     if !shouldInclude && shouldIncludeChild.shouldInclude
       && ((currentNode as? ElementNode)?.extractWithChild(
@@ -117,13 +114,13 @@ func appendNodesToArray(
     array.append(clone)
   } else if let children = (clone as? ElementNode)?.children {
     for childKey in children {
-      if let childNode = editor.getEditorState().nodeMap[childKey] {
+      if let childNode = nodeMap[childKey] {
         array.append(childNode)
       }
     }
   }
 
-  return (shouldInclude, array)
+  return (shouldInclude, array, nodeMap)
 }
 
 @MainActor
@@ -132,20 +129,67 @@ public func generateArrayFromSelectedNodes(editor: Editor, selection: BaseSelect
   nodes: [Node]
 ) {
   var nodes: [Node] = []
+  var clonedNodeMap: [NodeKey: Node] = [:]
   guard let root = getRoot() else {
     return ("", [])
   }
   for topLevelNode in root.getChildren() {
     var nodeArray: [Node] = []
-    nodeArray = try appendNodesToArray(
-      editor: editor, selection: selection, currentNode: topLevelNode, targetArray: nodeArray
-    ).outArray
+    let appendResult = try appendNodesToArray(
+      selection: selection,
+      currentNode: topLevelNode,
+      targetArray: nodeArray,
+      clonedNodeMap: clonedNodeMap
+    )
+    nodeArray = appendResult.outArray
+    clonedNodeMap = appendResult.clonedNodeMap
     nodes.append(contentsOf: nodeArray)
   }
   return (
     namespace: "lexical",
     nodes
   )
+}
+
+@MainActor
+internal func encodeSelectedNodesForTransfer(editor: Editor, selection: BaseSelection) throws -> (
+  nodes: [Node],
+  encodedData: Data
+) {
+  var nodes: [Node] = []
+  var clonedNodeMap: [NodeKey: Node] = [:]
+  guard let root = getRoot() else {
+    return ([], Data())
+  }
+
+  for topLevelNode in root.getChildren() {
+    let appendResult = try appendNodesToArray(
+      selection: selection,
+      currentNode: topLevelNode,
+      clonedNodeMap: clonedNodeMap
+    )
+    nodes.append(contentsOf: appendResult.outArray)
+    clonedNodeMap = appendResult.clonedNodeMap
+  }
+
+  let temporaryEditorState = EditorState.empty(version: editor.getEditorState().version)
+  temporaryEditorState.nodeMap = clonedNodeMap
+
+  var encodedData: Data?
+  try runWithStateLexicalScopeProperties(
+    activeEditor: editor,
+    activeEditorState: temporaryEditorState,
+    readOnlyMode: true,
+    editorUpdateReason: nil
+  ) {
+    encodedData = try JSONEncoder().encode(nodes)
+  }
+
+  guard let encodedData else {
+    throw LexicalError.invariantViolation("Could not encode selected nodes")
+  }
+
+  return (nodes, encodedData)
 }
 
 // MARK: - Extensions

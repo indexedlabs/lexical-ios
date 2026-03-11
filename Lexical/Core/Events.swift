@@ -961,9 +961,9 @@ func setPasteboardAppKit(selection: BaseSelection, pasteboard: NSPasteboard) thr
     throw LexicalError.invariantViolation("Could not get editor")
   }
 
-  let nodes = try generateArrayFromSelectedNodes(editor: editor, selection: selection).nodes
+  let transfer = try encodeSelectedNodesForTransfer(editor: editor, selection: selection)
   let text = try selection.getTextContent()
-  let encodedData = try JSONEncoder().encode(nodes)
+  let encodedData = transfer.encodedData
 
   var rtfData: Data?
   do {
