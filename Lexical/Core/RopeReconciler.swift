@@ -1895,6 +1895,22 @@ public enum RopeReconciler {
       if preambleRange.location + preambleRange.length <= textStorage.length {
         textStorage.setAttributes(attributes, range: preambleRange)
       }
+
+      // Parent attribute changes (e.g. ListItemNode.isChecked) affect child text ranges
+      // because AttributeUtils merges parent attributes into child styles. Re-apply
+      // attributes to child text nodes so the rendered state stays consistent.
+      for childKey in next.getChildrenKeys(fromLatest: false) {
+        guard let childNode = state.nodeMap[childKey],
+              let childCache = editor.rangeCache[childKey],
+              childCache.textLength > 0
+        else { continue }
+        let childTextStart = childCache.location + childCache.preambleLength + childCache.childrenLength
+        let childTextRange = NSRange(location: childTextStart, length: childCache.textLength)
+        if childTextRange.location + childTextRange.length <= textStorage.length {
+          let childAttrs = AttributeUtils.attributedStringStyles(from: childNode, state: state, theme: theme)
+          textStorage.setAttributes(childAttrs, range: childTextRange)
+        }
+      }
     }
 
     // Update postamble if necessary.
