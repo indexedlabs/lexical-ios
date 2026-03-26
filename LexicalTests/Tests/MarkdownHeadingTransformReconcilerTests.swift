@@ -2,6 +2,11 @@ import XCTest
 @testable import Lexical
 import LexicalListPlugin
 
+#if os(macOS) && !targetEnvironment(macCatalyst)
+import AppKit
+@testable import LexicalAppKit
+#endif
+
 @MainActor
 final class MarkdownHeadingTransformReconcilerTests: XCTestCase {
   private let settleDelay: TimeInterval = 0.05
@@ -90,7 +95,9 @@ final class MarkdownHeadingTransformReconcilerTests: XCTestCase {
 
   func testMarkdownHeadingShortcutTextStorageMatchesRehydratedLexicalState() throws {
     let plugin = MarkdownHeadingShortcutPlugin()
-    let testView = createTestEditorView(plugins: [plugin])
+    let mounted = makeHostedTestView(plugins: [plugin])
+    defer { mounted.tearDown() }
+    let testView = mounted.testView
     let editor = testView.editor
 
     try seedMultilineDocument(in: testView)
@@ -124,7 +131,9 @@ final class MarkdownHeadingTransformReconcilerTests: XCTestCase {
   func testMarkdownBulletShortcutTextStorageMatchesRehydratedLexicalState() throws {
     let listPlugin = ListPlugin()
     let markdownPlugin = MarkdownBulletShortcutPlugin()
-    let testView = createTestEditorView(plugins: [listPlugin, markdownPlugin])
+    let mounted = makeHostedTestView(plugins: [listPlugin, markdownPlugin])
+    defer { mounted.tearDown() }
+    let testView = mounted.testView
     let editor = testView.editor
 
     try seedMultilineDocument(in: testView)
@@ -166,17 +175,21 @@ final class MarkdownHeadingTransformReconcilerTests: XCTestCase {
         try child.remove()
       }
 
-      let paragraph = createParagraphNode()
-      let text = createTextNode(text: "")
-      try paragraph.append([text])
-      try root.append([paragraph])
-      try text.select(anchorOffset: 0, focusOffset: 0)
-    }
+      // Build the multi-line document entirely via the editor API to avoid
+      // native text-input interception issues on macOS.
+      for _ in 0..<3 {
+        let p = createParagraphNode()
+        let t = createTextNode(text: "")
+        try p.append([t])
+        try root.append([p])
+      }
 
-    testView.insertText("\n")
-    testView.insertText("\n")
-    testView.insertText("\n")
-    testView.insertText("Testing this")
+      let lastParagraph = createParagraphNode()
+      let lastText = createTextNode(text: "Testing this")
+      try lastParagraph.append([lastText])
+      try root.append([lastParagraph])
+      try lastText.select(anchorOffset: 12, focusOffset: 12)
+    }
     settle()
   }
 
@@ -242,5 +255,26 @@ final class MarkdownHeadingTransformReconcilerTests: XCTestCase {
 
   private func settle() {
     RunLoop.current.run(until: Date().addingTimeInterval(settleDelay))
+  }
+
+  /// Creates a test editor view hosted in a window (needed on macOS for text input/selection).
+  private func makeHostedTestView(
+    plugins: [Plugin] = []
+  ) -> (testView: TestEditorView, tearDown: @MainActor () -> Void) {
+    let testView = createTestEditorView(plugins: plugins)
+    #if os(macOS) && !targetEnvironment(macCatalyst)
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+      styleMask: [.titled],
+      backing: .buffered,
+      defer: false
+    )
+    window.contentView = testView.view
+    window.makeKeyAndOrderFront(nil)
+    window.makeFirstResponder(testView.view.textView)
+    return (testView, { window.orderOut(nil) })
+    #else
+    return (testView, {})
+    #endif
   }
 }

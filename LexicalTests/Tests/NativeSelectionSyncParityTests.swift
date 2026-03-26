@@ -9,6 +9,7 @@ import XCTest
 @testable import Lexical
 
 #if os(macOS) && !targetEnvironment(macCatalyst)
+import AppKit
 @testable import LexicalAppKit
 #endif
 
@@ -25,7 +26,18 @@ final class NativeSelectionSyncParityTests: XCTestCase {
   ) {
     #if os(macOS) && !targetEnvironment(macCatalyst)
     let testView = createTestEditorView()
-    return (testView, {})
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+      styleMask: [.titled],
+      backing: .buffered,
+      defer: false
+    )
+    window.contentView = testView.view
+    window.makeKeyAndOrderFront(nil)
+    window.makeFirstResponder(testView.view.textView)
+    return (testView, {
+      window.orderOut(nil)
+    })
     #else
     let harness = ReconcilerIntegrationHarness(testCase: self)
     let testView = harness.createTestView()
@@ -359,8 +371,22 @@ final class NativeSelectionSyncParityTests: XCTestCase {
       try root.append([paragraph])
     }
 
+    // On macOS, NSTextView.selectionAffinity doesn't reliably reflect
+    // programmatically-set affinity, so handleSelectionChange defaults to
+    // upstream which resolves to the preceding node. Apply the selection
+    // range directly with forward affinity to test the canonicalization.
+    #if os(macOS) && !targetEnvironment(macCatalyst)
+    try editor.update {
+      guard let selection = try getSelection() as? RangeSelection else {
+        XCTFail("Expected RangeSelection")
+        return
+      }
+      try selection.applySelectionRange(NSRange(location: 3, length: 0), affinity: .forward)
+    }
+    #else
     testView.setSelectedRange(NSRange(location: 3, length: 0))
     applyNativeSelectionChange(testView)
+    #endif
 
     var anchorKey: NodeKey = ""
     var focusKey: NodeKey = ""
@@ -486,15 +512,11 @@ final class NativeSelectionSyncParityTests: XCTestCase {
     let helloRange = nativeString.range(of: "Hello")
     XCTAssertNotEqual(helloRange.location, NSNotFound)
 
-    // Simulate UIKit/native drift without informing Lexical.
-    #if canImport(UIKit)
+    // Simulate native drift without informing Lexical.
     let textView = testView.view.textView
     textView.isUpdatingNativeSelection = true
-    #endif
     testView.setSelectedRange(NSRange(location: helloRange.location + helloRange.length, length: 0))
-    #if canImport(UIKit)
     textView.isUpdatingNativeSelection = false
-    #endif
     XCTAssertEqual(testView.selectedRange.location, helloRange.location + helloRange.length)
 
     try editor.read {

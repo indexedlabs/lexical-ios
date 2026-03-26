@@ -90,6 +90,18 @@ class TestEditorView {
     #endif
   }
 
+  #if os(macOS) && !targetEnvironment(macCatalyst)
+  /// Set the selected range with explicit affinity (macOS only).
+  ///
+  /// NSTextView defaults to upstream affinity when setting the selection
+  /// programmatically, which affects how collapsed selections at text node
+  /// boundaries are canonicalized. Use `.downstream` to bias toward the
+  /// following text node.
+  func setSelectedRange(_ range: NSRange, affinity: NSSelectionAffinity) {
+    lexicalView.textView.setSelectedRange(range, affinity: affinity, stillSelecting: false)
+  }
+  #endif
+
   /// Get the current selected range.
   var selectedRange: NSRange {
     #if os(macOS) && !targetEnvironment(macCatalyst)
