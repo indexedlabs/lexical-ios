@@ -106,7 +106,7 @@ open class DecoratorNode: Node {
   }
 
   override open func getPreamble() -> String {
-    guard let unicodeScalar = Unicode.Scalar(NSTextAttachment.character) else {
+    guard let unicodeScalar = Unicode.Scalar(0xFFFC) else {
       return ""
     }
     return String(Character(unicodeScalar))
