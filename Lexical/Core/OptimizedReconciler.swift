@@ -243,7 +243,8 @@ internal enum OptimizedReconciler {
       affected.insert(key)
       for p in next.getParents() { affected.insert(p.getKey()) }
     }
-    return instructions.isEmpty ? nil : (instructions, lengthChanges, affected)
+    if instructions.isEmpty { return nil }
+    return (instructions, lengthChanges, affected)
   }
 
   // Pre/post attributes-only planning has been retired. The optimized reconciler now uses a single
